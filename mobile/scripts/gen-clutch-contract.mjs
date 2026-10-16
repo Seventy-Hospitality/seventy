@@ -74,7 +74,7 @@ function key(name) {
 
 function comment(text, indent) {
   if (!text) return '';
-  const safe = String(text).replace(/\*\//g, '* /').replace(/—/g, ':');
+  const safe = String(text).replace(/\*\//g, '* /').replace(/\u2014/g, ':');
   const lines = safe.split('\n');
   if (lines.length === 1) return `${indent}/** ${lines[0]} */\n`;
   return `${indent}/**\n${lines.map((l) => `${indent} * ${l}`.trimEnd()).join('\n')}\n${indent} */\n`;
