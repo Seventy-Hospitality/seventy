@@ -1,33 +1,32 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import type { ClubActivityItem } from '../../lib/api';
+import type { GroupActivityItem } from '../../lib/clutch';
 import { Badge } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
-import { formatTimeRangeCompact } from '../reserve/booking';
-import { activityDayLabel, isLinkableActivity, isUpcomingActivity, playersCountLabel } from './clubs-lib';
+import {
+  activityBadge,
+  activityDayLabel,
+  isLinkableActivity,
+  playersCountLabel,
+  timeRangeLabel,
+} from './groups-lib';
 
 /**
- * One group-activity row (Figma club-detail 105:5927): the day, the time range,
- * and "<resource> · N players", with an Upcoming / Cancelled badge. Only rows
- * the viewer participates in deep-link to the reservation detail (the detail is
- * participation-scoped and 404s for everyone else). No avatar cluster: the
- * activity endpoint serves a reduced, non-participant projection.
+ * One group-activity row (Figma club-detail 105:5927): a booking the group's
+ * roster was invited to, with the day, the time range, "<court> · N players"
+ * and a status badge. Only a row the viewer plays in opens the booking.
  */
-export function ClubActivityRow({ item, onPress }: { item: ClubActivityItem; onPress: () => void }) {
-  const badge = isUpcomingActivity(item)
-    ? { label: 'Upcoming', variant: 'success' as const }
-    : item.status === 'cancelled'
-      ? { label: 'Cancelled', variant: 'danger' as const }
-      : null;
-
-  const timeRange = formatTimeRangeCompact(item.startTime, item.endTime);
-  const meta = `${item.resource.name} · ${playersCountLabel(item.confirmedCount)}`;
-  const label = `${activityDayLabel(item.date)}, ${timeRange}, ${meta}${badge ? `, ${badge.label}` : ''}`;
+export function GroupActivityRow({ item, onPress }: { item: GroupActivityItem; onPress: () => void }) {
+  const badge = activityBadge(item);
+  const day = activityDayLabel(item.date);
+  const timeRange = timeRangeLabel(item.start_time, item.end_time);
+  const meta = `${item.court_name ?? 'Court'} · ${playersCountLabel(item.participant_count)}`;
+  const label = `${day}, ${timeRange}, ${meta}${badge ? `, ${badge.label}` : ''}`;
 
   const body = (
     <>
       <View style={styles.text}>
         <Text style={styles.title} numberOfLines={1}>
-          <Text style={styles.day}>{activityDayLabel(item.date)}</Text>
+          <Text style={styles.day}>{day}</Text>
           {'  '}
           {timeRange}
         </Text>

@@ -1,14 +1,14 @@
 import { Redirect, Stack } from 'expo-router';
 import { ActivityIndicator, View } from 'react-native';
 import { useSession } from '../../src/lib/session';
-import { CreateClubScreen } from '../../src/features/clubs';
+import { CreateGroupScreen } from '../../src/features/groups';
 import { colors } from '../../src/theme/tokens';
 
 /**
- * The create-club wizard route (Figma create-club 95:4384). Full-screen,
+ * The create-group wizard route (Figma create-club 95:4384). Full-screen,
  * outside the tab shell. Anonymous callers are redirected to sign-in.
  */
-export default function CreateClubRoute() {
+export default function CreateGroupRoute() {
   const { status } = useSession();
 
   if (status === 'loading') {
@@ -26,7 +26,7 @@ export default function CreateClubRoute() {
   return (
     <>
       <Stack.Screen options={{ headerShown: false, animation: 'slide_from_bottom' }} />
-      <CreateClubScreen />
+      <CreateGroupScreen />
     </>
   );
 }

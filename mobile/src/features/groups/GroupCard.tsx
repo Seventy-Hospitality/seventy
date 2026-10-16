@@ -1,27 +1,27 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
-import { resolveApiAssetUrl, type MyClub } from '../../lib/api';
+import type { GroupSummary } from '../../lib/clutch';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
-import { memberCountLabel, roleLabel } from './clubs-lib';
+import { memberCountLabel, roleLabel } from './groups-lib';
 
 /**
- * A club card on the clubs tab (Figma your-clubs 91:3774): the cover image
- * (or a people-icon fallback) with the club name and "N Members · Role" meta
- * overlaid on a bottom shade. The whole card is a link into the club detail.
+ * A group card on the Groups tab (Figma your-clubs 91:3774): the cover image
+ * (or a people-icon fallback) with the group name and "N Members · Role" meta
+ * overlaid on a bottom shade. The whole card opens the group.
  */
-export function ClubCard({ club, onPress }: { club: MyClub; onPress: () => void }) {
+export function GroupCard({ group, onPress }: { group: GroupSummary; onPress: () => void }) {
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`${club.name}: ${memberCountLabel(club.memberCount)}, you are ${
-        club.myRole === 'owner' ? 'the owner' : 'a member'
+      accessibilityLabel={`${group.name}: ${memberCountLabel(group.member_count)}, you are ${
+        group.my_role === 'owner' ? 'the owner' : 'a member'
       }`}
       onPress={onPress}
       style={({ pressed }) => [styles.card, pressed ? styles.pressed : null]}
     >
-      {club.coverImageUrl ? (
-        <Image source={resolveApiAssetUrl(club.coverImageUrl) as string} style={styles.cover} contentFit="cover" />
+      {group.cover_image_url ? (
+        <Image source={group.cover_image_url} style={styles.cover} contentFit="cover" />
       ) : (
         <View style={[styles.cover, styles.coverFallback]}>
           <Ionicons name="people" size={44} color={colors.surfaceMuted} />
@@ -30,12 +30,12 @@ export function ClubCard({ club, onPress }: { club: MyClub; onPress: () => void 
       <View style={styles.shade} />
       <View style={styles.overlay}>
         <Text style={styles.name} numberOfLines={1}>
-          {club.name}
+          {group.name}
         </Text>
         <Text style={styles.meta}>
-          {memberCountLabel(club.memberCount)}
+          {memberCountLabel(group.member_count)}
           <Text style={styles.metaSep}>{'   ·   '}</Text>
-          {roleLabel(club.myRole)}
+          {roleLabel(group.my_role)}
         </Text>
       </View>
     </Pressable>

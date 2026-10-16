@@ -1,100 +1,121 @@
 import { useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
-import { Pressable } from 'react-native';
-import { api, type ClubDetail } from '../../lib/api';
+import { clutch, useMutationKey, type GroupDetail } from '../../lib/clutch';
 import { FormField, Input, PrimaryButton, Sheet, useToast } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
-import { CLUB_DESCRIPTION_MAX, CLUB_NAME_MAX, canContinueClubDetails } from './clubs-lib';
+import { invalidateGroups } from './groups-data';
+import {
+  GROUP_DESCRIPTION_MAX,
+  GROUP_NAME_MAX,
+  coverUploadErrorMessage,
+  groupFormErrorMessage,
+  isValidGroupName,
+} from './groups-lib';
 import { useCoverPhoto } from './useCoverPhoto';
 
-/** Sentinel so onError can tell a saved-but-cover-failed run from a hard fail. */
+/** The edits saved but the new cover did not go up; carries the copy to show. */
 class CoverUploadFailed extends Error {}
 
-interface EditClubSheetProps {
-  club: ClubDetail;
+interface EditGroupSheetProps {
+  group: GroupDetail;
   open: boolean;
   onClose: () => void;
 }
 
+interface GroupPatch {
+  name?: string;
+  description?: string | null;
+  clear_cover?: boolean;
+}
+
 /**
- * Edit a club (owner-only; Figma edit reuses the create fields). Sends a PATCH
- * with only the changed name/description (and coverImageUrl:null to drop the
- * cover); a NEW cover always rides the multipart endpoint, never the PATCH.
- * Mirrors member-web's EditClubSheet.
+ * Edit a group (shown when permissions.can_edit). Sends a PATCH with only what
+ * changed (name, description, clear_cover to drop the cover); a NEW cover
+ * always goes through the owner-only upload, never the PATCH.
  */
-export function EditClubSheet({ club, open, onClose }: EditClubSheetProps) {
+export function EditGroupSheet({ group, open, onClose }: EditGroupSheetProps) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const patchKey = useMutationKey();
+  const coverKey = useMutationKey();
 
-  const [name, setName] = useState(club.name);
-  const [description, setDescription] = useState(club.description ?? '');
+  const [name, setName] = useState(group.name);
+  const [description, setDescription] = useState(group.description ?? '');
   const [removeCover, setRemoveCover] = useState(false);
   const cover = useCoverPhoto();
 
-  // Re-seed from the current club each time the sheet opens (no stale drafts).
+  // Re-seed from the current group each time the sheet opens (no stale drafts).
   useEffect(() => {
     if (open) {
-      setName(club.name);
-      setDescription(club.description ?? '');
+      setName(group.name);
+      setDescription(group.description ?? '');
       setRemoveCover(false);
       cover.clear();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, club.id]);
+  }, [open, group.id]);
 
   const trimmedName = name.trim();
   const trimmedDescription = description.trim();
-  const nameChanged = trimmedName !== club.name;
-  const descriptionChanged = trimmedDescription !== (club.description ?? '');
-  const coverRemoved = removeCover && club.coverImageUrl !== null && cover.image === null;
+  const nameChanged = trimmedName !== group.name;
+  const descriptionChanged = trimmedDescription !== (group.description ?? '');
+  const coverRemoved = removeCover && group.cover_image_url !== null && cover.image === null;
   const dirty = nameChanged || descriptionChanged || coverRemoved || cover.image !== null;
 
   const save = useMutation({
     mutationFn: async () => {
-      const patch: { name?: string; description?: string | null; coverImageUrl?: null } = {};
+      const patch: GroupPatch = {};
       if (nameChanged) patch.name = trimmedName;
       if (descriptionChanged) patch.description = trimmedDescription || null;
-      if (coverRemoved) patch.coverImageUrl = null;
-      if (Object.keys(patch).length > 0) await api.updateClub(club.id, patch);
-      if (cover.image) {
+      if (coverRemoved) patch.clear_cover = true;
+      if (Object.keys(patch).length > 0) {
+        await patchKey.run({ id: group.id, patch }, (k) =>
+          clutch.groups.update(group.id, patch, { idempotencyKey: k }),
+        );
+      }
+      const image = cover.image;
+      if (image) {
         try {
-          await api.uploadClubCover(club.id, cover.image);
-        } catch {
-          throw new CoverUploadFailed();
+          const file = { uri: image.uri, name: image.name, type: image.type };
+          await coverKey.run({ id: group.id, uri: image.uri }, (k) =>
+            clutch.groups.uploadCover(group.id, file, { idempotencyKey: k }),
+          );
+        } catch (error) {
+          throw new CoverUploadFailed(coverUploadErrorMessage(error));
         }
       }
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['clubs'] });
-      toast({ variant: 'success', message: 'Club updated.' });
+      invalidateGroups(queryClient);
+      toast({ variant: 'success', message: 'Group updated.' });
       onClose();
     },
     onError: (error) => {
       if (error instanceof CoverUploadFailed) {
-        void queryClient.invalidateQueries({ queryKey: ['clubs'] });
-        toast({
-          variant: 'error',
-          message: 'Your changes were saved, but the cover photo could not be uploaded.',
-        });
+        invalidateGroups(queryClient);
+        toast({ variant: 'error', message: `Your changes were saved, but: ${error.message}` });
         onClose();
         return;
       }
-      toast({ variant: 'error', message: 'We could not save your changes. Try again.' });
+      toast({
+        variant: 'error',
+        message: groupFormErrorMessage(error, 'We could not save your changes. Try again.'),
+      });
     },
   });
 
-  const showExistingCover = club.coverImageUrl !== null && !removeCover && cover.image === null;
-  const previewUri = cover.image?.uri ?? (showExistingCover ? club.coverImageUrl : null);
+  const showExistingCover = group.cover_image_url !== null && !removeCover && cover.image === null;
+  const previewUri = cover.image?.uri ?? (showExistingCover ? group.cover_image_url : null);
 
   const requestClose = () => {
     if (!save.isPending) onClose();
   };
 
   return (
-    <Sheet open={open} onClose={requestClose} title="Edit club">
+    <Sheet open={open} onClose={requestClose} title="Edit group">
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.content}
@@ -141,11 +162,11 @@ export function EditClubSheet({ club, open, onClose }: EditClubSheetProps) {
           ) : null}
         </View>
 
-        <FormField label="Group name" error={trimmedName.length === 0 ? 'Enter a club name' : undefined}>
+        <FormField label="Group name" error={trimmedName.length === 0 ? 'Enter a group name' : undefined}>
           <Input
             value={name}
             onChangeText={setName}
-            maxLength={CLUB_NAME_MAX}
+            maxLength={GROUP_NAME_MAX}
             autoCapitalize="words"
             hasError={trimmedName.length === 0}
           />
@@ -155,7 +176,7 @@ export function EditClubSheet({ club, open, onClose }: EditClubSheetProps) {
           <Input
             value={description}
             onChangeText={setDescription}
-            maxLength={CLUB_DESCRIPTION_MAX}
+            maxLength={GROUP_DESCRIPTION_MAX}
             multiline
             style={styles.textArea}
           />
@@ -165,7 +186,7 @@ export function EditClubSheet({ club, open, onClose }: EditClubSheetProps) {
           <PrimaryButton
             label="Save changes"
             loading={save.isPending}
-            disabled={!(dirty && canContinueClubDetails(name))}
+            disabled={!(dirty && isValidGroupName(name))}
             onPress={() => save.mutate()}
           />
           <PrimaryButton label="Cancel" variant="ghost" disabled={save.isPending} onPress={requestClose} />

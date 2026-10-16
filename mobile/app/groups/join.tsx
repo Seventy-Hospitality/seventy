@@ -1,16 +1,16 @@
 import { Redirect, Stack, useLocalSearchParams } from 'expo-router';
 import { ActivityIndicator, View } from 'react-native';
 import { useSession } from '../../src/lib/session';
-import { JoinClubScreen } from '../../src/features/clubs';
+import { JoinGroupScreen } from '../../src/features/groups';
 import { colors } from '../../src/theme/tokens';
 
 /**
- * Join-via-invite-link route (`/clubs/join?token=...`), the target the shared
+ * Join-via-invite-link route (`/groups/join?token=...`), the target the shared
  * invite URL / QR resolves to. Anonymous callers are redirected to sign-in
- * (joining requires a member); invalid/expired/revoked links (410) are handled
+ * (joining requires a signed-in member); dead links (invite_link_invalid) are handled
  * inside the screen.
  */
-export default function JoinClubRoute() {
+export default function JoinGroupRoute() {
   const { token } = useLocalSearchParams<{ token?: string }>();
   const { status } = useSession();
 
@@ -29,7 +29,7 @@ export default function JoinClubRoute() {
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
-      <JoinClubScreen token={typeof token === 'string' ? token : null} />
+      <JoinGroupScreen token={typeof token === 'string' ? token : null} />
     </>
   );
 }

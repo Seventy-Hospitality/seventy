@@ -1,14 +1,17 @@
 import { Redirect, Stack, useLocalSearchParams } from 'expo-router';
 import { ActivityIndicator, View } from 'react-native';
 import { useSession } from '../../../src/lib/session';
-import { ClubMembersScreen } from '../../../src/features/clubs';
+import { GroupDetailScreen } from '../../../src/features/groups';
 import { colors } from '../../../src/theme/tokens';
+import { asGroupId } from '../../../src/lib/clutch';
 
 /**
- * Club members route (Figma members 105:6876). Anonymous callers are redirected
- * to sign-in; the not-a-member (404) state is handled inside the screen.
+ * Group detail route (Figma club-detail 99:5623). The target the Groups tab, the
+ * create wizard, and a join both land on. Anonymous callers (e.g. a cold
+ * deep-link) are redirected to sign-in; the not-a-member state is handled
+ * inside the screen.
  */
-export default function ClubMembersRoute() {
+export default function GroupDetailRoute() {
   const { id = '' } = useLocalSearchParams<{ id: string }>();
   const { status } = useSession();
 
@@ -27,7 +30,7 @@ export default function ClubMembersRoute() {
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
-      <ClubMembersScreen clubId={id} />
+      <GroupDetailScreen groupId={asGroupId(id)} />
     </>
   );
 }

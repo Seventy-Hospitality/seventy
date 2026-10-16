@@ -4,98 +4,118 @@ import { useRouter } from 'expo-router';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
-import { api, ApiError } from '../../lib/api';
+import { clutch, useMutationKey, type GroupId, type UserId } from '../../lib/clutch';
+import { useSession } from '../../lib/session';
 import { FormField, Input, PrimaryButton, useToast } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
-import { EMPTY_INVITE_SELECTION, type InviteSelection } from '../reserve/invites';
 import { StepShell } from '../reserve/StepShell';
 import { WizardFrame } from '../reserve/WizardFrame';
-import { ClubMemberPicker } from './ClubMemberPicker';
-import { useCoverPhoto } from './useCoverPhoto';
-import { CLUB_DESCRIPTION_MAX, CLUB_NAME_MAX, canContinueClubDetails } from './clubs-lib';
-import { useSession } from '../../lib/session';
+import { MemberPicker } from './MemberPicker';
+import { useCoverPhoto, type CoverImage } from './useCoverPhoto';
+import { invalidateGroups } from './groups-data';
+import {
+  EMPTY_SELECTION,
+  GROUP_DESCRIPTION_MAX,
+  GROUP_NAME_MAX,
+  coverUploadErrorMessage,
+  groupFormErrorMessage,
+  inviteeIds,
+  isValidGroupName,
+  type InviteeSelection,
+} from './groups-lib';
+
+interface CreateInput {
+  name: string;
+  description: string | null;
+  invitee_user_ids: UserId[];
+}
 
 /**
- * The 2-step create-club wizard (Figma create-club 95:4384 / invite-players
- * 95:4294): step 1 collects an optional cover photo, the required name, and an
- * optional description; step 2 picks the initial invitees. Create posts the
- * name/description/invitees in one call, then uploads the cover (best effort),
- * and lands on the new club's detail. Mirrors member-web's CreateClubPage.
+ * The two-step create-group wizard (Figma create-club 95:4384 / invite-players
+ * 95:4294): step 1 collects an optional cover photo, the required name and an
+ * optional description; step 2 picks the first invitees. Create posts the
+ * name, description and invitees in one call; the cover then goes up on its
+ * own (Clutch takes covers only as an owner upload after the group exists), so
+ * a failed cover never loses the group. Lands on the new group.
  */
-export function CreateClubScreen() {
+export function CreateGroupScreen() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const { toast } = useToast();
-  const { memberId } = useSession();
+  const { userId } = useSession();
+  const createKey = useMutationKey();
+  const coverKey = useMutationKey();
 
   const [step, setStep] = useState<1 | 2>(1);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [selection, setSelection] = useState<InviteSelection>(EMPTY_INVITE_SELECTION);
+  const [selection, setSelection] = useState<InviteeSelection>(EMPTY_SELECTION);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const cover = useCoverPhoto();
 
-  const goToClubs = useCallback(() => {
+  const goToGroups = useCallback(() => {
     if (router.canGoBack()) router.back();
-    else router.replace('/(tabs)/clubs');
+    else router.replace('/(tabs)/groups');
   }, [router]);
 
+  const uploadCover = async (groupId: GroupId, image: CoverImage): Promise<string | null> => {
+    try {
+      const file = { uri: image.uri, name: image.name, type: image.type };
+      await coverKey.run({ groupId, uri: image.uri }, (k) =>
+        clutch.groups.uploadCover(groupId, file, { idempotencyKey: k }),
+      );
+      return null;
+    } catch (error) {
+      return coverUploadErrorMessage(error);
+    }
+  };
+
   const create = useMutation({
-    mutationFn: async () => {
-      const memberIds = selection.members.map((member) => member.id);
-      const created = await api.createClub({
-        name: name.trim(),
-        description: description.trim() || undefined,
-        inviteeMemberIds: memberIds.length > 0 ? memberIds : undefined,
-      });
-      let coverFailed = false;
-      if (cover.image) {
-        try {
-          await api.uploadClubCover(created.club.id, cover.image);
-        } catch {
-          coverFailed = true;
-        }
-      }
-      return { created, coverFailed };
+    mutationFn: async (input: CreateInput) => {
+      const { group_id } = await createKey.run(input, (k) =>
+        clutch.groups.create(input, { idempotencyKey: k }),
+      );
+      const coverError = cover.image ? await uploadCover(group_id, cover.image) : null;
+      return { groupId: group_id, coverError };
     },
-    onSuccess: ({ created, coverFailed }) => {
-      void queryClient.invalidateQueries({ queryKey: ['clubs'] });
-      const invitedCount = created.invited.length;
+    onSuccess: ({ groupId, coverError }, input) => {
+      invalidateGroups(queryClient);
+      const invited = input.invitee_user_ids.length;
       toast({
         variant: 'success',
         message:
-          invitedCount > 0
-            ? `${created.club.name} created. ${
-                invitedCount === 1 ? '1 invite' : `${invitedCount} invites`
-              } sent, pending acceptance.`
-            : `${created.club.name} created.`,
+          invited > 0
+            ? `${input.name} created. ${invited === 1 ? '1 invite' : `${invited} invites`} sent, pending acceptance.`
+            : `${input.name} created.`,
       });
-      if (coverFailed) {
-        toast({
-          variant: 'error',
-          message: 'The cover photo could not be uploaded. You can add it from Edit club.',
-        });
+      if (coverError) {
+        toast({ variant: 'error', message: `${coverError} You can add it from Edit group.` });
       }
-      router.replace(`/clubs/${created.club.id}`);
+      router.replace(`/groups/${groupId}`);
     },
     onError: (error) => {
-      setSubmitError(
-        error instanceof ApiError && error.status === 422
-          ? error.message
-          : 'We could not create the club. Try again.',
-      );
+      setSubmitError(groupFormErrorMessage(error, 'We could not create the group. Try again.'));
     },
   });
+
+  const submit = () => {
+    setSubmitError(null);
+    create.mutate({
+      name: name.trim(),
+      description: description.trim() || null,
+      invitee_user_ids: inviteeIds(selection),
+    });
+  };
 
   const onBack = () => {
     if (create.isPending) return;
     if (step === 2) setStep(1);
-    else goToClubs();
+    else goToGroups();
   };
 
   const onClose = () => {
     if (create.isPending) return;
-    goToClubs();
+    goToGroups();
   };
 
   return (
@@ -104,17 +124,17 @@ export function CreateClubScreen() {
       onClose={onClose}
       step={step}
       steps={2}
-      stepName={step === 1 ? 'Club details' : 'Invite players'}
+      stepName={step === 1 ? 'Group details' : 'Invite players'}
       chromeDisabled={create.isPending}
     >
       {step === 1 ? (
         <StepShell
-          title="Create a club"
+          title="Create a group"
           footer={
             <PrimaryButton
               label="Continue"
-              variant={canContinueClubDetails(name) ? 'primary' : 'ghost'}
-              disabled={!canContinueClubDetails(name)}
+              variant={isValidGroupName(name) ? 'primary' : 'ghost'}
+              disabled={!isValidGroupName(name)}
               onPress={() => setStep(2)}
             />
           }
@@ -126,7 +146,7 @@ export function CreateClubScreen() {
               placeholder="Enter name"
               value={name}
               onChangeText={setName}
-              maxLength={CLUB_NAME_MAX}
+              maxLength={GROUP_NAME_MAX}
               autoCapitalize="words"
               autoCorrect={false}
               returnKeyType="next"
@@ -138,7 +158,7 @@ export function CreateClubScreen() {
               placeholder="Description"
               value={description}
               onChangeText={setDescription}
-              maxLength={CLUB_DESCRIPTION_MAX}
+              maxLength={GROUP_DESCRIPTION_MAX}
               multiline
               style={styles.textArea}
             />
@@ -147,22 +167,13 @@ export function CreateClubScreen() {
       ) : (
         <StepShell
           title="Invite players"
-          subtitle={`Invited players must accept before they join ${name.trim() || 'your club'}.`}
-          footer={
-            <PrimaryButton
-              label="Create club"
-              loading={create.isPending}
-              onPress={() => {
-                setSubmitError(null);
-                create.mutate();
-              }}
-            />
-          }
+          subtitle={`Invited club members must accept before they join ${name.trim() || 'your group'}.`}
+          footer={<PrimaryButton label="Create group" loading={create.isPending} onPress={submit} />}
         >
-          <ClubMemberPicker
+          <MemberPicker
             selection={selection}
             onSelectionChange={setSelection}
-            excludeMemberIds={memberId ? [memberId] : []}
+            excludeUserIds={userId ? [userId] : []}
           />
           {submitError ? (
             <Text accessibilityRole="alert" style={styles.formError}>

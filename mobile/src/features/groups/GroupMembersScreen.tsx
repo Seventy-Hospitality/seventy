@@ -4,35 +4,31 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
-import { api, ApiError, type ClubDetail, type ClubRosterEntry } from '../../lib/api';
+import {
+  clutch,
+  useMutationKey,
+  type GroupDetail,
+  type GroupId,
+  type GroupMember,
+} from '../../lib/clutch';
+import { groupQuery, queryKeys } from '../../lib/queries';
 import { useSession } from '../../lib/session';
 import { Avatar, Badge, EmptyStateView, PrimaryButton, Sheet, Skeleton, useToast } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
-import { memberDisplayName, memberNumberLabel } from './clubs-lib';
-import { clubMembersQuery, clubQuery } from './clubs-data';
-import { InviteToClubSheet } from './InviteToClubSheet';
+import { invalidateGroups } from './groups-data';
+import { isGroupGone, memberActionErrorMessage, personHandle, personName } from './groups-lib';
+import { InviteToGroupSheet } from './InviteToGroupSheet';
 
 /**
- * The club members roster (Figma members 105:6876): a row per member with the
- * Owner badge and member number, an owner-only per-row menu (change role /
- * transfer ownership / remove), and a "+" that opens the invite modal. Actions
- * render off the backend permission flags. Mirrors member-web's ClubMembersPage.
+ * The group roster (Figma members 105:6876): a row per member with the Owner
+ * badge, an owner-only per-row menu (transfer ownership, remove) and a "+"
+ * that opens the invite sheet. Transferring ownership is the only role change
+ * Clutch has. Actions render off Clutch's permission flags.
  */
-export function ClubMembersScreen({ clubId }: { clubId: string }) {
-  const detail = useQuery(clubQuery(clubId));
-  const roster = useQuery(clubMembersQuery(clubId));
+export function GroupMembersScreen({ groupId }: { groupId: GroupId }) {
+  const detail = useQuery(groupQuery(groupId));
 
-  const pending = detail.isPending || roster.isPending;
-  const notFound =
-    (detail.isError &&
-      detail.error instanceof ApiError &&
-      (detail.error.status === 404 || detail.error.status === 403)) ||
-    (roster.isError &&
-      roster.error instanceof ApiError &&
-      (roster.error.status === 404 || roster.error.status === 403));
-  const otherError = (detail.isError || roster.isError) && !notFound;
-
-  if (pending) {
+  if (detail.isPending) {
     return (
       <MembersFrame>
         <View accessibilityLabel="Loading members" style={styles.list}>
@@ -44,56 +40,49 @@ export function ClubMembersScreen({ clubId }: { clubId: string }) {
     );
   }
 
-  if (notFound) {
+  if (isGroupGone(detail.error) || (detail.data && detail.data.club_id !== clutch.clubId)) {
     return (
       <MembersFrame>
         <EmptyStateView
-          title="Club not found"
-          description="This club does not exist, was deleted, or you are not a member of it."
+          title="Group not found"
+          description="This group does not exist, was deleted, or you are not a member of it."
         />
       </MembersFrame>
     );
   }
 
-  if (otherError) {
+  if (detail.isError) {
     return (
       <MembersFrame>
         <View style={styles.banner} accessibilityRole="alert">
           <Text style={styles.bannerText}>We could not load the members.</Text>
-          <PrimaryButton
-            label="Try again"
-            variant="secondary"
-            onPress={() => {
-              if (detail.isError) void detail.refetch();
-              if (roster.isError) void roster.refetch();
-            }}
-          />
+          <PrimaryButton label="Try again" variant="secondary" onPress={() => void detail.refetch()} />
         </View>
       </MembersFrame>
     );
   }
 
-  return <MembersView club={detail.data!} roster={roster.data!} />;
+  return <MembersView group={detail.data} />;
 }
 
 function MembersFrame({ children, action }: { children: React.ReactNode; action?: React.ReactNode }) {
   const router = useRouter();
   const goBack = () => {
     if (router.canGoBack()) router.back();
-    else router.replace('/(tabs)/clubs');
+    else router.replace('/(tabs)/groups');
   };
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right', 'bottom']}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Back to club"
+          accessibilityLabel="Back to group"
           onPress={goBack}
           hitSlop={8}
           style={styles.backLink}
         >
           <Ionicons name="chevron-back" size={18} color={colors.textLink} />
-          <Text style={styles.backLinkText}>Back to club</Text>
+          <Text style={styles.backLinkText}>Back to group</Text>
         </Pressable>
         <View style={styles.headerRow}>
           <Text accessibilityRole="header" style={styles.title}>
@@ -107,54 +96,65 @@ function MembersFrame({ children, action }: { children: React.ReactNode; action?
   );
 }
 
-function MembersView({ club, roster }: { club: ClubDetail; roster: ClubRosterEntry[] }) {
-  const { memberId } = useSession();
+function MembersView({ group }: { group: GroupDetail }) {
+  const { userId } = useSession();
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const transferKey = useMutationKey();
+  const removeKey = useMutationKey();
 
-  const [memberMenu, setMemberMenu] = useState<ClubRosterEntry | null>(null);
-  const [confirm, setConfirm] = useState<{ action: 'transfer' | 'remove'; entry: ClubRosterEntry } | null>(null);
+  const [memberMenu, setMemberMenu] = useState<GroupMember | null>(null);
+  const [confirm, setConfirm] = useState<{ action: 'transfer' | 'remove'; entry: GroupMember } | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
 
-  const canManage = club.permissions.canManageMembers;
-  const canInvite = club.permissions.canInvite;
-
-  function conflictOrGeneric(error: unknown, generic: string): string {
-    if (error instanceof ApiError && (error.status === 404 || error.status === 409)) {
-      return 'The club changed before that could be saved. Refreshing.';
-    }
-    return generic;
-  }
+  const canManage = group.permissions.can_manage_members;
+  const canInvite = group.permissions.can_invite;
 
   const transfer = useMutation({
-    mutationFn: (entry: ClubRosterEntry) => api.changeClubMemberRole(club.id, entry.memberId, 'owner'),
+    mutationFn: (entry: GroupMember) =>
+      transferKey.run({ id: group.id, to: entry.user_id }, (k) =>
+        clutch.groups.transferOwnership(group.id, entry.user_id, { idempotencyKey: k }),
+      ),
     onSuccess: (_result, entry) => {
       setConfirm(null);
-      void queryClient.invalidateQueries({ queryKey: ['clubs'] });
-      toast({ variant: 'success', message: `${memberDisplayName(entry)} is now the club owner.` });
+      toast({ variant: 'success', message: `${personName(entry)} is now the group owner.` });
     },
     onError: (error) => {
       setConfirm(null);
-      toast({ variant: 'error', message: conflictOrGeneric(error, 'We could not transfer ownership. Try again.') });
-      void queryClient.invalidateQueries({ queryKey: ['clubs'] });
+      toast({
+        variant: 'error',
+        message: memberActionErrorMessage(error, 'We could not transfer ownership. Try again.'),
+      });
     },
+    onSettled: () => invalidateGroups(queryClient),
   });
 
   const remove = useMutation({
-    mutationFn: (entry: ClubRosterEntry) => api.removeClubMember(club.id, entry.memberId),
+    mutationFn: (entry: GroupMember) =>
+      removeKey.run({ id: group.id, remove: entry.user_id }, (k) =>
+        clutch.groups.removeMember(group.id, entry.user_id, { idempotencyKey: k }),
+      ),
     onSuccess: (_result, entry) => {
       setConfirm(null);
-      queryClient.setQueryData<ClubRosterEntry[]>(['clubs', club.id, 'members'], (rows) =>
-        rows?.filter((row) => row.memberId !== entry.memberId),
+      queryClient.setQueryData<GroupDetail>(queryKeys.group(group.id), (current) =>
+        current
+          ? {
+              ...current,
+              members: current.members.filter((m) => m.user_id !== entry.user_id),
+              member_count: Math.max(0, current.member_count - 1),
+            }
+          : current,
       );
-      void queryClient.invalidateQueries({ queryKey: ['clubs'] });
-      toast({ variant: 'success', message: `${memberDisplayName(entry)} was removed from the club.` });
+      toast({ variant: 'success', message: `${personName(entry)} was removed from the group.` });
     },
     onError: (error) => {
       setConfirm(null);
-      toast({ variant: 'error', message: conflictOrGeneric(error, 'We could not remove that member. Try again.') });
-      void queryClient.invalidateQueries({ queryKey: ['clubs'] });
+      toast({
+        variant: 'error',
+        message: memberActionErrorMessage(error, 'We could not remove that member. Try again.'),
+      });
     },
+    onSettled: () => invalidateGroups(queryClient),
   });
 
   const busy = transfer.isPending || remove.isPending;
@@ -165,7 +165,7 @@ function MembersView({ club, roster }: { club: ClubDetail; roster: ClubRosterEnt
         canInvite ? (
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Invite to club"
+            accessibilityLabel="Invite to group"
             onPress={() => setInviteOpen(true)}
             style={({ pressed }) => [styles.addButton, pressed ? styles.pressedLight : null]}
           >
@@ -174,14 +174,15 @@ function MembersView({ club, roster }: { club: ClubDetail; roster: ClubRosterEnt
         ) : undefined
       }
     >
-      <View style={styles.roster} accessibilityLabel={`Members of ${club.name}`}>
-        {roster.map((entry) => {
-          const isSelf = entry.memberId === memberId;
-          const name = memberDisplayName(entry);
+      <View style={styles.roster} accessibilityLabel={`Members of ${group.name}`}>
+        {group.members.map((entry) => {
+          const isSelf = entry.user_id === userId;
+          const name = personName(entry);
+          const handle = personHandle(entry);
           const showMenu = canManage && !isSelf && entry.role !== 'owner';
           return (
-            <View key={entry.memberId} style={styles.row}>
-              <Avatar name={name} src={entry.avatarUrl} size="md" />
+            <View key={entry.user_id} style={styles.row}>
+              <Avatar name={name} src={entry.avatar_url} size="md" />
               <View style={styles.rowText}>
                 <View style={styles.rowTitleLine}>
                   <Text style={styles.rowTitle} numberOfLines={1}>
@@ -192,7 +193,7 @@ function MembersView({ club, roster }: { club: ClubDetail; roster: ClubRosterEnt
                     <Badge label="Owner" variant="neutral" style={styles.ownerBadge} />
                   ) : null}
                 </View>
-                <Text style={styles.rowSubtitle}>{memberNumberLabel(entry.memberNumber)}</Text>
+                {handle ? <Text style={styles.rowSubtitle}>{handle}</Text> : null}
               </View>
               {showMenu ? (
                 <Pressable
@@ -214,13 +215,13 @@ function MembersView({ club, roster }: { club: ClubDetail; roster: ClubRosterEnt
       <Sheet
         open={memberMenu !== null}
         onClose={() => setMemberMenu(null)}
-        title={memberMenu ? memberDisplayName(memberMenu) : 'Member'}
+        title={memberMenu ? personName(memberMenu) : 'Member'}
       >
         {memberMenu ? (
           <View style={styles.dialogBody}>
             <Text style={styles.dialogHint}>
-              Transferring makes {memberDisplayName(memberMenu)} the owner and you a regular member;
-              removing takes them off the club roster.
+              Transferring makes {personName(memberMenu)} the owner and you a regular member;
+              removing takes them out of the group.
             </Text>
             <View style={styles.dialogActions}>
               <PrimaryButton
@@ -233,7 +234,7 @@ function MembersView({ club, roster }: { club: ClubDetail; roster: ClubRosterEnt
                 }}
               />
               <PrimaryButton
-                label="Remove from club"
+                label="Remove from group"
                 variant="danger"
                 onPress={() => {
                   const entry = memberMenu;
@@ -257,15 +258,15 @@ function MembersView({ club, roster }: { club: ClubDetail; roster: ClubRosterEnt
         {confirm?.action === 'transfer' ? (
           <View style={styles.dialogBody}>
             <Text style={styles.dialogText}>
-              Make {memberDisplayName(confirm.entry)} the owner of {club.name}?
+              Make {personName(confirm.entry)} the owner of {group.name}?
             </Text>
             <Text style={styles.dialogHint}>
-              You become a regular member and lose owner controls (editing the club, managing
+              You become a regular member and lose owner controls (editing the group, managing
               members, deleting it). Only the new owner can transfer it back.
             </Text>
             <View style={styles.dialogActions}>
               <PrimaryButton
-                label={`Make ${memberDisplayName(confirm.entry)} the owner`}
+                label={`Make ${personName(confirm.entry)} the owner`}
                 loading={transfer.isPending}
                 onPress={() => transfer.mutate(confirm.entry)}
               />
@@ -291,12 +292,12 @@ function MembersView({ club, roster }: { club: ClubDetail; roster: ClubRosterEnt
         {confirm?.action === 'remove' ? (
           <View style={styles.dialogBody}>
             <Text style={styles.dialogText}>
-              Remove {memberDisplayName(confirm.entry)} from {club.name}? They can be invited again
+              Remove {personName(confirm.entry)} from {group.name}? They can be invited again
               later.
             </Text>
             <View style={styles.dialogActions}>
               <PrimaryButton
-                label="Remove from club"
+                label="Remove from group"
                 variant="danger"
                 loading={remove.isPending}
                 onPress={() => remove.mutate(confirm.entry)}
@@ -312,13 +313,9 @@ function MembersView({ club, roster }: { club: ClubDetail; roster: ClubRosterEnt
         ) : null}
       </Sheet>
 
-      <InviteToClubSheet
-        clubId={club.id}
-        clubName={club.name}
-        canRotateLink={canManage}
-        open={inviteOpen}
-        onClose={() => setInviteOpen(false)}
-      />
+      {canInvite ? (
+        <InviteToGroupSheet group={group} open={inviteOpen} onClose={() => setInviteOpen(false)} />
+      ) : null}
     </MembersFrame>
   );
 }

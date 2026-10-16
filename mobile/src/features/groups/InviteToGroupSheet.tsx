@@ -1,80 +1,80 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import * as Clipboard from 'expo-clipboard';
 import { Ionicons } from '@expo/vector-icons';
-import { api } from '../../lib/api';
-import { PrimaryButton, QRCode, Sheet, useToast } from '../../components';
+import { clutch, useMutationKey, type GroupDetail, type UserId } from '../../lib/clutch';
 import { useSession } from '../../lib/session';
+import { PrimaryButton, QRCode, Sheet, useToast } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
-import { EMPTY_INVITE_SELECTION, type InviteSelection } from '../reserve/invites';
-import { ClubMemberPicker } from './ClubMemberPicker';
-import { clubMembersQuery, useClubInviteLink } from './clubs-data';
+import { MemberPicker } from './MemberPicker';
+import { invalidateGroups, useGroupInviteLink } from './groups-data';
+import { EMPTY_SELECTION, inviteErrorMessage, inviteeIds, type InviteeSelection } from './groups-lib';
 
-interface InviteToClubSheetProps {
-  clubId: string;
-  clubName: string;
-  /** Owner-only: enables the "Reset link" (rotate) control in the QR panel. */
-  canRotateLink: boolean;
+interface InviteToGroupSheetProps {
+  group: GroupDetail;
   open: boolean;
   onClose: () => void;
 }
 
 /**
- * The invite-to-club modal (Figma invite modal 195:17988): a bottom sheet with
- * Copy Link / QR Code / Share actions over a shared invite link, plus the
- * member picker and an "Add" that posts the batch invitation. The link lives at
- * the sheet level so reopening reuses the same URL; the body (picker + roster
- * exclusion) mounts only while open. Mirrors member-web's InviteToClubSheet.
+ * The invite-to-group modal (Figma invite modal 195:17988): Copy Link / QR
+ * Code / Share over the group's invite link, plus the member picker and an
+ * "Add" that sends the invitations. The link is the app's own deep link (see
+ * groupJoinUrl): Clutch has no web page for group links yet, so the QR only
+ * works for someone who already has the app.
  */
-export function InviteToClubSheet({ clubId, clubName, canRotateLink, open, onClose }: InviteToClubSheetProps) {
-  const { memberId } = useSession();
+export function InviteToGroupSheet({ group, open, onClose }: InviteToGroupSheetProps) {
+  const { userId } = useSession();
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const inviteKey = useMutationKey();
 
-  const link = useClubInviteLink(clubId);
-  const [selection, setSelection] = useState<InviteSelection>(EMPTY_INVITE_SELECTION);
+  const link = useGroupInviteLink(group.id);
+  const [selection, setSelection] = useState<InviteeSelection>(EMPTY_SELECTION);
   const [qrOpen, setQrOpen] = useState(false);
+  // Rotating revokes every shared link: Clutch lets only the owner do it.
+  const canRotate = group.my_role === 'owner';
 
-  // Reset the picker + QR panel each time the sheet opens.
+  // Reset the picker and the QR panel each time the sheet opens.
   useEffect(() => {
     if (open) {
-      setSelection(EMPTY_INVITE_SELECTION);
+      setSelection(EMPTY_SELECTION);
       setQrOpen(false);
     }
   }, [open]);
 
-  const roster = useQuery({ ...clubMembersQuery(clubId), enabled: open });
-  const excludeMemberIds = [
-    ...(memberId ? [memberId] : []),
-    ...(roster.data ?? []).map((entry) => entry.memberId),
-  ];
+  const excludeUserIds = useMemo<UserId[]>(
+    () => [...(userId ? [userId] : []), ...group.members.map((m) => m.user_id)],
+    [userId, group.members],
+  );
 
   const invite = useMutation({
-    mutationFn: () => api.inviteClubMembers(clubId, selection.members.map((member) => member.id)),
+    mutationFn: (userIds: UserId[]) =>
+      inviteKey.run({ id: group.id, userIds }, (k) =>
+        clutch.groups.invite(group.id, userIds, { idempotencyKey: k }),
+      ),
     onSuccess: (result) => {
-      setSelection(EMPTY_INVITE_SELECTION);
+      setSelection(EMPTY_SELECTION);
       toast({
         variant: 'success',
         message:
           result.invited.length === 0
-            ? 'Those members are already in the club or already invited.'
+            ? 'Those players are already in the group or already invited.'
             : `${
                 result.invited.length === 1 ? '1 invite' : `${result.invited.length} invites`
               } sent, pending acceptance.`,
       });
-      // The roster only reflects invites after acceptance, but re-reading keeps
-      // an "already invited" filter honest if the sheet is reopened.
-      void queryClient.invalidateQueries({ queryKey: ['clubs', clubId, 'members'] });
+      invalidateGroups(queryClient);
       onClose();
     },
-    onError: () => {
-      toast({ variant: 'error', message: 'We could not send those invites. Try again.' });
+    onError: (error) => {
+      toast({ variant: 'error', message: inviteErrorMessage(error) });
     },
   });
 
   const rotate = useMutation({
-    mutationFn: () => link.reset(),
+    mutationFn: () => link.rotate(),
     onSuccess: () => {
       setQrOpen(true);
       toast({ variant: 'success', message: 'New invite link created. Older links no longer work.' });
@@ -104,10 +104,10 @@ export function InviteToClubSheet({ clubId, clubName, canRotateLink, open, onClo
   };
 
   const shareUrl = async (url: string) => {
-    await Share.share({ title: `Join ${clubName} on Club70`, message: url, url });
+    await Share.share({ title: `Join ${group.name} on Club70`, message: url, url });
   };
 
-  const selectedCount = selection.members.length;
+  const selectedCount = selection.length;
 
   const requestClose = () => {
     if (!invite.isPending) onClose();
@@ -126,7 +126,7 @@ export function InviteToClubSheet({ clubId, clubName, canRotateLink, open, onClo
         >
           <Text style={styles.headerSide}>Close</Text>
         </Pressable>
-        <Text style={styles.headerTitle}>Invite to Club</Text>
+        <Text style={styles.headerTitle}>Invite to Group</Text>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={
@@ -135,7 +135,7 @@ export function InviteToClubSheet({ clubId, clubName, canRotateLink, open, onClo
               : 'Add players'
           }
           accessibilityState={{ disabled: selectedCount === 0 || invite.isPending }}
-          onPress={() => invite.mutate()}
+          onPress={() => invite.mutate(inviteeIds(selection))}
           disabled={selectedCount === 0 || invite.isPending}
           hitSlop={8}
         >
@@ -176,7 +176,7 @@ export function InviteToClubSheet({ clubId, clubName, canRotateLink, open, onClo
           {qrOpen && link.url ? (
             <View
               style={styles.qrPanel}
-              accessibilityLabel={`Invite QR code for ${clubName}. The link is shown below the code.`}
+              accessibilityLabel={`Invite QR code for ${group.name}. The link is shown below the code.`}
             >
               <QRCode value={link.url} size={180} />
               <Text style={styles.qrUrl} selectable numberOfLines={2}>
@@ -184,7 +184,7 @@ export function InviteToClubSheet({ clubId, clubName, canRotateLink, open, onClo
               </Text>
               <View style={styles.qrActions}>
                 <PrimaryButton label="Copy link" variant="secondary" onPress={() => void withLink(copyUrl)} />
-                {canRotateLink ? (
+                {canRotate ? (
                   <PrimaryButton
                     label="Reset link"
                     variant="ghost"
@@ -193,7 +193,7 @@ export function InviteToClubSheet({ clubId, clubName, canRotateLink, open, onClo
                   />
                 ) : null}
               </View>
-              {canRotateLink ? (
+              {canRotate ? (
                 <Text style={styles.qrHint}>
                   Resetting creates a fresh link and revokes every previously shared one.
                 </Text>
@@ -208,10 +208,10 @@ export function InviteToClubSheet({ clubId, clubName, canRotateLink, open, onClo
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
           >
-            <ClubMemberPicker
+            <MemberPicker
               selection={selection}
               onSelectionChange={setSelection}
-              excludeMemberIds={excludeMemberIds}
+              excludeUserIds={excludeUserIds}
             />
           </ScrollView>
         </>

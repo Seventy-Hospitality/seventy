@@ -1,19 +1,17 @@
 /**
- * Cover-photo picker for the create/edit club flows (M5). Wraps
- * expo-image-picker (camera or library) with the same client-side validation
- * member-web runs before upload (accepted type + 5 MB cap), so the member sees
- * an inline message rather than a backend 413/422. The picked image is held as
- * a { uri, name, type, size } ready for api.uploadClubCover's multipart body.
+ * Cover-photo picker for the create / edit group flows. Wraps expo-image-picker
+ * (camera or library) with the checks Clutch runs on upload (accepted type,
+ * 5 MB cap), so the member sees an inline message instead of a refusal. The
+ * picked image is an UploadFile (plus its size) ready for
+ * clutch.groups.uploadCover.
  */
 import { useCallback, useState } from 'react';
 import { Alert } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import { coverImageError } from './clubs-lib';
+import type { UploadFile } from '../../lib/clutch';
+import { coverImageError } from './groups-lib';
 
-export interface CoverImage {
-  uri: string;
-  name: string;
-  type: string;
+export interface CoverImage extends UploadFile {
   size: number | null;
 }
 

@@ -2,53 +2,50 @@ import { useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
-import type { MemberSearchResult } from '../../lib/api';
+import type { PlayerSearchResult, UserId } from '../../lib/clutch';
 import { Avatar, Chip, EmptyStateView, PrimaryButton, Skeleton } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
+import { playerSearchQuery } from './groups-data';
 import {
-  isMemberSelected,
-  removeInviteMember,
-  toggleInviteMember,
-  type InviteSelection,
-} from '../reserve/invites';
-import { clubDirectoryQuery } from './clubs-data';
-import { memberDisplayName, memberNumberLabel } from './clubs-lib';
+  isSelected,
+  personHandle,
+  personName,
+  removeInvitee,
+  toggleInvitee,
+  type InviteeSelection,
+} from './groups-lib';
 
 const SEARCH_DEBOUNCE_MS = 250;
 
-interface ClubMemberPickerProps {
-  selection: InviteSelection;
-  onSelectionChange: (selection: InviteSelection) => void;
-  /** Members already in the club (and the viewer) are not selectable. */
-  excludeMemberIds?: string[];
+interface MemberPickerProps {
+  selection: InviteeSelection;
+  onSelectionChange: (selection: InviteeSelection) => void;
+  /** People already in the group (and the viewer) are not selectable. */
+  excludeUserIds?: readonly UserId[];
 }
 
 /**
- * Member-only invite picker for the clubs surface (Figma invite-players
- * 95:4294 / invite modal 195:17988): search by name or member ID, removable
- * chips for the picks, and a check-toggle per directory row. Reuses the shared
- * invite-selection logic (src/features/reserve/invites) so clubs only ever
- * carry `selection.members` (no club "Add all" rows, since you invite people to
- * a club, not clubs to a club). Mirrors member-web's ClubMemberPicker, native.
+ * Pick fellow club members to invite to a group (Figma invite-players 95:4294 /
+ * invite modal 195:17988): search by name, removable chips for the picks, and
+ * a check-toggle per row. Results come from Clutch's member-facing player
+ * search (PENDING P4), which returns only fellow members of this club and only
+ * what a member may see of them; the admin roster is never used.
  */
-export function ClubMemberPicker({
+export function MemberPicker({
   selection,
   onSelectionChange,
-  excludeMemberIds = [],
-}: ClubMemberPickerProps) {
+  excludeUserIds = [],
+}: MemberPickerProps) {
   const [query, setQuery] = useState('');
   const debouncedQuery = useDebouncedValue(query.trim(), SEARCH_DEBOUNCE_MS);
   const searching = debouncedQuery.length > 0;
 
-  const directory = useQuery(clubDirectoryQuery(debouncedQuery));
+  const directory = useQuery(playerSearchQuery(debouncedQuery));
 
-  const excluded = useMemo(
-    () => new Set(excludeMemberIds.filter(Boolean)),
-    [excludeMemberIds],
-  );
+  const excluded = useMemo(() => new Set<UserId>(excludeUserIds), [excludeUserIds]);
 
-  const players: MemberSearchResult[] = useMemo(
-    () => (directory.data ?? []).filter((member) => !excluded.has(member.id)),
+  const players: PlayerSearchResult[] = useMemo(
+    () => (directory.data ?? []).filter((player) => !excluded.has(player.user_id)),
     [directory.data, excluded],
   );
 
@@ -58,9 +55,9 @@ export function ClubMemberPicker({
         <Ionicons name="search" size={18} color={colors.textMuted} />
         <TextInput
           style={styles.searchInput}
-          placeholder="Search by name or member ID"
+          placeholder="Search members by name"
           placeholderTextColor={colors.textSubtle}
-          accessibilityLabel="Search by name or member ID"
+          accessibilityLabel="Search members by name"
           value={query}
           onChangeText={setQuery}
           autoCapitalize="none"
@@ -69,13 +66,13 @@ export function ClubMemberPicker({
         />
       </View>
 
-      {selection.members.length > 0 ? (
+      {selection.length > 0 ? (
         <View style={styles.chipRow} accessibilityLabel="Selected players">
-          {selection.members.map((member) => (
+          {selection.map((player) => (
             <Chip
-              key={member.id}
-              label={memberDisplayName(member)}
-              onRemove={() => onSelectionChange(removeInviteMember(selection, member.id))}
+              key={player.user_id}
+              label={personName(player)}
+              onRemove={() => onSelectionChange(removeInvitee(selection, player.user_id))}
             />
           ))}
         </View>
@@ -99,18 +96,18 @@ export function ClubMemberPicker({
           title={searching ? 'No members found' : 'No members to invite'}
           description={
             searching
-              ? 'No member matches that name or ID.'
-              : 'Search for members by name or member ID to invite them.'
+              ? 'No club member matches that name.'
+              : 'Search for club members by name to invite them.'
           }
         />
       ) : (
         <View style={styles.list}>
-          {players.map((member) => (
+          {players.map((player) => (
             <PlayerRow
-              key={member.id}
-              member={member}
-              selected={isMemberSelected(selection, member.id)}
-              onToggle={() => onSelectionChange(toggleInviteMember(selection, member))}
+              key={player.user_id}
+              player={player}
+              selected={isSelected(selection, player.user_id)}
+              onToggle={() => onSelectionChange(toggleInvitee(selection, player))}
             />
           ))}
         </View>
@@ -120,15 +117,16 @@ export function ClubMemberPicker({
 }
 
 function PlayerRow({
-  member,
+  player,
   selected,
   onToggle,
 }: {
-  member: MemberSearchResult;
+  player: PlayerSearchResult;
   selected: boolean;
   onToggle: () => void;
 }) {
-  const name = memberDisplayName(member);
+  const name = personName(player);
+  const handle = personHandle(player);
   return (
     <Pressable
       accessibilityRole="checkbox"
@@ -137,12 +135,12 @@ function PlayerRow({
       onPress={onToggle}
       style={({ pressed }) => [styles.row, pressed ? styles.rowPressed : null]}
     >
-      <Avatar name={name} src={member.avatarUrl} size="md" />
+      <Avatar name={name} src={player.avatar_url} size="md" />
       <View style={styles.rowText}>
         <Text style={styles.rowTitle} numberOfLines={1}>
           {name}
         </Text>
-        <Text style={styles.rowSubtitle}>{memberNumberLabel(member.memberNumber)}</Text>
+        {handle ? <Text style={styles.rowSubtitle}>{handle}</Text> : null}
       </View>
       <View style={[styles.check, selected ? styles.checkSelected : null]}>
         {selected ? <Ionicons name="checkmark" size={16} color={colors.textOnAccent} /> : null}

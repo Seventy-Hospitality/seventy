@@ -5,30 +5,51 @@ import { useRouter } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
-import { api, ApiError, type ClubDetail, type MyClub } from '../../lib/api';
-import { EmptyStateView, PrimaryButton, Sheet, Skeleton, useToast } from '../../components';
+import {
+  clutch,
+  useMutationKey,
+  type GroupDetail,
+  type GroupId,
+  type GroupSummary,
+} from '../../lib/clutch';
+import { groupQuery, queryKeys } from '../../lib/queries';
+import {
+  EmptyStateView,
+  PrimaryButton,
+  SegmentedControl,
+  Sheet,
+  Skeleton,
+  useToast,
+  type SegmentedOption,
+} from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
-import { memberCountLabel, roleLabel } from './clubs-lib';
-import { clubActivityQuery, clubQuery, useClubInviteLink } from './clubs-data';
-import { ClubActivityRow } from './ClubActivityRow';
-import { InviteToClubSheet } from './InviteToClubSheet';
-import { EditClubSheet } from './EditClubSheet';
+import { isGroupGone, leaveErrorMessage, memberCountLabel, roleLabel } from './groups-lib';
+import { groupActivityQuery, invalidateGroups, useGroupInviteLink } from './groups-data';
+import { GroupActivityRow } from './GroupActivityRow';
+import { InviteToGroupSheet } from './InviteToGroupSheet';
+import { EditGroupSheet } from './EditGroupSheet';
+
+type ActivityFilter = 'upcoming' | 'past';
+
+const ACTIVITY_FILTERS: readonly SegmentedOption<ActivityFilter>[] = [
+  { value: 'upcoming', label: 'Upcoming' },
+  { value: 'past', label: 'Past' },
+];
 
 /**
- * Club detail (Figma club-detail 99:5623 / 105:5927): the cover hero, the
- * Members / Invite / Share / Book action bar, and the group-activity feed.
- * Owner/member actions render off the backend permission flags, never off the
- * role directly. Outsiders get the backend's 404 shape (a club you are not in
- * looks identical to one that does not exist). Mirrors member-web's
- * ClubDetailPage, native.
+ * Group detail (Figma club-detail 99:5623 / 105:5927): the cover hero, the
+ * Members / Invite / Share / Book action bar, and the group's bookings.
+ * Actions render off Clutch's permission flags, never off the role. A group
+ * the caller is not in looks exactly like one that does not exist, and so
+ * does a group at another club (this build is bound to one club).
  */
-export function ClubDetailScreen({ clubId }: { clubId: string }) {
-  const detail = useQuery(clubQuery(clubId));
+export function GroupDetailScreen({ groupId }: { groupId: GroupId }) {
+  const detail = useQuery(groupQuery(groupId));
 
   if (detail.isPending) {
     return (
       <DetailFrame>
-        <View accessibilityLabel="Loading club" style={styles.loading}>
+        <View accessibilityLabel="Loading group" style={styles.loading}>
           <Skeleton height={240} borderRadius={radius.lg} />
           <Skeleton height={120} borderRadius={radius.lg} />
         </View>
@@ -36,30 +57,30 @@ export function ClubDetailScreen({ clubId }: { clubId: string }) {
     );
   }
 
+  if (isGroupGone(detail.error) || (detail.data && detail.data.club_id !== clutch.clubId)) {
+    return (
+      <DetailFrame>
+        <EmptyStateView
+          title="Group not found"
+          description="This group does not exist, was deleted, or you are not a member of it."
+        />
+        <BackToGroupsButton />
+      </DetailFrame>
+    );
+  }
+
   if (detail.isError) {
-    const error = detail.error;
-    if (error instanceof ApiError && (error.status === 404 || error.status === 403)) {
-      return (
-        <DetailFrame>
-          <EmptyStateView
-            title="Club not found"
-            description="This club does not exist, was deleted, or you are not a member of it."
-          />
-          <BackToClubsButton />
-        </DetailFrame>
-      );
-    }
     return (
       <DetailFrame>
         <View style={styles.banner} accessibilityRole="alert">
-          <Text style={styles.bannerText}>We could not load this club.</Text>
+          <Text style={styles.bannerText}>We could not load this group.</Text>
           <PrimaryButton label="Try again" variant="secondary" onPress={() => void detail.refetch()} />
         </View>
       </DetailFrame>
     );
   }
 
-  return <ClubDetailView club={detail.data} />;
+  return <GroupDetailView group={detail.data} />;
 }
 
 /** A minimal framed shell for the loading / error / not-found states. */
@@ -67,20 +88,20 @@ function DetailFrame({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const goBack = () => {
     if (router.canGoBack()) router.back();
-    else router.replace('/(tabs)/clubs');
+    else router.replace('/(tabs)/groups');
   };
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right', 'bottom']}>
       <ScrollView contentContainerStyle={styles.frameContent} showsVerticalScrollIndicator={false}>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Back to clubs"
+          accessibilityLabel="Back to groups"
           onPress={goBack}
           hitSlop={8}
           style={styles.backLink}
         >
           <Ionicons name="chevron-back" size={18} color={colors.textLink} />
-          <Text style={styles.backLinkText}>Back to clubs</Text>
+          <Text style={styles.backLinkText}>Back to groups</Text>
         </Pressable>
         {children}
       </ScrollView>
@@ -88,23 +109,26 @@ function DetailFrame({ children }: { children: React.ReactNode }) {
   );
 }
 
-function BackToClubsButton() {
+function BackToGroupsButton() {
   const router = useRouter();
   return (
     <View style={styles.emptyAction}>
-      <PrimaryButton label="Back to clubs" onPress={() => router.replace('/(tabs)/clubs')} />
+      <PrimaryButton label="Back to groups" onPress={() => router.replace('/(tabs)/groups')} />
     </View>
   );
 }
 
-function ClubDetailView({ club }: { club: ClubDetail }) {
+function GroupDetailView({ group }: { group: GroupDetail }) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const leaveKey = useMutationKey();
+  const deleteKey = useMutationKey();
 
-  const activity = useQuery(clubActivityQuery(club.id));
-  const link = useClubInviteLink(club.id);
+  const [filter, setFilter] = useState<ActivityFilter>('upcoming');
+  const activity = useQuery(groupActivityQuery(group.id, filter));
+  const link = useGroupInviteLink(group.id);
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [leaveOpen, setLeaveOpen] = useState(false);
@@ -112,69 +136,63 @@ function ClubDetailView({ club }: { club: ClubDetail }) {
   const [editOpen, setEditOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
 
-  const { canEdit, canDelete, canInvite, canLeave, canManageMembers } = club.permissions;
+  const { can_edit: canEdit, can_delete: canDelete, can_invite: canInvite, can_leave: canLeave } =
+    group.permissions;
   const hasMenu = canEdit || canDelete || canLeave;
 
-  const goToClubs = useCallback(() => {
+  const goToGroups = useCallback(() => {
     if (router.canGoBack()) router.back();
-    else router.replace('/(tabs)/clubs');
+    else router.replace('/(tabs)/groups');
   }, [router]);
 
   const share = useCallback(async () => {
     try {
       const url = await link.ensureUrl();
-      await Share.share({ title: `Join ${club.name} on Club70`, message: url, url });
+      await Share.share({ title: `Join ${group.name} on Club70`, message: url, url });
     } catch {
       toast({ variant: 'error', message: 'We could not share an invite link. Try again.' });
     }
-  }, [link, club.name, toast]);
+  }, [link, group.name, toast]);
 
   const leave = useMutation({
-    mutationFn: () => api.leaveClub(club.id),
+    mutationFn: () =>
+      leaveKey.run({ leave: group.id }, (k) => clutch.groups.leave(group.id, { idempotencyKey: k })),
     onMutate: async () => {
-      await queryClient.cancelQueries({ queryKey: ['clubs'], exact: true });
-      const previous = queryClient.getQueryData<MyClub[]>(['clubs']);
-      queryClient.setQueryData<MyClub[]>(['clubs'], (rows) =>
-        rows?.filter((row) => row.id !== club.id),
+      await queryClient.cancelQueries({ queryKey: queryKeys.groups, exact: true });
+      const previous = queryClient.getQueryData<GroupSummary[]>(queryKeys.groups);
+      queryClient.setQueryData<GroupSummary[]>(queryKeys.groups, (rows) =>
+        rows?.filter((row) => row.id !== group.id),
       );
       return { previous };
     },
     onSuccess: () => {
       setLeaveOpen(false);
-      queryClient.removeQueries({ queryKey: ['clubs', club.id] });
-      toast({ variant: 'success', message: `You left ${club.name}.` });
-      goToClubs();
+      queryClient.removeQueries({ queryKey: queryKeys.group(group.id) });
+      toast({ variant: 'success', message: `You left ${group.name}.` });
+      goToGroups();
     },
     onError: (error, _vars, context) => {
       setLeaveOpen(false);
-      if (context?.previous) queryClient.setQueryData(['clubs'], context.previous);
-      toast({
-        variant: 'error',
-        message:
-          error instanceof ApiError && error.code === 'OWNER_MUST_TRANSFER'
-            ? 'Transfer ownership to another member before leaving.'
-            : `We could not remove you from ${club.name}. Try again.`,
-      });
+      if (context?.previous) queryClient.setQueryData(queryKeys.groups, context.previous);
+      toast({ variant: 'error', message: leaveErrorMessage(error, group.name) });
     },
-    onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ['clubs'], exact: true });
-    },
+    onSettled: () => invalidateGroups(queryClient),
   });
 
   const remove = useMutation({
-    mutationFn: () => api.deleteClub(club.id),
+    mutationFn: () =>
+      deleteKey.run({ delete: group.id }, (k) => clutch.groups.delete(group.id, { idempotencyKey: k })),
     onSuccess: () => {
       setDeleteOpen(false);
-      queryClient.removeQueries({ queryKey: ['clubs', club.id] });
-      void queryClient.invalidateQueries({ queryKey: ['clubs'], exact: true });
-      void queryClient.invalidateQueries({ queryKey: ['home'] });
-      toast({ variant: 'success', message: `${club.name} was deleted.` });
-      goToClubs();
+      queryClient.removeQueries({ queryKey: queryKeys.group(group.id) });
+      invalidateGroups(queryClient);
+      toast({ variant: 'success', message: `${group.name} was deleted.` });
+      goToGroups();
     },
     onError: () => {
       setDeleteOpen(false);
-      toast({ variant: 'error', message: 'We could not delete this club. Try again.' });
-      void queryClient.invalidateQueries({ queryKey: ['clubs', club.id] });
+      toast({ variant: 'error', message: 'We could not delete this group. Try again.' });
+      invalidateGroups(queryClient);
     },
   });
 
@@ -183,8 +201,8 @@ function ClubDetailView({ club }: { club: ClubDetail }) {
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         {/* ── Cover hero ── */}
         <View style={styles.hero}>
-          {club.coverImageUrl ? (
-            <Image source={club.coverImageUrl} style={styles.cover} contentFit="cover" />
+          {group.cover_image_url ? (
+            <Image source={group.cover_image_url} style={styles.cover} contentFit="cover" />
           ) : (
             <View style={[styles.cover, styles.coverFallback]}>
               <Ionicons name="people" size={64} color={colors.surfaceMuted} />
@@ -193,9 +211,9 @@ function ClubDetailView({ club }: { club: ClubDetail }) {
           <View style={styles.heroShade} />
 
           <View style={[styles.heroChrome, { paddingTop: insets.top + spacing.xs }]}>
-            <HeroButton icon="chevron-back" label="Back to clubs" onPress={goToClubs} />
+            <HeroButton icon="chevron-back" label="Back to groups" onPress={goToGroups} />
             {hasMenu ? (
-              <HeroButton icon="ellipsis-vertical" label="Club actions" onPress={() => setMenuOpen(true)} />
+              <HeroButton icon="ellipsis-vertical" label="Group actions" onPress={() => setMenuOpen(true)} />
             ) : (
               <View style={styles.heroButtonSpacer} />
             )}
@@ -203,27 +221,25 @@ function ClubDetailView({ club }: { club: ClubDetail }) {
 
           <View style={styles.heroText}>
             <Text style={styles.heroName} numberOfLines={2}>
-              {club.name}
+              {group.name}
             </Text>
             <Text
               style={styles.heroMeta}
-              accessibilityLabel={`${memberCountLabel(club.memberCount)}, your role: ${roleLabel(
-                club.myRole,
-              )}`}
+              accessibilityLabel={`${memberCountLabel(group.member_count)}, your role: ${roleLabel(group.my_role)}`}
             >
-              {memberCountLabel(club.memberCount)}
+              {memberCountLabel(group.member_count)}
               <Text style={styles.heroMetaSep}>{'   |   '}</Text>
-              {roleLabel(club.myRole)}
+              {roleLabel(group.my_role)}
             </Text>
           </View>
         </View>
 
         <View style={styles.body}>
-          {club.description ? <Text style={styles.description}>{club.description}</Text> : null}
+          {group.description ? <Text style={styles.description}>{group.description}</Text> : null}
 
           {/* ── Action bar ── */}
-          <View style={styles.actionBar} accessibilityLabel="Club quick actions">
-            <ActionButton icon="people-outline" label="Members" onPress={() => router.push(`/clubs/${club.id}/members`)} />
+          <View style={styles.actionBar} accessibilityLabel="Group quick actions">
+            <ActionButton icon="people-outline" label="Members" onPress={() => router.push(`/groups/${group.id}/members`)} />
             {canInvite ? (
               <ActionButton icon="person-add-outline" label="Invite" onPress={() => setInviteOpen(true)} />
             ) : null}
@@ -231,7 +247,7 @@ function ClubDetailView({ club }: { club: ClubDetail }) {
             <ActionButton
               icon="calendar-outline"
               label="Book"
-              accessibilityLabel={`Book for ${club.name}`}
+              accessibilityLabel={`Book a court for ${group.name}`}
               onPress={() => router.push('/(tabs)/reserve')}
             />
           </View>
@@ -240,6 +256,12 @@ function ClubDetailView({ club }: { club: ClubDetail }) {
           <Text accessibilityRole="header" style={styles.sectionTitle}>
             Group activity
           </Text>
+          <SegmentedControl
+            label="Group activity"
+            options={ACTIVITY_FILTERS}
+            value={filter}
+            onChange={setFilter}
+          />
 
           {activity.isPending ? (
             <View style={styles.list} accessibilityLabel="Loading group activity">
@@ -254,23 +276,27 @@ function ClubDetailView({ club }: { club: ClubDetail }) {
             </View>
           ) : activity.data.length === 0 ? (
             <View style={styles.emptyActivity}>
-              <Text style={styles.emptyActivityText}>No group activity yet</Text>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Create an event"
-                onPress={() => router.push('/(tabs)/reserve')}
-                hitSlop={8}
-              >
-                <Text style={styles.emptyActivityLink}>Create an event</Text>
-              </Pressable>
+              <Text style={styles.emptyActivityText}>
+                {filter === 'upcoming' ? 'No upcoming bookings with the group' : 'No past bookings with the group'}
+              </Text>
+              {filter === 'upcoming' ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Book a court"
+                  onPress={() => router.push('/(tabs)/reserve')}
+                  hitSlop={8}
+                >
+                  <Text style={styles.emptyActivityLink}>Book a court</Text>
+                </Pressable>
+              ) : null}
             </View>
           ) : (
             <View style={styles.list}>
               {activity.data.map((item) => (
-                <ClubActivityRow
-                  key={item.id}
+                <GroupActivityRow
+                  key={item.booking_id}
                   item={item}
-                  onPress={() => router.push(`/reservations/${item.id}`)}
+                  onPress={() => router.push(`/bookings/${item.booking_id}`)}
                 />
               ))}
             </View>
@@ -279,11 +305,11 @@ function ClubDetailView({ club }: { club: ClubDetail }) {
       </ScrollView>
 
       {/* ── Overflow menu ── */}
-      <Sheet open={menuOpen} onClose={() => setMenuOpen(false)} title={club.name}>
+      <Sheet open={menuOpen} onClose={() => setMenuOpen(false)} title={group.name}>
         <View style={styles.menu}>
           {canEdit ? (
             <PrimaryButton
-              label="Edit club"
+              label="Edit group"
               variant="secondary"
               onPress={() => {
                 setMenuOpen(false);
@@ -293,7 +319,7 @@ function ClubDetailView({ club }: { club: ClubDetail }) {
           ) : null}
           {canLeave ? (
             <PrimaryButton
-              label="Leave club"
+              label="Leave group"
               variant="danger"
               onPress={() => {
                 setMenuOpen(false);
@@ -303,7 +329,7 @@ function ClubDetailView({ club }: { club: ClubDetail }) {
           ) : null}
           {canDelete ? (
             <PrimaryButton
-              label="Delete club"
+              label="Delete group"
               variant="danger"
               onPress={() => {
                 setMenuOpen(false);
@@ -313,7 +339,7 @@ function ClubDetailView({ club }: { club: ClubDetail }) {
           ) : null}
           {!canLeave ? (
             <Text style={styles.menuHint}>
-              As the owner you cannot leave this club; transfer ownership to another member first
+              As the owner you cannot leave this group while others are in it; transfer ownership to another member first
               (Members, then the member&apos;s menu).
             </Text>
           ) : null}
@@ -326,21 +352,21 @@ function ClubDetailView({ club }: { club: ClubDetail }) {
         onClose={() => {
           if (!leave.isPending) setLeaveOpen(false);
         }}
-        title="Leave club"
+        title="Leave group"
       >
         <View style={styles.dialogBody}>
           <Text style={styles.dialogText}>
-            Leave {club.name}? You will need a new invitation or invite link to rejoin.
+            Leave {group.name}? You will need a new invitation or invite link to rejoin.
           </Text>
           <View style={styles.dialogActions}>
             <PrimaryButton
-              label="Leave club"
+              label="Leave group"
               variant="danger"
               loading={leave.isPending}
               onPress={() => leave.mutate()}
             />
             <PrimaryButton
-              label="Stay in the club"
+              label="Stay in the group"
               variant="ghost"
               disabled={leave.isPending}
               onPress={() => setLeaveOpen(false)}
@@ -355,22 +381,22 @@ function ClubDetailView({ club }: { club: ClubDetail }) {
         onClose={() => {
           if (!remove.isPending) setDeleteOpen(false);
         }}
-        title="Delete club"
+        title="Delete group"
       >
         <View style={styles.dialogBody}>
           <Text style={styles.dialogText}>
-            Delete {club.name} for {memberCountLabel(club.memberCount).toLowerCase()}? Pending
+            Delete {group.name} for {memberCountLabel(group.member_count).toLowerCase()}? Pending
             invitations and invite links stop working. This cannot be undone.
           </Text>
           <View style={styles.dialogActions}>
             <PrimaryButton
-              label="Delete club"
+              label="Delete group"
               variant="danger"
               loading={remove.isPending}
               onPress={() => remove.mutate()}
             />
             <PrimaryButton
-              label="Keep the club"
+              label="Keep the group"
               variant="ghost"
               disabled={remove.isPending}
               onPress={() => setDeleteOpen(false)}
@@ -379,14 +405,10 @@ function ClubDetailView({ club }: { club: ClubDetail }) {
         </View>
       </Sheet>
 
-      {canEdit ? <EditClubSheet club={club} open={editOpen} onClose={() => setEditOpen(false)} /> : null}
-      <InviteToClubSheet
-        clubId={club.id}
-        clubName={club.name}
-        canRotateLink={canManageMembers}
-        open={inviteOpen}
-        onClose={() => setInviteOpen(false)}
-      />
+      {canEdit ? <EditGroupSheet group={group} open={editOpen} onClose={() => setEditOpen(false)} /> : null}
+      {canInvite ? (
+        <InviteToGroupSheet group={group} open={inviteOpen} onClose={() => setInviteOpen(false)} />
+      ) : null}
     </View>
   );
 }
