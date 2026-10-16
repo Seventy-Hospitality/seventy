@@ -5,7 +5,8 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import type { MockClutch } from '../../lib/clutch/testing';
 import type { CheckinToken } from '../../lib/clutch';
 import { queryKeys } from '../../lib/queries';
-import { checkinRefreshDelay, MemberCardSheet } from '../MemberCardSheet';
+import { clutchError } from '../../lib/clutch/testing';
+import { checkinErrorMessage, checkinRefreshDelay, MemberCardSheet } from '../MemberCardSheet';
 
 jest.mock('../../lib/clutch', () => {
   const actual = jest.requireActual('../../lib/clutch');
@@ -82,5 +83,19 @@ describe('checkinRefreshDelay', () => {
     expect(checkinRefreshDelay(0, 60, 0)).toBe(50_000);
     expect(checkinRefreshDelay(0, 60, 30_000)).toBe(20_000);
     expect(checkinRefreshDelay(0, 5, 0)).toBe(1_000);
+  });
+});
+
+describe('checkinErrorMessage', () => {
+  it('explains a non-member without offering a pointless retry', () => {
+    expect(checkinErrorMessage(clutchError('not_club_member'))).toEqual({
+      message: expect.stringMatching(/membership is active/),
+      retry: false,
+    });
+  });
+
+  it('lets the member retry when check-in is unavailable or the read failed', () => {
+    expect(checkinErrorMessage(clutchError('checkin_unavailable', 503)).retry).toBe(true);
+    expect(checkinErrorMessage(new Error('x')).retry).toBe(true);
   });
 });

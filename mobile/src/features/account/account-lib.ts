@@ -4,11 +4,10 @@
  * price_cents, a payment's amount_cents and refunded_amount_cents); nothing
  * here adds, nets or prorates money. Error copy branches on ClutchError.code.
  */
-import { z } from 'zod';
 import {
-  DeletionBlockerSchema,
+  DeletionBlockersSchema,
   isClutchError,
-  type DeletionBlocker,
+  type DeletionBlockers,
   type PaymentHistoryItem,
   type Profile,
   type SavedPaymentMethod,
@@ -214,18 +213,27 @@ export function avatarErrorMessage(err: unknown): string {
   return clutchErrorMessage(err, 'We could not update your photo. Please try again.');
 }
 
-/** The blockers of a 409 deletion_blocked (P5), or [] when absent or malformed. */
-export function deletionBlockers(details: Record<string, unknown> | undefined): DeletionBlocker[] {
-  const parsed = z.array(DeletionBlockerSchema).safeParse(details?.blockers);
-  return parsed.success ? parsed.data : [];
+/** The blockers in a 409 account_deletion_blocked's details, or null when malformed. */
+export function deletionBlockersFrom(details: Record<string, unknown> | undefined): DeletionBlockers | null {
+  const parsed = DeletionBlockersSchema.safeParse(details);
+  return parsed.success ? parsed.data : null;
 }
 
-/** One blocker as a sentence: Clutch's own explanation, else its code in words. */
-export function blockerSentence(blocker: DeletionBlocker): string {
-  const message = blocker.message.trim();
-  if (message) return message;
-  const words = blocker.code.replace(/_/g, ' ');
-  return `${words.charAt(0).toUpperCase()}${words.slice(1)}.`;
+export function hasDeletionBlockers(blockers: DeletionBlockers): boolean {
+  return blockers.owned_clubs.length > 0 || blockers.managed_children.length > 0;
+}
+
+/** Each blocker as a plain sentence saying what to do about it. */
+export function blockerSentences(blockers: DeletionBlockers): string[] {
+  return [
+    ...blockers.owned_clubs.map(
+      (club) => `You own ${club.club_name}. Hand the club to another owner before deleting your account.`,
+    ),
+    ...blockers.managed_children.map(
+      (child) =>
+        `You are the only guardian of ${child.name}. Add another guardian or close their profile first.`,
+    ),
+  ];
 }
 
 // ── Tier changes ──

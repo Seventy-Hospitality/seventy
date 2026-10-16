@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { clutch } from '../lib/clutch';
+import { clutch, isClutchError } from '../lib/clutch';
 import { queryKeys } from '../lib/queries';
 import { colors, fonts, radius, spacing } from '../theme/tokens';
 import { PrimaryButton } from './PrimaryButton';
@@ -31,6 +31,21 @@ const MIN_REFRESH_DELAY_MS = 1_000;
 export function checkinRefreshDelay(fetchedAtMs: number, ttlSeconds: number, nowMs: number): number {
   const refreshAt = fetchedAtMs + ttlSeconds * 1000 - REFRESH_MARGIN_MS;
   return Math.max(refreshAt - nowMs, MIN_REFRESH_DELAY_MS);
+}
+
+/** Why the check-in code is missing, in words a member can act on. */
+export function checkinErrorMessage(err: unknown): { message: string; retry: boolean } {
+  if (isClutchError(err)) {
+    switch (err.code) {
+      case 'not_club_member':
+        return { message: 'Your check-in code appears once your Club70 membership is active.', retry: false };
+      case 'checkin_unavailable':
+        return { message: 'Check-in codes are not available right now. Show your name at the desk.', retry: true };
+      default:
+        break;
+    }
+  }
+  return { message: 'We could not load your check-in code.', retry: true };
 }
 
 /**
@@ -104,12 +119,15 @@ function MemberCardQr({ memberName }: { memberName: string }) {
   }
 
   if (token.isError) {
+    const { message, retry } = checkinErrorMessage(token.error);
     return (
       <View style={styles.qrFrame} accessibilityRole="alert">
-        <Text style={styles.errorText}>We could not load your check-in code.</Text>
-        <View style={styles.errorAction}>
-          <PrimaryButton label="Try again" variant="secondary" onPress={() => void token.refetch()} />
-        </View>
+        <Text style={styles.errorText}>{message}</Text>
+        {retry ? (
+          <View style={styles.errorAction}>
+            <PrimaryButton label="Try again" variant="secondary" onPress={() => void token.refetch()} />
+          </View>
+        ) : null}
       </View>
     );
   }

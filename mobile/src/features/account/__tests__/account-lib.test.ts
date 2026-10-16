@@ -4,12 +4,13 @@ import { asCardId, asTierId, type PaymentHistoryItem, type SavedPaymentMethod } 
 import { TEST_CLUB_ID } from '../../../lib/clutch/testing';
 import {
   avatarErrorMessage,
-  blockerSentence,
+  blockerSentences,
   canCancel,
   canChangeTier,
   canResume,
   clutchErrorMessage,
-  deletionBlockers,
+  deletionBlockersFrom,
+  hasDeletionBlockers,
   paymentMethodLabel,
   paymentStatusLabel,
   paymentTitle,
@@ -133,12 +134,18 @@ describe('error copy', () => {
     expect(clutchErrorMessage(new Error('boom'), 'fallback')).toBe('fallback');
   });
 
-  it('reads deletion blockers and phrases them', () => {
-    const blockers = deletionBlockers({
-      blockers: [{ code: 'open_dispute', message: 'You have an open payment dispute.' }, { code: 'club_owner', message: '' }],
+  it('reads deletion blockers and phrases each one', () => {
+    const blockers = deletionBlockersFrom({
+      owned_clubs: [{ club_id: TEST_CLUB_ID, club_name: 'Seventy' }],
+      managed_children: [{ link_id: 'l1', name: 'Sam' }],
     });
-    expect(blockers.map(blockerSentence)).toEqual(['You have an open payment dispute.', 'Club owner.']);
-    expect(deletionBlockers({ blockers: 'nope' })).toEqual([]);
-    expect(deletionBlockers(undefined)).toEqual([]);
-  });
+    expect(blockers && hasDeletionBlockers(blockers)).toBe(true);
+    expect(blockers && blockerSentences(blockers)).toEqual([
+      'You own Seventy. Hand the club to another owner before deleting your account.',
+      'You are the only guardian of Sam. Add another guardian or close their profile first.',
+    ]);
+    expect(hasDeletionBlockers({ owned_clubs: [], managed_children: [] })).toBe(false);
+    expect(deletionBlockersFrom({ owned_clubs: 'nope' })).toBeNull();
+    expect(deletionBlockersFrom(undefined)).toBeNull();
+});
 });

@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react-native';
 import type { MockClutch } from '../../../lib/clutch/testing';
-import { clutchError } from '../../../lib/clutch/testing';
+import { clutchError, TEST_CLUB_ID } from '../../../lib/clutch/testing';
 import { DeleteAccountScreen } from '../DeleteAccountScreen';
 import { stepUpMethods } from '../step-up';
 import { renderWithProviders } from './render-account';
@@ -35,13 +35,28 @@ jest.mock('../../../lib/supabase', () => ({
   SupabaseNotConfiguredError: class extends Error {},
 }));
 
+const NO_BLOCKERS = { owned_clubs: [], managed_children: [] };
+
+function stepUp(satisfied: boolean, over: Record<string, unknown> = {}) {
+  return {
+    satisfied,
+    reason: satisfied ? null : 'stale_sign_in',
+    authenticated_at: null,
+    fresh_until: null,
+    max_age_seconds: 300,
+    second_factor_required: false,
+    ...over,
+  };
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
   mockAuth.getUserIdentities.mockResolvedValue({ data: { identities: [{ provider: 'email' }] }, error: null });
   mockAuth.signInWithPassword.mockResolvedValue({ data: { user: { id: 'user-1' } }, error: null });
   mockAuth.signInWithOtp.mockResolvedValue({ data: {}, error: null });
   mockAuth.verifyOtp.mockResolvedValue({ data: { user: { id: 'user-1' } }, error: null });
-  mockClutch.me.deleteAccount.mockResolvedValue({ status: 'deleted' });
+  mockClutch.me.deleteAccount.mockResolvedValue({ deleted: true });
+  mockClutch.me.accountDeletion.mockResolvedValue({ blockers: NO_BLOCKERS, step_up: stepUp(false) });
 });
 
 async function confirmWithPassword() {
@@ -83,21 +98,55 @@ describe('DeleteAccountScreen', () => {
     expect(mockAuth.verifyOtp).toHaveBeenCalledWith({ email: 'alex@example.com', token: '123456', type: 'email' });
   });
 
-  it('lists the blockers Clutch returns and does not sign out', async () => {
+  it('shows blockers up front, before asking anyone to sign in again', async () => {
+    mockClutch.me.accountDeletion.mockResolvedValue({
+      blockers: { owned_clubs: [{ club_id: TEST_CLUB_ID, club_name: 'Seventy' }], managed_children: [] },
+      step_up: stepUp(false),
+    });
+    renderWithProviders(<DeleteAccountScreen />);
+
+    expect(await screen.findByText(/You own Seventy/)).toBeTruthy();
+    expect(screen.queryByLabelText('Password')).toBeNull();
+    expect(mockClutch.me.deleteAccount).not.toHaveBeenCalled();
+  });
+
+  it('deletes without a new sign-in when the session is fresh enough', async () => {
+    mockClutch.me.accountDeletion.mockResolvedValue({ blockers: NO_BLOCKERS, step_up: stepUp(true) });
+    renderWithProviders(<DeleteAccountScreen />);
+
+    fireEvent.press(await screen.findByLabelText('I understand this permanently deletes my account'));
+    fireEvent.press(screen.getByLabelText('Delete my account'));
+
+    await waitFor(() => expect(mockSignOut).toHaveBeenCalled());
+    expect(mockAuth.signInWithPassword).not.toHaveBeenCalled();
+    expect(mockClutch.me.deleteAccount).toHaveBeenCalled();
+  });
+
+  it('lists the blockers a 409 account_deletion_blocked carries and does not sign out', async () => {
     mockClutch.me.deleteAccount.mockRejectedValue(
-      clutchError('deletion_blocked', 409, {
-        blockers: [{ code: 'open_dispute', message: 'A payment dispute is still open.' }],
+      clutchError('account_deletion_blocked', 409, {
+        owned_clubs: [],
+        managed_children: [{ link_id: 'l1', name: 'Sam' }],
       }),
     );
     renderWithProviders(<DeleteAccountScreen />);
     await confirmWithPassword();
 
-    expect(await screen.findByText('A payment dispute is still open.')).toBeTruthy();
+    expect(await screen.findByText(/only guardian of Sam/)).toBeTruthy();
+    expect(mockSignOut).not.toHaveBeenCalled();
+  });
+
+  it('says a refund is still on its way on refunds_pending', async () => {
+    mockClutch.me.deleteAccount.mockRejectedValue(clutchError('refunds_pending', 409));
+    renderWithProviders(<DeleteAccountScreen />);
+    await confirmWithPassword();
+
+    expect(await screen.findByText(/refund is still on its way/)).toBeTruthy();
     expect(mockSignOut).not.toHaveBeenCalled();
   });
 
   it('asks for a fresh sign-in again on step_up_required', async () => {
-    mockClutch.me.deleteAccount.mockRejectedValue(clutchError('step_up_required', 403));
+    mockClutch.me.deleteAccount.mockRejectedValue(clutchError('step_up_required', 403, stepUp(false)));
     renderWithProviders(<DeleteAccountScreen />);
     await confirmWithPassword();
 
