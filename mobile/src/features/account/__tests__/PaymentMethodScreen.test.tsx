@@ -26,7 +26,7 @@ jest.mock('../../../lib/stripe', () => ({
 }));
 
 const CARD = makeSavedCard({ card_exp_month: 9, card_exp_year: 2027 });
-const SETUP = makeSetupIntent({ clientSecret: 'seti_9_secret_x', setupIntentId: 'seti_9' });
+const SETUP = makeSetupIntent({ client_secret: 'seti_9_secret_x', setup_intent_id: 'seti_9' });
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -68,7 +68,7 @@ describe('PaymentMethodScreen', () => {
   });
 
   it('shows no sheet when Clutch runs simulated, and still lets Clutch save by the intent id', async () => {
-    mockClutch.paymentMethods.setupIntent.mockResolvedValue(makeSetupIntent({ clientSecret: null, simulated: true }));
+    mockClutch.paymentMethods.setupIntent.mockResolvedValue(makeSetupIntent({ client_secret: null, simulated: true }));
 
     renderWithProviders(<PaymentMethodScreen />);
     fireEvent.press(await screen.findByLabelText('Add card'));

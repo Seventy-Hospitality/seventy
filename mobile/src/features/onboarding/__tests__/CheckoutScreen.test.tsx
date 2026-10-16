@@ -96,7 +96,7 @@ describe('CheckoutScreen', () => {
   });
 
   it('shows no sheet in simulated mode and still asks Clutch', async () => {
-    mockClutch.membership.subscribe.mockResolvedValue(makeSubscribeResult({ clientSecret: null, simulated: true }));
+    mockClutch.membership.subscribe.mockResolvedValue(makeSubscribeResult({ client_secret: null, simulated: true }));
     mockClutch.membership.confirm.mockResolvedValue(
       makeMembershipConfirm({ activated: false, payment_status: 'none' }),
     );

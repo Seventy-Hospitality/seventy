@@ -10,8 +10,13 @@
  *   P1 feat/expo-push (pushed)          apps/web/app/api/v1/me/devices/route.ts, _shape.ts publicDevice
  *   P5 feat/account-deletion-and-checkin (pushed)
  *                                        apps/web/app/api/v1/me/{account,account/deletion,checkin-token}, _shape.ts
- *   P2 feat/native-payments (NOT pushed) apps/web/app/api/v1/_billing.ts
- *   P4 feat/member-booking-parity (NOT pushed)
+ *   P2 feat/native-payments (pushed)    apps/web/app/api/v1/_billing.ts. Its payment fields are
+ *                                        being renamed to snake_case (client_secret, intent_type,
+ *                                        customer_id, ephemeral_key_secret, stripe_account,
+ *                                        simulated) as it is ported onto P3's contract; the
+ *                                        schemas below use that agreed naming, to be checked at
+ *                                        the final regeneration.
+ *   P4 feat/member-booking-parity (pushed)
  *                                        apps/web/app/api/v1/_booking-contract.ts
  *   main (owned by P2, not in the P3 document): POST /bookings/{id}/payment-intent,
  *                                        GET /me/payment-methods, POST /bookings/{id}/payment-intent/pay
@@ -125,15 +130,15 @@ export const SimulatedPaySchema = z.object({ status: z.string() });
 
 // ─── P2: native payments (_billing.ts) ──────────────────────────────────────
 
-/** What every endpoint that opens Stripe's PaymentSheet returns. */
+/** What every endpoint that opens Stripe's PaymentSheet returns (snake_case per the merge plan). */
 export const SheetBundleSchema = z.object({
-  clientSecret: z.string().nullable(),
-  intentType: z.enum(['payment', 'setup']),
-  customerId: z.string().nullable(),
+  client_secret: z.string().nullable(),
+  intent_type: z.enum(['payment', 'setup']),
+  customer_id: z.string().nullable(),
   /** Present when the request asked for `sheet: true` and Stripe is real. */
-  ephemeralKeySecret: z.string().nullable(),
+  ephemeral_key_secret: z.string().nullable(),
   /** The connected account to initialise Stripe with; null for the platform. */
-  stripeAccount: z.string().nullable(),
+  stripe_account: z.string().nullable(),
   simulated: z.boolean(),
 });
 export type SheetBundle = z.infer<typeof SheetBundleSchema>;
@@ -276,14 +281,14 @@ export const RemovedCardSchema = z.object({
 
 export const SetupIntentSchema = SheetBundleSchema.extend({
   /** Save the card with POST /me/payment-methods { setup_intent_id }. */
-  setupIntentId: z.string(),
+  setup_intent_id: z.string(),
 });
 export type SetupIntent = z.infer<typeof SetupIntentSchema>;
 
 export const BookingCheckoutSchema = SheetBundleSchema.extend({
-  paymentIntentId: z.string(),
-  subtotalCents: z.number().int().nullable(),
-  taxAmountCents: z.number().int().nullable(),
+  payment_intent_id: z.string(),
+  subtotal_cents: z.number().int().nullable(),
+  tax_cents: z.number().int().nullable(),
 });
 export type BookingCheckout = z.infer<typeof BookingCheckoutSchema>;
 
@@ -291,6 +296,7 @@ export type BookingCheckout = z.infer<typeof BookingCheckoutSchema>;
 
 /** A booking as the P4 routes return it. */
 export const ParityBookingSchema = z.object({
+  charge: z.unknown().optional(),
   id: BookingIdSchema,
   club_id: ClubIdSchema,
   court_id: CourtIdSchema,
@@ -311,7 +317,15 @@ export const ParityBookingSchema = z.object({
 export type ParityBooking = z.infer<typeof ParityBookingSchema>;
 
 /** POST /bookings/quote: `total_cents` is what the card is charged (tax included). */
+/**
+ * `charge` is being added to quote, hold and confirm on P4 (what the card
+ * will be or was charged); its shape is not published yet, so it is kept
+ * opaque and nothing reads it until the final regeneration names it.
+ */
+const PendingChargeField = z.unknown().optional();
+
 export const BookingQuoteSchema = z.object({
+  charge: PendingChargeField,
   club_id: ClubIdSchema,
   court_id: CourtIdSchema,
   date: z.string(),
@@ -474,30 +488,59 @@ function customerOf(
 
 /** A P2 bundle (subscribe, change, setup intent, booking checkout) as a SheetIntent. */
 export function bundleToSheet(bundle: SheetBundle, simulatedIntentId: string | null = null): SheetIntent {
-  if (bundle.simulated || !bundle.clientSecret) {
-    return { mode: 'simulated', intentType: bundle.intentType, intentId: simulatedIntentId };
+  if (bundle.simulated || !bundle.client_secret) {
+    return { mode: 'simulated', intentType: bundle.intent_type, intentId: simulatedIntentId };
   }
   return {
     mode: 'stripe',
-    intentType: bundle.intentType,
-    clientSecret: bundle.clientSecret,
-    intentId: intentIdFromClientSecret(bundle.clientSecret),
-    stripeAccount: bundle.stripeAccount,
-    customer: customerOf(bundle.customerId, bundle.ephemeralKeySecret),
+    intentType: bundle.intent_type,
+    clientSecret: bundle.client_secret,
+    intentId: intentIdFromClientSecret(bundle.client_secret),
+    stripeAccount: bundle.stripe_account,
+    customer: customerOf(bundle.customer_id, bundle.ephemeral_key_secret),
   };
+}
+
+function isP2Checkout(c: BookingCheckout | LegacyBookingCheckout): c is BookingCheckout {
+  return 'payment_intent_id' in c;
+}
+
+/** The checkout's intent id, whichever shape it came in. */
+export function checkoutIntentId(c: BookingCheckout | LegacyBookingCheckout): string {
+  return isP2Checkout(c) ? c.payment_intent_id : c.paymentIntentId;
+}
+
+/** The checkout's own subtotal and tax, as Clutch computed them (never summed here). */
+export function checkoutAmounts(c: BookingCheckout | LegacyBookingCheckout): {
+  subtotal_cents: number | null;
+  tax_cents: number | null;
+} {
+  return isP2Checkout(c)
+    ? { subtotal_cents: c.subtotal_cents, tax_cents: c.tax_cents }
+    : { subtotal_cents: c.subtotalCents ?? null, tax_cents: c.taxAmountCents ?? null };
 }
 
 /** A booking checkout (P2 bundle, or main's legacy shape) as a SheetIntent. */
 export function bookingCheckoutToSheet(c: BookingCheckout | LegacyBookingCheckout): SheetIntent {
-  if (c.simulated) return { mode: 'simulated', intentType: 'payment', intentId: c.paymentIntentId };
-  const bundle = 'intentType' in c ? c : null;
+  const intentId = checkoutIntentId(c);
+  if (c.simulated) return { mode: 'simulated', intentType: 'payment', intentId };
+  if (isP2Checkout(c)) {
+    if (!c.client_secret) return { mode: 'simulated', intentType: 'payment', intentId };
+    return {
+      mode: 'stripe',
+      intentType: 'payment',
+      clientSecret: c.client_secret,
+      intentId,
+      stripeAccount: c.stripe_account,
+      customer: customerOf(c.customer_id, c.ephemeral_key_secret),
+    };
+  }
   return {
     mode: 'stripe',
     intentType: 'payment',
-    clientSecret: c.clientSecret as string,
-    intentId: c.paymentIntentId,
+    clientSecret: c.clientSecret,
+    intentId,
     stripeAccount: c.stripeAccount ?? null,
-    customer: bundle ? customerOf(bundle.customerId, bundle.ephemeralKeySecret) : undefined,
   };
 }
 

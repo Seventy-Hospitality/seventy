@@ -198,14 +198,14 @@ function AddCard() {
     await queryClient.invalidateQueries({ queryKey: queryKeys.paymentMethods });
   }
 
-  async function saveWithClutch(setupIntentId: string) {
+  async function saveWithClutch(setup_intent_id: string) {
     try {
-      await saveKey.run(setupIntentId, (k) => clutch.paymentMethods.save(setupIntentId, { idempotencyKey: k }));
+      await saveKey.run(setup_intent_id, (k) => clutch.paymentMethods.save(setup_intent_id, { idempotencyKey: k }));
       setUnsaved(null);
       setNotice('Card added.');
       await refreshList();
     } catch (err) {
-      setUnsaved(setupIntentId);
+      setUnsaved(setup_intent_id);
       setError(billingErrorMessage(err, 'Your card was accepted, but the club could not save it yet. Try again.'));
     }
   }
@@ -227,10 +227,10 @@ function AddCard() {
         setError(billingErrorMessage(err, 'We could not start adding a card. Please try again.'));
         return;
       }
-      const intent = bundleToSheet(bundle, bundle.setupIntentId);
+      const intent = bundleToSheet(bundle, bundle.setup_intent_id);
       if (intent.mode === 'simulated') {
         // Simulated deployments have no Stripe sheet; Clutch still stores the card by the intent id.
-        await saveWithClutch(bundle.setupIntentId);
+        await saveWithClutch(bundle.setup_intent_id);
         return;
       }
       const sheet = await presentSheet(intent, { merchantDisplayName: 'Club70' });
@@ -245,7 +245,7 @@ function AddCard() {
           setError(sheet.message || 'Your card could not be added. Please try again.');
           return;
         case 'completed':
-          await saveWithClutch(bundle.setupIntentId);
+          await saveWithClutch(bundle.setup_intent_id);
           return;
       }
     } finally {

@@ -311,15 +311,15 @@ describe('requests', () => {
   it('asks P2 checkouts for the sheet bundle', async () => {
     const caps = { ...CAPABILITIES, nativePayments: true };
     const bundle = {
-      clientSecret: 'pi_1_secret_x',
-      intentType: 'payment',
-      customerId: 'cus_1',
-      ephemeralKeySecret: 'ek_1',
-      stripeAccount: 'acct_1',
+      client_secret: 'pi_1_secret_x',
+      intent_type: 'payment',
+      customer_id: 'cus_1',
+      ephemeral_key_secret: 'ek_1',
+      stripe_account: 'acct_1',
       simulated: false,
-      paymentIntentId: 'pi_1',
-      subtotalCents: 3000,
-      taxAmountCents: 0,
+      payment_intent_id: 'pi_1',
+      subtotal_cents: 3000,
+      tax_cents: 0,
     };
     const { client, calls } = setup([reply(200, { data: bundle })], undefined, caps);
     await client.bookings.paymentIntent(asBookingId('b1'));

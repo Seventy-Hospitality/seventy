@@ -8,9 +8,11 @@
  * error or a dead end. `clutch.*` refuses with ClutchUnavailableError if a
  * gated call slips through.
  *
- * Today (2026-10-16): P1 expo-push, P3 api-contract and P5
- * account-deletion-and-checkin are pushed; P2 native-payments and P4
- * member-booking-parity are not.
+ * Today (2026-10-16) every branch is pushed but none is deployed to the
+ * Clutch the app talks to. P1 and P5 are on (their routes are final and
+ * small); P2 and P4 stay off until they are merged behind P3's contract
+ * (see MERGE-ORDER: P4 then P3 then P2) and the contract is regenerated,
+ * because their payment fields are still being renamed.
  */
 export const CAPABILITIES = {
   /** P1 feat/expo-push: POST/DELETE /me/devices with the install's device_secret. */
@@ -28,15 +30,10 @@ export const CAPABILITIES = {
   /**
    * P4 feat/member-booking-parity: quote, booking rules per court type,
    * accept/decline, removing a player, member player search, reschedule
-   * quote/payment, players paying their share.
+   * quote/payment, players paying their share, and releasing a hold only
+   * while it is still pending (POST /bookings/{id}/release).
    */
   bookingParity: false,
-  /**
-   * A route that releases a hold only while it is still pending (no Clutch
-   * branch has one yet). Without it the app checks the booking is still
-   * pending right before cancelling a hold.
-   */
-  pendingOnlyHoldRelease: false,
 } as const;
 
 export type Capability = keyof typeof CAPABILITIES;
@@ -50,7 +47,6 @@ export const CAPABILITY_SOURCE: Record<Capability, string> = {
   checkinToken: 'feat/account-deletion-and-checkin',
   nativePayments: 'feat/native-payments',
   bookingParity: 'feat/member-booking-parity',
-  pendingOnlyHoldRelease: '(none yet)',
 };
 
 export class ClutchUnavailableError extends Error {

@@ -110,7 +110,7 @@ describe('ChangeMembershipScreen', () => {
       }),
     );
     mockClutch.membership.change.mockResolvedValue(
-      makeChangeTierResult({ kind: 'downgrade_cancelled', status: 'active', clientSecret: null }),
+      makeChangeTierResult({ kind: 'downgrade_cancelled', status: 'active', client_secret: null }),
     );
 
     renderWithProviders(<ChangeMembershipScreen />);
@@ -160,7 +160,7 @@ describe('changeSheetIntent', () => {
     expect(changeSheetIntent(makeChangeTierResult())).toMatchObject({ mode: 'stripe', intentType: 'payment' });
     expect(changeSheetIntent(makeChangeTierResult({ status: 'active' }))).toBeNull();
     expect(changeSheetIntent(makeChangeTierResult({ kind: 'downgrade_scheduled', status: 'active' }))).toBeNull();
-    expect(changeSheetIntent(makeChangeTierResult({ simulated: true, clientSecret: null }))).toMatchObject({
+    expect(changeSheetIntent(makeChangeTierResult({ simulated: true, client_secret: null }))).toMatchObject({
       mode: 'simulated',
     });
   });

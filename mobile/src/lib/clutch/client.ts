@@ -550,6 +550,21 @@ export function createClutchClient(options: ClutchClientOptions) {
         idempotencyKey: opts?.idempotencyKey,
       }),
 
+    /**
+     * P4: let go of the caller's own UNPAID hold. Only while it is still
+     * pending, under the booking's lock: a booking the server confirmed
+     * meanwhile answers 409 booking_not_pending (details.status).
+     */
+    release: (id: BookingId, opts?: MutationOptions) => {
+      need('bookingParity');
+      return call({
+        method: 'POST',
+        path: `/bookings/${enc(id)}/release`,
+        schema: ParityBookingSchema,
+        idempotencyKey: opts?.idempotencyKey,
+      });
+    },
+
     /** P4: what moving would cost; `payment_required` means pay the difference first. */
     rescheduleQuote: (id: BookingId, move: BookingMove) => {
       need('bookingParity');

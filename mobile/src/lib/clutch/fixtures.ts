@@ -11,6 +11,7 @@ import {
   AnnouncementSchema,
   AvailabilitySlotSchema,
   BookingDetailSchema,
+  BookingDueSchema,
   BookingInvitationSchema,
   BookingRecordSchema,
   BookingSchema,
@@ -543,15 +544,15 @@ export function makeBookingCheckout(over: Over<typeof BookingCheckoutSchema> = {
   return build(
     BookingCheckoutSchema,
     {
-      clientSecret: 'pi_123_secret_abc',
-      intentType: 'payment',
-      customerId: 'cus_123',
-      ephemeralKeySecret: 'ek_123',
-      stripeAccount: 'acct_club',
+      client_secret: 'pi_123_secret_abc',
+      intent_type: 'payment',
+      customer_id: 'cus_123',
+      ephemeral_key_secret: 'ek_123',
+      stripe_account: 'acct_club',
       simulated: false,
-      paymentIntentId: 'pi_123',
-      subtotalCents: 3000,
-      taxAmountCents: 0,
+      payment_intent_id: 'pi_123',
+      subtotal_cents: 3000,
+      tax_cents: 0,
     },
     over,
   );
@@ -679,11 +680,11 @@ import {
 } from './contract.pending';
 
 const SHEET_BUNDLE = {
-  clientSecret: 'pi_sub_secret_abc',
-  intentType: 'payment' as const,
-  customerId: 'cus_123',
-  ephemeralKeySecret: 'ek_123',
-  stripeAccount: 'acct_club',
+  client_secret: 'pi_sub_secret_abc',
+  intent_type: 'payment' as const,
+  customer_id: 'cus_123',
+  ephemeral_key_secret: 'ek_123',
+  stripe_account: 'acct_club',
   simulated: false,
 };
 
@@ -719,7 +720,7 @@ export function makeChangeTierResult(over: Over<typeof ChangeTierResultSchema> =
     ChangeTierResultSchema,
     {
       ...SHEET_BUNDLE,
-      clientSecret: 'pi_up_secret_abc',
+      client_secret: 'pi_up_secret_abc',
       kind: 'upgraded',
       status: 'requires_payment',
       effective_at: null,
@@ -752,9 +753,9 @@ export function makeSetupIntent(over: Over<typeof SetupIntentSchema> = {}) {
     SetupIntentSchema,
     {
       ...SHEET_BUNDLE,
-      clientSecret: 'seti_123_secret_abc',
-      intentType: 'setup',
-      setupIntentId: 'seti_123',
+      client_secret: 'seti_123_secret_abc',
+      intent_type: 'setup',
+      setup_intent_id: 'seti_123',
     } as z.input<typeof SetupIntentSchema>,
     over,
   );
@@ -775,6 +776,162 @@ export function makeDeletionPreview(over: Over<typeof AccountDeletionPreviewSche
         second_factor_required: false,
       },
     } as z.input<typeof AccountDeletionPreviewSchema>,
+    over,
+  );
+}
+
+// ─── Booking parts and P4 booking parity (appended by the bookings area) ────
+
+import {
+  InvitationAnswerSchema,
+  MoveCheckoutSchema,
+  ParityBookingSchema,
+  PlayerRemovalSchema,
+  RescheduleQuoteSchema,
+  ShareCheckoutSchema,
+  ShareSettledSchema,
+} from './contract.pending';
+
+/** One payer's line of a booking's dues (BookingDetail.dues). */
+export function makeBookingDue(over: Over<typeof BookingDueSchema> = {}) {
+  return build(
+    BookingDueSchema,
+    {
+      party: 'booker',
+      user_id: ME_ID,
+      invitation_id: null,
+      live: true,
+      share_cents: 3000,
+      paid_cents: 0,
+      due_cents: 3000,
+    } as z.input<typeof BookingDueSchema>,
+    over,
+  );
+}
+
+const BookingPlayerSchema = BookingDetailSchema.shape.players.element;
+
+/** One row of BookingDetail.players (no names in the contract). */
+export function makeBookingPlayer(over: Over<typeof BookingPlayerSchema> = {}) {
+  return build(
+    BookingPlayerSchema,
+    {
+      user_id: OTHER_ID,
+      status: 'accepted',
+      share_cents: null,
+      payment_status: 'none',
+    } as z.input<typeof BookingPlayerSchema>,
+    over,
+  );
+}
+
+export function makeParityBooking(over: Over<typeof ParityBookingSchema> = {}) {
+  const c = bookingColumns() as Record<string, unknown>;
+  return build(
+    ParityBookingSchema,
+    {
+      id: c.id,
+      club_id: c.club_id,
+      court_id: c.court_id,
+      user_id: c.user_id,
+      date: c.date,
+      start_time: c.start_time,
+      end_time: c.end_time,
+      status: 'confirmed',
+      price_cents: 3000,
+      currency: 'USD',
+      original_price_cents: 3000,
+      discount_amount_cents: 0,
+      discount_code_id: null,
+      payment_status: 'paid',
+      paid_cents: 3000,
+      hold_expires_at: null,
+    } as z.input<typeof ParityBookingSchema>,
+    over,
+  );
+}
+
+export function makeShareCheckout(over: Over<typeof ShareCheckoutSchema> = {}) {
+  return build(
+    ShareCheckoutSchema,
+    {
+      client_secret: 'pi_share_secret_abc',
+      payment_intent_id: 'pi_share',
+      stripe_account: 'acct_club',
+      simulated: false,
+      subtotal_cents: 1500,
+      tax_cents: 120,
+      total_cents: 1620,
+    },
+    over,
+  );
+}
+
+export function makeShareSettled(over: Over<typeof ShareSettledSchema> = {}) {
+  return build(
+    ShareSettledSchema,
+    {
+      booking_id: BOOKING_ID,
+      payment_intent_id: 'pi_share',
+      my_due_cents: 0,
+      my_paid_cents: 1500,
+    } as z.input<typeof ShareSettledSchema>,
+    over,
+  );
+}
+
+export function makeRescheduleQuote(over: Over<typeof RescheduleQuoteSchema> = {}) {
+  return build(
+    RescheduleQuoteSchema,
+    {
+      booking_id: BOOKING_ID,
+      court_id: COURT_ID,
+      date: '2026-10-21',
+      start_time: '18:00',
+      end_time: '19:00',
+      currency: 'USD',
+      current_price_cents: 3000,
+      new_price_cents: 4000,
+      difference_cents: 1000,
+      tax_cents: 80,
+      total_cents: 1080,
+      payment_required: true,
+    } as z.input<typeof RescheduleQuoteSchema>,
+    over,
+  );
+}
+
+export function makeMoveCheckout(over: Over<typeof MoveCheckoutSchema> = {}) {
+  return build(
+    MoveCheckoutSchema,
+    {
+      move_order_id: 'mo_1',
+      expires_at: '2099-01-01T00:00:00.000Z',
+      client_secret: 'pi_move_secret_abc',
+      payment_intent_id: 'pi_move',
+      stripe_account: 'acct_club',
+      simulated: false,
+      subtotal_cents: 1000,
+      tax_cents: 80,
+      total_cents: 1080,
+      currency: 'USD',
+    },
+    over,
+  );
+}
+
+export function makeInvitationAnswer(over: Over<typeof InvitationAnswerSchema> = {}) {
+  return build(
+    InvitationAnswerSchema,
+    { booking_id: BOOKING_ID, status: 'accepted' } as z.input<typeof InvitationAnswerSchema>,
+    over,
+  );
+}
+
+export function makePlayerRemoval(over: Over<typeof PlayerRemovalSchema> = {}) {
+  return build(
+    PlayerRemovalSchema,
+    { booking_id: BOOKING_ID, user_id: ME_ID, removed: true } as z.input<typeof PlayerRemovalSchema>,
     over,
   );
 }
