@@ -1,80 +1,55 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Seventy Hospitality</title>
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap');
-
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-
-    body {
-      font-family: 'Inter', system-ui, sans-serif;
-      background: #8B9A7B;
-      color: #1E1E1E;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      text-align: center;
-    }
-
-    .page {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 0;
-    }
-
-    .logo {
-      width: 80px;
-      height: auto;
-      margin-bottom: 1.5rem;
-    }
-
-    .tagline {
-      font-size: 0.85rem;
-      font-weight: 400;
-      letter-spacing: 0.25em;
-      text-transform: uppercase;
-      color: #2A2A2A;
-    }
-
-    .email {
-      margin-top: 0.75rem;
-      font-size: 0.8rem;
-      font-weight: 300;
-      letter-spacing: 0.05em;
-    }
-
-    .email a {
-      color: #1E1E1E;
-      text-decoration: none;
-      border-bottom: 1px solid rgba(30, 30, 30, 0.3);
-      padding-bottom: 1px;
-      transition: border-color 0.2s;
-    }
-
-    .email a:hover {
-      border-color: #1E1E1E;
-    }
-  </style>
+  <meta name="description" content="Seventy Hospitality builds hospitality brands with a reason to exist: Club 70, Yumpling and Lenny's Sports Club.">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@300;800&family=Playfair+Display:ital,wght@0,700;1,500;1,600&family=Tenor+Sans&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/site.css">
 </head>
 <body>
-  <div class="page">
-    <svg class="logo" viewBox="3 1 88 104" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <clipPath id="seventy-clip">
-          <rect x="0" y="0" width="91" height="105"/>
-        </clipPath>
-      </defs>
-      <circle cx="56" cy="36" r="30" stroke="#1E1E1E" stroke-width="9" fill="none"/>
-      <path d="M 8,36 L 56,36 L 20,105" stroke="#1E1E1E" stroke-width="9" stroke-linejoin="miter" stroke-linecap="square" fill="none" clip-path="url(#seventy-clip)"/>
-    </svg>
-    <div class="tagline">Coming Soon</div>
-    <div class="email"><a href="mailto:contact@seventyhospitality.com">contact@seventyhospitality.com</a></div>
-  </div>
+<div class="home">
+    <header class="masthead">
+      <a class="masthead__logo" href="index.html"><img src="assets/svg/seventy-logo.svg" alt="Seventy Hospitality" width="226" height="72"></a>
+      <nav aria-label="Main">
+        <ul class="nav">
+          <li><a href="about.html">ABOUT</a></li>
+          <li><a href="team.html">TEAM</a></li>
+          <li><a href="contact.html">CONTACT</a></li>
+        </ul>
+      </nav>
+    </header>
+  <main class="brands">
+    <a class="brand brand--yumpling" href="https://yumpling.com" target="_blank" rel="noopener">
+      <div class="brand__bg" aria-hidden="true"></div>
+      <img class="brand__logo" src="assets/svg/yumpling.svg" alt="Yumpling" width="122" height="70">
+      <div class="brand__info">
+        <p><strong>YUMPLING</strong> is the first Taiwanese fast-casual concept born in New York City. Rooted in family recipes crafted to satisfy everyday cravings, Yumpling serves the best popcorn chicken in the city.</p>
+        <div class="brand__press">as featured in<img src="assets/svg/press.svg" alt="The New York Times, Eater, New York City" width="219" height="49"></div>
+      </div>
+      <span class="brand__link">YUMPLING.COM</span>
+    </a>
+    <a class="brand brand--club70" href="https://club70.com" target="_blank" rel="noopener">
+      <div class="brand__bg" aria-hidden="true"></div>
+      <img class="brand__logo" src="assets/svg/club70.svg" alt="Club 70" width="241" height="80">
+      <div class="brand__info">
+        <p><strong>CLUB 70</strong> is the flagship brand of Seventy Hospitality. Club 70 is a members-only luxury racket club featuring badminton, pickleball, and tennis offerings coming soon to Long Island City.</p>
+      </div>
+      <span class="brand__link">CLUB70.COM</span>
+    </a>
+    <div class="brand brand--lennys" tabindex="0">
+      <div class="brand__bg" aria-hidden="true"></div>
+      <img class="brand__logo" src="assets/svg/lennys.svg" alt="Lenny's" width="158" height="70">
+      <div class="brand__info">
+        <p><strong>LENNY&rsquo;S SPORTS CLUB</strong> is an elevated sports bar built for the modern fan, pairing a best-in-class viewing experience with a seamless sports-betting environment.</p>
+      </div>
+      <span class="brand__link">COMING SOON</span>
+    </div>
+  </main>
+</div>
 </body>
 </html>

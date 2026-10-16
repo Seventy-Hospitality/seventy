@@ -1,0 +1,402 @@
+/* Seventy Hospitality marketing site. Values come from the C70 Design Figma file. */
+
+:root {
+  --green-900: #304333; /* sidebar, home base */
+  --green-850: #314534; /* accordion header */
+  --green-800: #3d5641; /* page background */
+  --green-600: #517056; /* accordion body */
+  --sage: #9dc6a4;      /* secondary text, rules */
+  --lime: #ecfeaa;      /* accent, active */
+  --white: #ffffff;
+
+  --yumpling: #ae2127;
+  --club70: #4a6e50;
+  --lennys: #a37c38;
+
+  --display: "Playfair Display", Georgia, serif;
+  --label: "Tenor Sans", "Helvetica Neue", Arial, sans-serif;
+  --body: "Manrope", "Helvetica Neue", Arial, sans-serif;
+
+  --gutter: 64px;
+  --sidebar: 354px;
+  color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--green-800);
+  color: var(--white);
+  font-family: var(--body);
+  font-weight: 300;
+  -webkit-font-smoothing: antialiased;
+}
+img { display: block; max-width: 100%; }
+a { color: inherit; }
+p { margin: 0; }
+
+/* ---------- Brand mark + nav (shared by the home overlay and the sidebar) ---------- */
+
+.masthead {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 16px;
+}
+.masthead__logo img { width: 226px; height: auto; }
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.nav a {
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+  font-family: var(--label);
+  font-size: 24px;
+  line-height: 28px;
+  color: var(--sage);
+  text-decoration: none;
+  transition: color 0.2s;
+}
+.nav a:hover, .nav a[aria-current="page"] { color: var(--lime); }
+.nav a[aria-current="page"]::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--lime);
+}
+
+/* ---------- Inner pages: content + right sidebar ---------- */
+
+.shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--sidebar);
+  min-height: 100svh;
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100svh;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: var(--gutter);
+  background: var(--green-900);
+}
+
+.footer {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 16px;
+  font-family: var(--label);
+  text-align: right;
+  color: var(--sage);
+}
+.footer__email {
+  font-size: 14px;
+  line-height: 16px;
+  color: var(--lime);
+  text-decoration: none;
+}
+.footer__email:hover { text-decoration: underline; }
+.footer__legal {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 14px;
+  line-height: 16px;
+}
+.footer__legal span { width: 4px; height: 4px; border-radius: 50%; background: var(--sage); }
+.footer__legal a:hover { color: var(--lime); }
+.footer__copy { font-size: 12px; line-height: 14px; }
+
+.content {
+  display: flex;
+  gap: 43px;
+  padding: var(--gutter);
+}
+
+/* Tall rounded photo that fills the viewport height on desktop. */
+.photo {
+  flex: none;
+  width: auto;
+  height: max(560px, calc(100svh - 2 * var(--gutter)));
+  aspect-ratio: 520 / 896;
+  border-radius: 32px;
+  object-fit: cover;
+  object-position: 56% 50%;
+}
+
+.column {
+  display: flex;
+  flex-direction: column;
+  width: 395px;
+  flex: none;
+}
+
+.headline {
+  margin: 0;
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 40px;
+  line-height: 53px;
+  color: var(--white);
+}
+.headline em {
+  font-style: italic;
+  font-weight: 600;
+  color: var(--lime);
+}
+
+.rule {
+  width: 198px;
+  height: 0;
+  margin: 32px 0;
+  border: 0;
+  border-top: 1px solid var(--sage);
+}
+
+.prose {
+  font-size: 18px;
+  line-height: 25px;
+  text-align: justify;
+}
+.prose p + p { margin-top: 25px; }
+
+/* About: text column sits at the bottom, level with the photo. */
+.page-about .column { justify-content: flex-end; }
+
+/* Team: text column on the left, photo on the right. */
+.page-team .column { justify-content: flex-end; }
+
+.team {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  margin-top: 33px;
+}
+.member {
+  border-radius: 12px;
+  background: var(--green-850);
+  overflow: hidden;
+}
+.member__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 75px;
+  padding: 16px;
+  list-style: none;
+  font-family: var(--label);
+}
+.member__head::-webkit-details-marker { display: none; }
+details.member > .member__head { cursor: pointer; }
+.member__name {
+  display: block;
+  font-size: 18px;
+  line-height: 21px;
+  color: var(--lime);
+}
+.member__role {
+  display: block;
+  margin-top: 4px;
+  font-size: 14px;
+  line-height: 16px;
+  color: var(--sage);
+}
+.member__chevron {
+  width: 17px;
+  height: 9px;
+  margin-right: 3px;
+  transition: transform 0.2s;
+}
+details.member[open] .member__chevron { transform: rotate(180deg); }
+.member__bio {
+  padding: 16px;
+  background: var(--green-600);
+  font-size: 16px;
+  line-height: 22px;
+  text-align: justify;
+}
+
+/* Contact: headline anchored bottom-left. */
+.page-contact .content {
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 16px;
+}
+.contact__email {
+  font-family: var(--label);
+  font-size: 18px;
+  line-height: 21px;
+  color: var(--lime);
+  text-decoration: none;
+}
+.contact__email:hover { text-decoration: underline; }
+
+/* ---------- Home: three brand panels ---------- */
+
+.home {
+  position: relative;
+  min-height: 100svh;
+  background: var(--green-900);
+}
+.home .masthead {
+  position: absolute;
+  top: var(--gutter);
+  right: var(--gutter);
+  z-index: 2;
+}
+
+.brands {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  min-height: 100svh;
+}
+
+.brand {
+  --base: var(--green-900);
+  position: relative;
+  overflow: hidden;
+  display: block;
+  min-height: 100svh;
+  color: var(--white);
+  text-decoration: none;
+  background: var(--base);
+  transition: background-color 0.35s;
+}
+.brand + .brand { border-left: 1px solid var(--lime); }
+
+.brand__bg {
+  position: absolute;
+  inset: -30px; /* room for the blur so edges stay solid */
+  background: var(--img) center / cover no-repeat;
+  opacity: var(--rest);
+  transition: opacity 0.35s, filter 0.35s;
+}
+
+.brand__logo {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  translate: -50% -50%;
+  height: auto;
+}
+
+.brand__info,
+.brand__link {
+  position: absolute;
+  left: 50%;
+  translate: -50% 0;
+  text-align: center;
+  opacity: 0;
+  transition: opacity 0.35s;
+}
+.brand__info {
+  top: calc(50% + 113px);
+  width: min(297px, calc(100% - 48px));
+}
+.brand__info p {
+  font-size: 18px;
+  line-height: 25px;
+}
+.brand__info strong { font-weight: 800; color: var(--lime); }
+
+.brand__press {
+  margin-top: 48px;
+  font-family: var(--display);
+  font-style: italic;
+  font-weight: 500;
+  font-size: 14px;
+  line-height: 19px;
+}
+.brand__press img { margin: 8px auto 0; width: 219px; height: auto; }
+
+.brand__link {
+  bottom: 72px;
+  font-family: var(--label);
+  font-size: 14px;
+  line-height: 16px;
+  letter-spacing: 4px;
+  white-space: nowrap;
+  color: var(--lime);
+}
+
+.brand--yumpling { --img: url("img/yumpling.jpg"); --rest: 0.09; --live: 0.2; --tint: var(--yumpling); }
+.brand--club70 { --img: url("img/club70.jpg"); --rest: 0.15; --live: 0.25; --tint: var(--club70); }
+.brand--lennys { --img: url("img/lennys.jpg"); --rest: 0.08; --live: 0.2; --tint: var(--lennys); }
+.brand--yumpling .brand__logo { width: 122px; }
+.brand--club70 .brand__logo { width: 241px; }
+.brand--lennys .brand__logo { width: 158px; }
+
+.brand:hover,
+.brand:focus-visible { background-color: var(--tint); }
+.brand:hover .brand__bg,
+.brand:focus-visible .brand__bg { opacity: var(--live); filter: blur(15px); }
+.brand:hover :is(.brand__info, .brand__link),
+.brand:focus-visible :is(.brand__info, .brand__link) { opacity: 1; }
+.brand:focus-visible { outline: 2px solid var(--lime); outline-offset: -4px; }
+
+/* ---------- Narrow screens ---------- */
+
+@media (max-width: 1100px) {
+  :root { --gutter: 40px; }
+  .content { flex-direction: column; }
+  .page-team .content { flex-direction: column-reverse; }
+  .photo { height: auto; width: 100%; max-width: 520px; aspect-ratio: 520 / 640; }
+  .column { width: 100%; max-width: 520px; }
+}
+
+@media (max-width: 800px) {
+  :root { --gutter: 24px; }
+
+  .shell { display: flex; flex-direction: column; }
+  .sidebar { display: contents; }
+  .sidebar .masthead {
+    order: -1;
+    padding: var(--gutter) 16px 8px;
+    background: var(--green-900);
+  }
+  .sidebar .footer {
+    order: 1;
+    padding: 32px 16px var(--gutter);
+    background: var(--green-900);
+  }
+  .content { padding: 32px 16px 48px; }
+  .page-contact .content { min-height: 40svh; }
+  .masthead__logo img { width: 170px; }
+  .nav { flex-direction: row; gap: 20px; }
+  .nav a { font-size: 18px; line-height: 22px; gap: 8px; }
+  .nav a[aria-current="page"]::before { width: 6px; height: 6px; }
+
+  .headline { font-size: 32px; line-height: 42px; }
+  .prose { font-size: 16px; line-height: 23px; }
+  .photo { aspect-ratio: 4 / 5; }
+
+  /* Home: no hover on phones, so every panel shows its story. */
+  .home .masthead { position: static; padding: var(--gutter) 16px 24px; }
+  .brands { grid-template-columns: 1fr; min-height: 0; }
+  .brand { min-height: 0; padding: 56px 24px 48px; background-color: var(--tint); }
+  .brand + .brand { border-left: 0; border-top: 1px solid var(--lime); }
+  .brand__bg { opacity: var(--live); filter: blur(15px); }
+  .brand__logo,
+  .brand__info,
+  .brand__link { position: static; translate: none; opacity: 1; margin-inline: auto; }
+  .brand__info { width: auto; max-width: 340px; margin-top: 32px; }
+  .brand__link { display: block; margin-top: 40px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; }
+}
