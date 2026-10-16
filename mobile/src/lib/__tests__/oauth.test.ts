@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import {
-  authenticateWithProvider,
+  createRawNonce,
+  getFederatedCredential,
   googleAdapter,
   OAuthNotConfiguredError,
   sha256Hex,
@@ -18,45 +19,48 @@ describe('sha256Hex', () => {
   });
 });
 
-describe('authenticateWithProvider', () => {
-  it('hands the adapter sha256(nonce) and returns the RAW nonce', async () => {
+describe('getFederatedCredential', () => {
+  it('hands the SDK sha256(raw nonce) and returns the RAW nonce for GoTrue', async () => {
     const authenticate = jest.fn(async (hashedNonce: string) => {
       expect(hashedNonce).toBe(sha256('raw-nonce-123'));
-      return { idToken: 'id-token-xyz' };
+      return { idToken: 'id-token-xyz', fullName: { givenName: 'Alex' } };
     });
     const adapter: FederatedAdapter = {
-      provider: 'google',
+      provider: 'apple',
       isConfigured: () => true,
       isAvailable: async () => true,
       authenticate,
     };
-    const fetchNonce = jest.fn(async () => ({ nonce: 'raw-nonce-123' }));
 
-    const result = await authenticateWithProvider(adapter, fetchNonce);
+    const credential = await getFederatedCredential(adapter, () => 'raw-nonce-123');
 
-    expect(fetchNonce).toHaveBeenCalledTimes(1);
     expect(authenticate).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({
-      provider: 'google',
-      idToken: 'id-token-xyz',
-      rawNonce: 'raw-nonce-123',
-      fullName: undefined,
+    expect(credential).toEqual({
+      provider: 'apple',
+      token: 'id-token-xyz',
+      nonce: 'raw-nonce-123',
+      fullName: { givenName: 'Alex' },
     });
   });
 
-  it('throws OAuthNotConfiguredError without ever fetching a nonce', async () => {
-    const fetchNonce = jest.fn(async () => ({ nonce: 'n' }));
+  it('refuses an unconfigured provider without touching its SDK', async () => {
     const adapter: FederatedAdapter = {
-      provider: 'apple',
+      provider: 'google',
       isConfigured: () => false,
       isAvailable: async () => false,
       authenticate: jest.fn(),
     };
+    await expect(getFederatedCredential(adapter)).rejects.toBeInstanceOf(OAuthNotConfiguredError);
+    expect(adapter.authenticate).not.toHaveBeenCalled();
+  });
+});
 
-    await expect(authenticateWithProvider(adapter, fetchNonce)).rejects.toBeInstanceOf(
-      OAuthNotConfiguredError,
-    );
-    expect(fetchNonce).not.toHaveBeenCalled();
+describe('createRawNonce', () => {
+  it('mints a fresh long random value each time', () => {
+    const a = createRawNonce();
+    const b = createRawNonce();
+    expect(a).not.toBe(b);
+    expect(a).toMatch(/^[0-9a-f]{64}$/);
   });
 });
 

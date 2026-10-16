@@ -141,7 +141,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       else void auth.stopAutoRefresh();
     });
     return () => {
-      sub.remove();
+      sub?.remove();
       void auth.stopAutoRefresh();
     };
   }, [configured]);
