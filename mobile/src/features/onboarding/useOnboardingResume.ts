@@ -1,44 +1,41 @@
 /**
- * Combines the session Principal with the GET /api/me/onboarding read into a
- * single resolved onboarding step, so both the app-entry gate
- * (OnboardingEntry) and the onboarding-stack gate (OnboardingLayoutGate)
- * decide routing from one source of truth.
- *
- * emailVerified/memberId come from the authoritative Principal (useSession);
- * the membership + ID-verification facts come from the onboarding read. The
- * pure resolver (onboarding.ts) turns those into the step.
+ * One resolved onboarding step for both gates (app entry and the onboarding
+ * stack), read from Clutch: GET /me always, GET /me/membership only once /me
+ * shows a player's membership at this club.
  */
 import { useQuery } from '@tanstack/react-query';
+import { clutch } from '../../lib/clutch';
+import { meQuery, membershipQuery } from '../../lib/queries';
 import { useSession } from '../../lib/session';
-import { resolveOnboardingStep, type OnboardingStep } from './onboarding';
-import { onboardingQuery } from './queries';
+import { needsSubscription, resolveOnboardingStep, type OnboardingStep } from './onboarding';
 
 export type ResumePhase =
   | { phase: 'loading' }
-  | { phase: 'error'; refetch: () => void }
+  | { phase: 'error'; retry: () => void }
   | { phase: 'ready'; step: OnboardingStep };
 
 export function useOnboardingResume(): ResumePhase {
-  const { status, emailVerified, memberId } = useSession();
-  const enabled = status === 'authenticated';
-  const onboarding = useQuery({ ...onboardingQuery, enabled });
+  const { status } = useSession();
+  const authenticated = status === 'authenticated';
+  const me = useQuery({ ...meQuery, enabled: authenticated });
+  const wantsSubscription = me.data ? needsSubscription(me.data, clutch.clubId) : false;
+  const membership = useQuery({ ...membershipQuery, enabled: authenticated && wantsSubscription });
 
-  if (status === 'loading') return { phase: 'loading' };
+  // Signed out (or still restoring): nothing to resolve; callers redirect.
+  if (!authenticated) return { phase: 'loading' };
 
-  // Signed out: nothing to resolve; callers redirect to auth on their own.
-  // Treat as loading so the gate holds rather than resolving a bogus step.
-  if (status === 'anonymous') return { phase: 'loading' };
+  if (me.isPending) return { phase: 'loading' };
+  if (me.isError) return { phase: 'error', retry: () => void me.refetch() };
 
-  if (onboarding.isPending) return { phase: 'loading' };
-  if (onboarding.isError) {
-    return { phase: 'error', refetch: () => void onboarding.refetch() };
+  if (wantsSubscription) {
+    if (membership.isPending) return { phase: 'loading' };
+    if (membership.isError) return { phase: 'error', retry: () => void membership.refetch() };
   }
 
   const step = resolveOnboardingStep({
-    emailVerified,
-    memberId,
-    membership: onboarding.data.membership,
-    idVerification: onboarding.data.idVerification,
+    me: me.data,
+    clubId: clutch.clubId,
+    subscription: wantsSubscription ? (membership.data?.subscription ?? null) : null,
   });
   return { phase: 'ready', step };
 }

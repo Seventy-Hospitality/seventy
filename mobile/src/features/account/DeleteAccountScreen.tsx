@@ -1,147 +1,168 @@
 /**
- * Delete account (M6), native. Mirrors member-web's DeleteAccountPage: the
- * consequences card, a step-up gate selected by whether the account has a
- * password (current password) or not (an emailed re-auth code), a focus-trapped
- * final confirm, and the blocked state (open dispute / refund in flight). The
- * password/code is never logged. Any 202 response means the deletion saga is
- * running server-side, so we sign out locally and leave.
+ * Delete account: what deletion does, an "I understand" gate, then a fresh
+ * sign-in by the member's own method (password, an emailed code, or Google /
+ * Apple) immediately followed by DELETE /me/account (PENDING P5).
+ *
+ * Clutch's answers:
+ * - 403 step_up_required: the sign-in was not recent enough; ask again.
+ * - 409 deletion_blocked: `details.blockers` (DeletionBlockerSchema) say what
+ *   stands in the way (an open dispute, a refund in flight, owning a club);
+ *   each is shown in plain words.
+ * - success ('deleted' or 'scheduled'): sign out locally.
+ * The password and code never leave this screen except to GoTrue.
  */
 import { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
-import { ApiError, api, type DeleteAccountProof } from '../../lib/api';
+import { authErrorMessage } from '../../lib/auth-errors';
+import { clutch, hasCode, isClutchError, useMutationKey, type DeletionBlocker } from '../../lib/clutch';
+import { OAuthCancelledError } from '../../lib/oauth';
 import { useSession } from '../../lib/session';
-import { FormField, Input, PasswordInput, PrimaryButton, Sheet, Skeleton, useToast } from '../../components';
-import { colors, fonts, radius, spacing, typography } from '../../theme/tokens';
+import { Checkbox, FormField, Input, PasswordInput, PrimaryButton, Skeleton } from '../../components';
+import { colors, radius, spacing, typography } from '../../theme/tokens';
 import { AccountFrame } from './AccountFrame';
-import { authIdentitiesQuery } from './account-data';
-import { formatReasons } from './account-lib';
+import { identitiesQuery } from './account-data';
+import { blockerSentence, clutchErrorMessage, deletionBlockers } from './account-lib';
+import {
+  sendStepUpCode,
+  StepUpWrongAccountError,
+  stepUpMethods,
+  stepUpWithCode,
+  stepUpWithPassword,
+  stepUpWithProvider,
+  type StepUpMethod,
+} from './step-up';
 
 const CONSEQUENCES = [
-  'Cancels your membership immediately, with no refund for the current period.',
-  'Cancels upcoming reservations (refunded per the standard cancellation policy).',
-  'Removes you from clubs and withdraws invitations you sent.',
-  'Anonymizes your profile and retires your member number.',
-  'Signs you out everywhere and permanently disables sign-in.',
+  'Ends your Club70 membership and any tier subscription.',
+  'Cancels your upcoming court bookings under the club cancellation policy.',
+  'Removes you from your groups.',
+  'Removes your profile and signs you out on every device.',
 ];
 
 export function DeleteAccountScreen() {
-  const identities = useQuery(authIdentitiesQuery);
+  const identities = useQuery(identitiesQuery);
 
   return (
     <AccountFrame title="Delete account" backLabel="Back to preferences" backTo="/account/preferences">
-      <View style={styles.consequences}>
-        <Text style={styles.consequencesTitle}>Deleting your account:</Text>
+      <View style={styles.box}>
+        <Text style={styles.strong}>Deleting your account:</Text>
         {CONSEQUENCES.map((line) => (
           <View key={line} style={styles.bulletRow}>
             <Ionicons name="ellipse" size={5} color={colors.textMuted} style={styles.bullet} />
             <Text style={styles.bulletText}>{line}</Text>
           </View>
         ))}
-        <Text style={styles.cannotUndo}>This cannot be undone.</Text>
+        <Text style={styles.strong}>This cannot be undone.</Text>
       </View>
 
       {identities.isPending ? (
         <Skeleton height={160} borderRadius={radius.lg} />
       ) : identities.isError ? (
-        <View style={styles.errorBox} accessibilityRole="alert">
-          <Text style={styles.errorText}>We could not load your confirmation options.</Text>
+        <View style={styles.box} accessibilityRole="alert">
+          <Text style={styles.text}>We could not load your sign-in options.</Text>
           <PrimaryButton label="Try again" variant="secondary" onPress={() => void identities.refetch()} />
         </View>
       ) : (
-        <DeleteAccountFlow hasPassword={identities.data.hasPassword} />
+        <DeleteFlow methods={stepUpMethods(identities.data)} />
       )}
     </AccountFrame>
   );
 }
 
-function DeleteAccountFlow({ hasPassword }: { hasPassword: boolean }) {
-  const router = useRouter();
-  const { principal, signOut } = useSession();
-  const { toast } = useToast();
+/** Thrown when the step-up worked but Clutch refused; carries what to show. */
+class DeleteRefused extends Error {
+  constructor(readonly blockers: DeletionBlocker[] | null, message: string) {
+    super(message);
+  }
+}
 
+function DeleteFlow({ methods }: { methods: StepUpMethod[] }) {
+  const router = useRouter();
+  const { userId, email, signOut } = useSession();
+  const deleteKey = useMutationKey();
+
+  const [understood, setUnderstood] = useState(false);
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
   const [codeSent, setCodeSent] = useState(false);
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [stepUpError, setStepUpError] = useState<string | null>(null);
-  const [blockedReasons, setBlockedReasons] = useState<string[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [blockers, setBlockers] = useState<DeletionBlocker[] | null>(null);
 
-  const proofValue = hasPassword ? password : code;
-  const proofReady = proofValue.trim().length > 0;
-  const proof: DeleteAccountProof = hasPassword
-    ? { password }
-    : { reauthToken: code.trim() };
+  const hasEmail = methods.some((m) => m.kind === 'password');
+  const providers = methods.flatMap((m) => (m.kind === 'federated' ? [m.provider] : []));
 
   const sendCode = useMutation({
-    mutationFn: api.requestReauthEmail,
+    mutationFn: () => sendStepUpCode(email ?? ''),
     onSuccess: () => {
       setCodeSent(true);
-      setStepUpError(null);
+      setError(null);
     },
-    onError: (error) => {
-      setStepUpError(
-        error instanceof ApiError && error.status === 429
-          ? 'Too many codes requested. Please wait 15 minutes and try again.'
-          : 'We could not send the code. Please try again.',
-      );
-    },
+    onError: (err) => setError(authErrorMessage(err, 'We could not send the code. Please try again.')),
   });
 
-  const del = useMutation({
-    mutationFn: (input: DeleteAccountProof) => api.deleteAccount(input),
+  const run = useMutation({
+    mutationFn: async (stepUp: () => Promise<void>) => {
+      if (!userId) throw new Error('Not signed in.');
+      await stepUp();
+      try {
+        return await deleteKey.run('delete-account', (k) => clutch.me.deleteAccount({ idempotencyKey: k }));
+      } catch (err) {
+        if (hasCode(err, 'deletion_blocked')) {
+          throw new DeleteRefused(deletionBlockers(err.details), err.message);
+        }
+        throw err;
+      }
+    },
     onSuccess: async () => {
-      setConfirmOpen(false);
-      toast({ variant: 'success', message: 'Your account has been deleted.' });
+      // The account is gone (or its deletion is scheduled): end the local session.
       try {
         await signOut();
       } finally {
         router.replace('/auth/sign-in');
       }
     },
-    onError: (error) => {
-      setConfirmOpen(false);
-      if (error instanceof ApiError) {
-        if (error.code === 'DELETION_BLOCKED') {
-          const details = error.details as { reasons?: string[] } | undefined;
-          setBlockedReasons(details?.reasons ?? []);
-          return;
-        }
-        if (error.code === 'STEP_UP_FAILED' || error.code === 'STEP_UP_REQUIRED') {
-          setStepUpError(
-            hasPassword
-              ? 'That password is incorrect.'
-              : 'That code was not accepted. It may have expired; send yourself a new one.',
-          );
-          return;
-        }
-        if (error.status === 429) {
-          setStepUpError('Too many attempts. Please wait 15 minutes and try again.');
-          return;
-        }
+    onError: async (err) => {
+      if (err instanceof DeleteRefused) {
+        setBlockers(err.blockers ?? []);
+        return;
       }
-      setStepUpError('Something went wrong. Please try again.');
+      if (err instanceof OAuthCancelledError) return;
+      if (err instanceof StepUpWrongAccountError) {
+        // The session now belongs to that other login: leave it rather than act as it.
+        await signOut();
+        router.replace('/auth/sign-in');
+        return;
+      }
+      if (hasCode(err, 'step_up_required')) {
+        setError('For your security, confirm it is you again, then delete straight away.');
+        return;
+      }
+      setError(
+        isClutchError(err)
+          ? clutchErrorMessage(err, 'We could not delete your account. Please try again.')
+          : authErrorMessage(err, 'We could not confirm it is you. Please try again.'),
+      );
     },
   });
 
-  // ── Blocked state (dispute / refund in flight): replaces the form. ──
-  if (blockedReasons !== null) {
+  if (blockers !== null) {
     return (
-      <View style={styles.blockedBox} accessibilityRole="alert">
-        <Text style={styles.blockedTitle}>We cannot delete your account right now.</Text>
-        {blockedReasons.length > 0 ? (
-          <Text style={styles.blockedBody}>
-            Deletion is blocked by {formatReasons(blockedReasons)}. Once that is resolved you can try
-            again.
-          </Text>
+      <View style={[styles.box, styles.blocked]} accessibilityRole="alert">
+        <Text style={styles.title}>We cannot delete your account yet.</Text>
+        {blockers.length > 0 ? (
+          blockers.map((blocker, i) => (
+            <View key={`${blocker.code}-${i}`} style={styles.bulletRow}>
+              <Ionicons name="ellipse" size={5} color={colors.textMuted} style={styles.bullet} />
+              <Text style={styles.bulletText}>{blockerSentence(blocker)}</Text>
+            </View>
+          ))
         ) : (
-          <Text style={styles.blockedBody}>
-            Deletion is blocked by a pending billing item. Once it resolves you can try again.
-          </Text>
+          <Text style={styles.muted}>Something on your account has to be settled first.</Text>
         )}
-        <Text style={styles.blockedBody}>Contact the club if you need help resolving this.</Text>
+        <Text style={styles.muted}>Once that is resolved you can try again. Contact the club if you need help.</Text>
         <PrimaryButton
           label="Back to preferences"
           variant="secondary"
@@ -151,155 +172,119 @@ function DeleteAccountFlow({ hasPassword }: { hasPassword: boolean }) {
     );
   }
 
-  const submit = () => {
-    if (!proofReady || del.isPending) return;
-    setConfirmOpen(true);
+  const busy = run.isPending;
+  const clearError = () => {
+    if (error) setError(null);
   };
 
   return (
     <View style={styles.form}>
-      {hasPassword ? (
-        <FormField
-          label="Current password"
-          error={stepUpError ?? undefined}
-          hint="Confirm it is really you before we delete anything."
-        >
-          <PasswordInput
-            value={password}
-            onChangeText={(text) => {
-              setPassword(text);
-              if (stepUpError) setStepUpError(null);
-            }}
-            autoComplete="current-password"
-            textContentType="password"
-            placeholder="Your password"
-            hasError={Boolean(stepUpError)}
-            accessibilityLabel="Current password"
+      <Checkbox
+        checked={understood}
+        onChange={setUnderstood}
+        accessibilityLabel="I understand this permanently deletes my account"
+        label={<Text style={styles.checkLabel}>I understand this permanently deletes my account.</Text>}
+      />
+
+      <Text style={styles.muted}>Confirm it is you. Your account is deleted as soon as you do.</Text>
+
+      {error ? (
+        <Text style={styles.error} accessibilityRole="alert">
+          {error}
+        </Text>
+      ) : null}
+
+      {hasEmail && email ? (
+        <View style={styles.box}>
+          <FormField label="Password">
+            <PasswordInput
+              value={password}
+              onChangeText={(text) => {
+                setPassword(text);
+                clearError();
+              }}
+              autoComplete="current-password"
+              textContentType="password"
+              placeholder="Your password"
+              accessibilityLabel="Password"
+            />
+          </FormField>
+          <PrimaryButton
+            label="Delete with password"
+            variant="danger"
+            disabled={!understood || !password}
+            loading={busy}
+            onPress={() => run.mutate(() => stepUpWithPassword(userId ?? '', email, password))}
           />
-        </FormField>
-      ) : (
-        <View style={styles.codeBlock}>
-          <Text style={styles.codeIntro}>
-            {codeSent
-              ? `We emailed a confirmation code to ${principal?.email ?? 'your address'}. It expires in 10 minutes.`
-              : 'Your account has no password, so we confirm it is really you with an emailed code.'}
+        </View>
+      ) : null}
+
+      {hasEmail && email ? (
+        <View style={styles.box}>
+          <Text style={styles.muted}>
+            {codeSent ? `We emailed a 6-digit code to ${email}.` : 'No password? We can email you a code instead.'}
           </Text>
           <PrimaryButton
             label={codeSent ? 'Send a new code' : 'Email me a code'}
             variant="secondary"
+            disabled={!understood}
             loading={sendCode.isPending}
             onPress={() => sendCode.mutate()}
           />
           {codeSent ? (
-            <FormField label="Confirmation code" error={stepUpError ?? undefined}>
-              <Input
-                value={code}
-                onChangeText={(text) => {
-                  setCode(text);
-                  if (stepUpError) setStepUpError(null);
-                }}
-                autoComplete="one-time-code"
-                textContentType="oneTimeCode"
-                autoCapitalize="none"
-                placeholder="Enter the code"
-                hasError={Boolean(stepUpError)}
-                accessibilityLabel="Confirmation code"
+            <>
+              <FormField label="Code">
+                <Input
+                  value={code}
+                  onChangeText={(text) => {
+                    setCode(text);
+                    clearError();
+                  }}
+                  autoComplete="one-time-code"
+                  textContentType="oneTimeCode"
+                  keyboardType="number-pad"
+                  placeholder="123456"
+                  accessibilityLabel="Code"
+                />
+              </FormField>
+              <PrimaryButton
+                label="Delete with code"
+                variant="danger"
+                disabled={!understood || code.trim().length < 6}
+                loading={busy}
+                onPress={() => run.mutate(() => stepUpWithCode(userId ?? '', email, code))}
               />
-            </FormField>
-          ) : stepUpError ? (
-            <Text style={styles.errorText} accessibilityRole="alert">
-              {stepUpError}
-            </Text>
+            </>
           ) : null}
         </View>
-      )}
+      ) : null}
 
-      <View style={styles.actions}>
-        <PrimaryButton
-          label="Delete my account"
-          variant="danger"
-          disabled={!proofReady}
-          loading={del.isPending}
-          onPress={submit}
-        />
-        <PrimaryButton
-          label="Keep my account"
-          variant="ghost"
-          disabled={del.isPending}
-          onPress={() => router.replace('/account/preferences')}
-        />
-      </View>
+      {providers.map((provider) => {
+        const label = provider === 'google' ? 'Google' : 'Apple';
+        return (
+          <PrimaryButton
+            key={provider}
+            label={`Delete with ${label}`}
+            variant="danger"
+            disabled={!understood}
+            loading={busy}
+            onPress={() => run.mutate(() => stepUpWithProvider(userId ?? '', provider))}
+          />
+        );
+      })}
 
-      <Sheet
-        open={confirmOpen}
-        onClose={() => {
-          if (!del.isPending) setConfirmOpen(false);
-        }}
-        title="Delete account"
-      >
-        <View style={styles.dialog}>
-          <View style={styles.dialogHeader}>
-            <Ionicons name="warning" size={22} color={colors.danger} />
-            <Text style={styles.dialogTitle}>
-              This permanently deletes your account, membership, and reservations.
-            </Text>
-          </View>
-          <Text style={styles.dialogHint}>
-            There is no undo and no recovery period. Your member number is retired and your profile is
-            anonymized.
-          </Text>
-          <View style={styles.dialogActions}>
-            <PrimaryButton
-              label="Permanently delete my account"
-              variant="danger"
-              loading={del.isPending}
-              onPress={() => del.mutate(proof)}
-            />
-            <PrimaryButton
-              label="Go back"
-              variant="ghost"
-              disabled={del.isPending}
-              onPress={() => setConfirmOpen(false)}
-            />
-          </View>
-        </View>
-      </Sheet>
+      <PrimaryButton
+        label="Keep my account"
+        variant="ghost"
+        disabled={busy}
+        onPress={() => router.replace('/account/preferences')}
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  consequences: {
-    gap: spacing.sm,
-    padding: spacing.md,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.bgElevated,
-  },
-  consequencesTitle: {
-    ...typography.bodyStrong,
-    color: colors.text,
-  },
-  bulletRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: spacing.sm,
-  },
-  bullet: {
-    marginTop: 7,
-  },
-  bulletText: {
-    flex: 1,
-    ...typography.body,
-    color: colors.textMuted,
-  },
-  cannotUndo: {
-    ...typography.bodyStrong,
-    color: colors.text,
-    marginTop: spacing.xs,
-  },
-  errorBox: {
+  box: {
     gap: spacing.md,
     padding: spacing.md,
     borderRadius: radius.lg,
@@ -307,59 +292,15 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: colors.bgElevated,
   },
-  errorText: {
-    ...typography.body,
-    color: colors.danger,
-  },
-  form: {
-    gap: spacing.lg,
-  },
-  codeBlock: {
-    gap: spacing.md,
-  },
-  codeIntro: {
-    ...typography.body,
-    color: colors.textMuted,
-  },
-  actions: {
-    gap: spacing.sm,
-  },
-  blockedBox: {
-    gap: spacing.md,
-    padding: spacing.md,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.danger,
-    backgroundColor: colors.bgElevated,
-  },
-  blockedTitle: {
-    ...typography.h3,
-    color: colors.text,
-  },
-  blockedBody: {
-    ...typography.body,
-    color: colors.textMuted,
-  },
-  dialog: {
-    gap: spacing.md,
-    paddingBottom: spacing.sm,
-  },
-  dialogHeader: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: spacing.sm,
-  },
-  dialogTitle: {
-    flex: 1,
-    ...typography.bodyStrong,
-    color: colors.text,
-  },
-  dialogHint: {
-    ...typography.body,
-    color: colors.textMuted,
-  },
-  dialogActions: {
-    gap: spacing.sm,
-    marginTop: spacing.xs,
-  },
+  blocked: { borderColor: colors.danger },
+  title: { ...typography.h3, color: colors.text },
+  strong: { ...typography.bodyStrong, color: colors.text },
+  text: { ...typography.body, color: colors.text },
+  muted: { ...typography.body, color: colors.textMuted },
+  error: { ...typography.body, color: colors.danger },
+  bulletRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
+  bullet: { marginTop: 7 },
+  bulletText: { flex: 1, ...typography.body, color: colors.textMuted },
+  form: { gap: spacing.lg },
+  checkLabel: { flex: 1, ...typography.body, color: colors.text },
 });

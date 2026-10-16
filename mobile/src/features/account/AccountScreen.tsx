@@ -1,71 +1,71 @@
 /**
- * Account tab (Figma account main 168:15494), native. Replaces the M0
- * placeholder with the real surface: avatar + camera badge, inline display-name
- * edit, member-since, three lifetime stat tiles, and the account-settings menu
- * (membership card, Claim Clutch coming-soon, billing, preferences, sign out).
- * Mirrors member-web's AccountPage.
+ * Account tab (Figma account main 168:15494): avatar with camera badge,
+ * name + username edit, email, the membership summary, the member QR card,
+ * and the settings menu (membership, billing, payment methods, preferences,
+ * sign out).
+ *
+ * The old "lifetime stats" tiles (courts booked, hours per sport) are gone:
+ * Clutch has no source for them on main, and the app does not tally them
+ * itself. The member number line is gone too: Clutch has no member numbers
+ * (the QR's signed check-in token identifies the member).
  */
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
-import { api, type HomeMember, type LifetimeStats } from '../../lib/api';
-import { useSession } from '../../lib/session';
+import type { MySubscription, Profile } from '../../lib/clutch';
+import { useClub } from '../../lib/club';
+import { meQuery, membershipQuery } from '../../lib/queries';
 import { AppScreen, Avatar, MemberCardSheet, PrimaryButton, Skeleton, useToast } from '../../components';
-import { useVenueTimezone } from '../reserve';
 import { colors, fonts, radius, spacing, typography } from '../../theme/tokens';
-import { profileQuery } from './account-data';
-import {
-  formatHours,
-  memberDisplayName,
-  memberNumberLabel,
-  memberSinceLabel,
-} from './account-lib';
+import { profileDisplayName, subscriptionStatusLine } from './account-lib';
+import { ProfileEditor } from './ProfileEditor';
 import { SettingsGroup, SettingsRow } from './SettingsList';
-import { DisplayNameEditor } from './DisplayNameEditor';
 import { useAvatarUpload } from './useAvatarUpload';
+import { useSignOut } from './useSignOut';
 
 export function AccountScreen() {
-  const profile = useQuery(profileQuery);
+  const me = useQuery(meQuery);
 
   return (
     <AppScreen
       contentStyle={styles.content}
-      refreshing={profile.isRefetching && !profile.isPending}
-      onRefresh={() => void profile.refetch()}
+      refreshing={me.isRefetching && !me.isPending}
+      onRefresh={() => void me.refetch()}
     >
-      {profile.isPending ? (
+      {me.isPending ? (
         <View accessibilityLabel="Loading your account" style={styles.loading}>
           <Skeleton width={96} height={96} borderRadius={radius.pill} />
           <Skeleton width={180} height={26} borderRadius={radius.sm} />
           <Skeleton width={140} height={16} borderRadius={radius.sm} />
-          <Skeleton height={80} borderRadius={radius.lg} />
           <Skeleton height={260} borderRadius={radius.lg} />
         </View>
-      ) : profile.isError ? (
+      ) : me.isError ? (
         <View style={styles.errorBox} accessibilityRole="alert">
           <Text style={styles.errorText}>We could not load your account.</Text>
-          <PrimaryButton label="Try again" variant="secondary" onPress={() => void profile.refetch()} />
+          <PrimaryButton label="Try again" variant="secondary" onPress={() => void me.refetch()} />
         </View>
       ) : (
-        <AccountView member={profile.data.member} stats={profile.data.stats} />
+        <AccountView profile={me.data.profile} />
       )}
     </AppScreen>
   );
 }
 
-function AccountView({ member, stats }: { member: HomeMember; stats: LifetimeStats }) {
+function AccountView({ profile }: { profile: Profile }) {
   const router = useRouter();
-  const timezone = useVenueTimezone();
   const { toast } = useToast();
-  const { signOut } = useSession();
+  const signOut = useSignOut();
   const avatar = useAvatarUpload();
+  const membership = useQuery(membershipQuery);
+  const club = useClub();
 
-  const [editingName, setEditingName] = useState(false);
-  const [qrOpen, setQrOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [cardOpen, setCardOpen] = useState(false);
 
-  const name = memberDisplayName(member);
+  const name = profileDisplayName(profile);
+  const subscription = membership.data?.subscription ?? null;
 
   const signOutMutation = useMutation({
     mutationFn: signOut,
@@ -74,10 +74,9 @@ function AccountView({ member, stats }: { member: HomeMember; stats: LifetimeSta
 
   return (
     <>
-      {/* ── Profile header ── */}
       <View style={styles.header}>
         <View style={styles.avatarWrap}>
-          <Avatar name={name} src={member.avatarUrl} size="xl" />
+          <Avatar name={name} src={profile.avatar_url ?? null} size="xl" />
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Change profile photo"
@@ -87,59 +86,45 @@ function AccountView({ member, stats }: { member: HomeMember; stats: LifetimeSta
             hitSlop={8}
             style={styles.cameraBadge}
           >
-            <Ionicons
-              name={avatar.isUploading ? 'hourglass-outline' : 'camera'}
-              size={16}
-              color={colors.textOnAccent}
-            />
+            <Ionicons name={avatar.isUploading ? 'hourglass-outline' : 'camera'} size={16} color={colors.textOnAccent} />
           </Pressable>
         </View>
 
-        {editingName ? (
-          <DisplayNameEditor member={member} onDone={() => setEditingName(false)} />
+        {editing ? (
+          <ProfileEditor profile={profile} onDone={() => setEditing(false)} />
         ) : (
-          <View style={styles.nameRow}>
-            <Text style={styles.name}>{name}</Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Edit display name"
-              onPress={() => setEditingName(true)}
-              hitSlop={8}
-            >
-              <Ionicons name="pencil" size={18} color={colors.textMuted} />
-            </Pressable>
-          </View>
+          <>
+            <View style={styles.nameRow}>
+              <Text style={styles.name}>{name}</Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Edit profile"
+                onPress={() => setEditing(true)}
+                hitSlop={8}
+              >
+                <Ionicons name="pencil" size={18} color={colors.textMuted} />
+              </Pressable>
+            </View>
+            {profile.username ? <Text style={styles.subtle}>@{profile.username}</Text> : null}
+            {profile.email ? <Text style={styles.subtle}>{profile.email}</Text> : null}
+          </>
         )}
-
-        <Text style={styles.memberSince}>{memberSinceLabel(member.memberSince, timezone)}</Text>
-        <Text style={styles.memberNumber}>{memberNumberLabel(member.memberNumber)}</Text>
       </View>
 
-      {/* ── Lifetime stat tiles ── */}
-      <View style={styles.statRow} accessibilityLabel="Lifetime activity">
-        <StatTile value={String(stats.courtsBooked)} label="Courts booked" />
-        <StatTile value={formatHours(stats.badmintonHours)} label="Badminton hours" />
-        <StatTile value={formatHours(stats.tennisHours)} label="Tennis hours" />
-      </View>
+      <MembershipSummary
+        loading={membership.isPending}
+        failed={membership.isError}
+        subscription={subscription}
+        timezone={club.data?.timezone}
+        onRetry={() => void membership.refetch()}
+        onOpen={() => router.push('/account/change-membership')}
+      />
 
-      {/* ── Account settings menu ── */}
       <SettingsGroup label="Account settings">
-        <SettingsRow icon="qr-code-outline" label="View membership card" onPress={() => setQrOpen(true)} />
-        <SettingsRow
-          icon="videocam-outline"
-          label="Claim Clutch session stats & clips"
-          comingSoon
-        />
-        <SettingsRow
-          icon="calendar-outline"
-          label="Billing history"
-          onPress={() => router.push('/account/billing')}
-        />
-        <SettingsRow
-          icon="options-outline"
-          label="App preferences"
-          onPress={() => router.push('/account/preferences')}
-        />
+        <SettingsRow icon="qr-code-outline" label="View membership card" onPress={() => setCardOpen(true)} />
+        <SettingsRow icon="calendar-outline" label="Billing history" onPress={() => router.push('/account/billing')} />
+        <SettingsRow icon="card-outline" label="Payment methods" onPress={() => router.push('/account/payment-method')} />
+        <SettingsRow icon="options-outline" label="App preferences" onPress={() => router.push('/account/preferences')} />
         <SettingsRow
           icon="log-out-outline"
           label="Sign out"
@@ -150,33 +135,68 @@ function AccountView({ member, stats }: { member: HomeMember; stats: LifetimeSta
       </SettingsGroup>
 
       <MemberCardSheet
-        open={qrOpen}
-        onClose={() => setQrOpen(false)}
+        open={cardOpen}
+        onClose={() => setCardOpen(false)}
         memberName={name}
-        memberNumber={member.memberNumber}
+        detail={subscription?.tier_name ?? null}
       />
     </>
   );
 }
 
-function StatTile({ value, label }: { value: string; label: string }) {
+function MembershipSummary({
+  loading,
+  failed,
+  subscription,
+  timezone,
+  onRetry,
+  onOpen,
+}: {
+  loading: boolean;
+  failed: boolean;
+  subscription: MySubscription | null;
+  timezone?: string;
+  onRetry: () => void;
+  onOpen: () => void;
+}) {
+  if (loading) return <Skeleton height={72} borderRadius={radius.lg} />;
+  if (failed) {
+    return (
+      <View style={styles.errorBox} accessibilityRole="alert">
+        <Text style={styles.errorText}>We could not load your membership.</Text>
+        <PrimaryButton label="Try again" variant="secondary" onPress={onRetry} />
+      </View>
+    );
+  }
+  if (!subscription) {
+    // Uncertain until Clutch P3 (a failed read looks the same), so this only
+    // describes, it never offers anything that moves money.
+    return (
+      <View style={styles.membershipCard}>
+        <Text style={styles.membershipTier}>No membership tier</Text>
+        <Text style={styles.subtle}>Contact the club if this looks wrong.</Text>
+      </View>
+    );
+  }
   return (
-    <View style={styles.statTile} accessibilityLabel={`${value} ${label}`}>
-      <Text style={styles.statValue}>{value}</Text>
-      <Text style={styles.statLabel}>{label}</Text>
-    </View>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`${subscription.tier_name} membership. Manage membership`}
+      onPress={onOpen}
+      style={({ pressed }) => [styles.membershipCard, pressed ? styles.pressed : null]}
+    >
+      <View style={styles.membershipText}>
+        <Text style={styles.membershipTier}>{subscription.tier_name}</Text>
+        <Text style={styles.subtle}>{subscriptionStatusLine(subscription, timezone)}</Text>
+      </View>
+      <Ionicons name="chevron-forward" size={18} color={colors.textSubtle} />
+    </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
-  content: {
-    gap: spacing.xl,
-  },
-  loading: {
-    alignItems: 'center',
-    gap: spacing.md,
-    alignSelf: 'stretch',
-  },
+  content: { gap: spacing.xl },
+  loading: { alignItems: 'center', gap: spacing.md, alignSelf: 'stretch' },
   errorBox: {
     gap: spacing.md,
     padding: spacing.md,
@@ -185,18 +205,9 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: colors.bgElevated,
   },
-  errorText: {
-    ...typography.body,
-    color: colors.text,
-  },
-  header: {
-    alignItems: 'center',
-    gap: spacing.xs,
-  },
-  avatarWrap: {
-    position: 'relative',
-    marginBottom: spacing.xs,
-  },
+  errorText: { ...typography.body, color: colors.text },
+  header: { alignItems: 'center', gap: spacing.xs },
+  avatarWrap: { position: 'relative', marginBottom: spacing.xs },
   cameraBadge: {
     position: 'absolute',
     right: -2,
@@ -210,44 +221,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  nameRow: {
+  nameRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  name: { ...typography.h1, color: colors.text, textAlign: 'center' },
+  subtle: { ...typography.body, color: colors.textMuted },
+  membershipCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.sm,
+    gap: spacing.md,
+    padding: spacing.md,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bgElevated,
   },
-  name: {
-    ...typography.h1,
-    color: colors.text,
-    textAlign: 'center',
-  },
-  memberSince: {
-    ...typography.body,
-    color: colors.textMuted,
-  },
-  memberNumber: {
-    fontFamily: fonts.body,
-    fontSize: 12,
-    letterSpacing: 1,
-    color: colors.textSubtle,
-  },
-  statRow: {
-    flexDirection: 'row',
-    alignSelf: 'stretch',
-  },
-  statTile: {
-    flex: 1,
-    alignItems: 'center',
-    gap: 2,
-  },
-  statValue: {
-    fontFamily: fonts.displayBold,
-    fontSize: 24,
-    color: colors.text,
-  },
-  statLabel: {
-    fontFamily: fonts.body,
-    fontSize: 12,
-    color: colors.textMuted,
-    textAlign: 'center',
-  },
+  pressed: { backgroundColor: colors.surfaceOverlay },
+  membershipText: { flex: 1, gap: 2 },
+  membershipTier: { fontFamily: fonts.displayBold, fontSize: 18, color: colors.text },
 });

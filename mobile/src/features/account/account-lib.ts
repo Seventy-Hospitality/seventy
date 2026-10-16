@@ -1,72 +1,50 @@
 /**
- * Pure presentation + gating helpers for the mobile account surface (M6).
- * Ported 1:1 from member-web (src/pages/account/account-lib.ts and
- * src/lib/membership-change.ts) so the two clients label money, dates,
- * membership status, and plan-change direction identically. Framework-free so
- * the proration direction, the self-serve gates, and the formatters are
- * unit-tested in isolation.
+ * Pure presentation helpers for the account surface, over Clutch's own
+ * shapes. Formatting only: every amount is a number Clutch sent (a tier's
+ * price_cents, a payment's amount_cents and refunded_amount_cents); nothing
+ * here adds, nets or prorates money. Error copy branches on ClutchError.code.
  */
-import type {
-  BillingInterval,
-  BillingTransaction,
-  MembershipStatus,
-  MembershipSummary,
-  TransactionStatus,
-} from '../../lib/api';
+import { z } from 'zod';
+import {
+  DeletionBlockerSchema,
+  isClutchError,
+  type DeletionBlocker,
+  type PaymentHistoryItem,
+  type Profile,
+  type SavedPaymentMethod,
+  type MySubscription,
+} from '../../lib/clutch';
+import { formatCentsExact } from '../onboarding/tier-format';
 
-// Reuse M1's pricing/grouping helpers so the plan cards on the change screen
-// price memberships exactly like onboarding.
 export {
-  formatAmount,
-  formatAmountWithCents,
-  periodSuffix,
-  billingCaption,
-  listBillingPeriods,
-  defaultBillingPeriod,
-  planCardsForPeriod,
-  tierLabel,
-  PERIOD_LABELS,
-  type PlanCard,
-} from '../onboarding/plan-pricing';
-import { formatAmount, formatAmountWithCents } from '../onboarding/plan-pricing';
+  formatCents,
+  formatCentsExact,
+  intervalNoun,
+  intervalSuffix,
+} from '../onboarding/tier-format';
 
-// ── Member identity ──
+// ── Identity ──
 
-/** The custom display name, or the "First Last" fallback (matches the API). */
-export function memberDisplayName(member: {
-  displayName: string | null;
-  firstName: string;
-  lastName: string;
-}): string {
-  const custom = member.displayName?.trim();
-  if (custom) return custom;
-  return `${member.firstName} ${member.lastName}`.trim();
+/** The name to show: full name, else @username, else the email's local part. */
+export function profileDisplayName(profile: Pick<Profile, 'full_name' | 'username' | 'email'>): string {
+  const name = profile.full_name?.trim();
+  if (name) return name;
+  if (profile.username) return `@${profile.username}`;
+  const local = profile.email?.split('@')[0];
+  return local || 'Member';
 }
 
-/** "#U00578" for the member-number line. */
-export function memberNumberLabel(memberNumber: string): string {
-  return `#${memberNumber}`;
+/** Clutch's username rule (updateProfile): 3 to 20 of a-z, 0-9, underscore. */
+export const USERNAME_PATTERN = /^[a-z0-9_]{3,20}$/;
+
+export function normalizeUsername(value: string): string {
+  return value.trim().toLowerCase().replace(/^@/, '');
 }
 
-/** "Member since Mar 2025" (rendered in the venue timezone). */
-export function memberSinceLabel(memberSinceIso: string, timezone: string): string {
-  const label = new Date(memberSinceIso).toLocaleDateString('en-US', {
-    month: 'short',
-    year: 'numeric',
-    timeZone: timezone,
-  });
-  return `Member since ${label}`;
-}
+// ── Dates and cards ──
 
-/** Whole hours as-is, otherwise one decimal ("888", "1.5"). */
-export function formatHours(hours: number): string {
-  return Number.isInteger(hours) ? String(hours) : String(Math.round(hours * 10) / 10);
-}
-
-// ── Dates / cards ──
-
-/** "Mar 12, 2027" (venue timezone). */
-export function instantDateLabel(iso: string, timezone: string): string {
+/** "Mar 12, 2027" in the club's timezone (the device's while the club loads). */
+export function instantDateLabel(iso: string, timezone?: string): string {
   return new Date(iso).toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',
@@ -81,152 +59,186 @@ export function cardExpiryLabel(expMonth: number, expYear: number): string {
   return `${pad(expMonth)}/${pad(expYear % 100)}`;
 }
 
-/** "VISA •••• 4242 · exp 09/27" for the payment-method row. */
-export function paymentMethodLabel(pm: {
-  brand: string;
-  last4: string;
-  expMonth: number;
-  expYear: number;
-}): string {
-  return `•••• ${pm.last4} · exp ${cardExpiryLabel(pm.expMonth, pm.expYear)}`;
+/** "Visa •••• 4242 · exp 09/27", or the bank account for ACH. */
+export function paymentMethodLabel(pm: SavedPaymentMethod): string {
+  if (pm.card_last4) {
+    const brand = pm.card_brand ? `${pm.card_brand.charAt(0).toUpperCase()}${pm.card_brand.slice(1)} ` : '';
+    const expiry =
+      pm.card_exp_month !== null && pm.card_exp_year !== null
+        ? ` · exp ${cardExpiryLabel(pm.card_exp_month, pm.card_exp_year)}`
+        : '';
+    return `${brand}•••• ${pm.card_last4}${expiry}`;
+  }
+  if (pm.bank_last4) return `${pm.bank_name ?? 'Bank account'} •••• ${pm.bank_last4}`;
+  return pm.type;
 }
 
-// ── Billing history ──
+// ── Membership ──
 
-/** "July 2026" from "YYYY-MM" (anchored mid-month in UTC to avoid tz drift). */
-export function billingMonthLabel(month: string): string {
-  const [year, m] = month.split('-').map((part) => Number(part));
-  if (!year || !m) return month;
-  return new Date(Date.UTC(year, m - 1, 15)).toLocaleDateString('en-US', {
-    month: 'long',
-    year: 'numeric',
-    timeZone: 'UTC',
-  });
-}
-
-/** "5 transactions · $192" (net; a net credit shows "-$18"). */
-export function billingMonthSummary(count: number, netCents: number): string {
-  const noun = count === 1 ? 'transaction' : 'transactions';
-  const money = netCents < 0 ? `-${formatAmount(-netCents)}` : formatAmount(netCents);
-  return `${count} ${noun} · ${money}`;
-}
-
-/** Credits render as a negative "money back" amount; debits positive. */
-export function transactionAmountLabel(
-  txn: Pick<BillingTransaction, 'direction' | 'amountCents'>,
-): string {
-  return txn.direction === 'credit'
-    ? `-${formatAmountWithCents(txn.amountCents)}`
-    : formatAmountWithCents(txn.amountCents);
-}
-
-/** Row status caption; a succeeded transaction shows none. */
-export const TXN_STATUS_LABELS: Record<TransactionStatus, string | null> = {
-  succeeded: null,
-  pending: 'Pending',
-  failed: 'Failed',
-  canceled: 'Canceled',
-};
-
-// ── Membership status + gates ──
-
-/** "/yr" or "/mo" next to the billing-card price. */
-export function membershipPriceSuffix(interval: BillingInterval): string {
-  return interval === 'year' ? '/yr' : '/mo';
-}
-
-/**
- * The forward-looking status sentence under the plan on the billing card.
- * Ported from member-web; the backend exposes no membership start date, so
- * this reports what happens next (renews / ends / switches / past due) rather
- * than an "active since" date.
- */
-export function membershipStatusLine(membership: MembershipSummary, timezone: string): string {
-  const periodEnd = instantDateLabel(membership.currentPeriodEnd, timezone);
-  switch (membership.status) {
-    case 'active':
-    case 'trialing':
-      if (membership.cancelAtPeriodEnd) return `Ends ${periodEnd}`;
-      if (membership.pendingPlan) {
-        const effective = membership.pendingPlanEffectiveAt
-          ? instantDateLabel(membership.pendingPlanEffectiveAt, timezone)
-          : periodEnd;
-        return `Switches to ${membership.pendingPlan.name} on ${effective}`;
-      }
-      return `Renews ${periodEnd}`;
+/** The forward-looking line under the tier on the membership card. */
+export function subscriptionStatusLine(sub: MySubscription, timezone?: string): string {
+  const periodEnd = sub.current_period_end ? instantDateLabel(sub.current_period_end, timezone) : null;
+  switch (sub.subscription_status ?? null) {
     case 'past_due':
     case 'unpaid':
       return 'Payment past due';
+    case 'incomplete':
+      return 'Payment incomplete';
+    case 'incomplete_expired':
+      return 'Payment expired';
     case 'paused':
       return 'Paused';
-    case 'incomplete':
-    case 'incomplete_expired':
-      return 'Payment incomplete';
     case 'canceled':
-      return `Ended ${periodEnd}`;
+      return periodEnd ? `Ended ${periodEnd}` : 'Ended';
     default:
-      return '';
+      break;
   }
+  if (sub.cancel_at_period_end) return periodEnd ? `Ends ${periodEnd}` : 'Ends at the end of this period';
+  if (sub.pending_tier_name) {
+    const when = sub.pending_effective_at
+      ? instantDateLabel(sub.pending_effective_at, timezone)
+      : periodEnd;
+    return when ? `Switches to ${sub.pending_tier_name} on ${when}` : `Switches to ${sub.pending_tier_name}`;
+  }
+  if (sub.subscription_status === 'trialing') return periodEnd ? `Trial ends ${periodEnd}` : 'Trial';
+  return periodEnd ? `Renews ${periodEnd}` : 'Active';
 }
 
-/** Plan changes need a live-and-current membership (backend `active-member`). */
-export function canChangeMembership(membership: MembershipSummary | null): boolean {
-  return membership !== null && (membership.status === 'active' || membership.status === 'trialing');
+/** Whether Clutch would bill this subscription again (P2 billing state; main: yes). */
+function isLive(sub: MySubscription): boolean {
+  const status = sub.subscription_status ?? null;
+  return status === null || status === 'active' || status === 'trialing';
 }
+
+/** Offer "change tier" (Clutch's eligible list and its answer decide the rest). */
+export function canChangeTier(sub: MySubscription | null): boolean {
+  return sub !== null && isLive(sub) && !sub.cancel_at_period_end;
+}
+
+/** Offer "cancel": anything not already over, so a member is never trapped. */
+export function canCancel(sub: MySubscription | null): boolean {
+  if (!sub) return false;
+  const status = sub.subscription_status ?? null;
+  return status !== 'canceled' && status !== 'incomplete_expired';
+}
+
+/** Offer "resume": a cancellation is scheduled and the period has not ended. */
+export function canResume(sub: MySubscription | null): boolean {
+  return sub !== null && sub.cancel_at_period_end === true && isLive(sub);
+}
+
+// ── Payment history ──
+
+const PAYMENT_TYPE_LABELS: Record<string, string> = {
+  booking: 'Court booking',
+  booking_share: 'Court booking (your share)',
+  membership: 'Membership',
+  package: 'Package',
+  tournament: 'Tournament',
+  academy: 'Academy',
+  league: 'League',
+  refund: 'Refund',
+  pos: 'Pro shop',
+  club_account: 'Club account',
+  custom: 'Payment',
+};
+
+export function paymentTitle(item: PaymentHistoryItem): string {
+  return item.description?.trim() || PAYMENT_TYPE_LABELS[item.payment_type] || 'Payment';
+}
+
+const PAYMENT_STATUS_LABELS: Record<string, string | null> = {
+  succeeded: null,
+  pending: 'Pending',
+  processing: 'Processing',
+  failed: 'Failed',
+  refunded: 'Refunded',
+};
+
+export function paymentStatusLabel(status: string): string | null {
+  return status in PAYMENT_STATUS_LABELS ? PAYMENT_STATUS_LABELS[status] : status.replace(/_/g, ' ');
+}
+
+/** The charged amount as Clutch recorded it. */
+export function paymentAmountLabel(item: PaymentHistoryItem): string {
+  return formatCentsExact(item.amount_cents, item.currency);
+}
+
+/** "Refunded $12.00" when Clutch recorded a refund against this payment. */
+export function refundLabel(item: PaymentHistoryItem): string | null {
+  const refunded = item.refunded_amount_cents ?? 0;
+  return refunded > 0 ? `Refunded ${formatCentsExact(refunded, item.currency)}` : null;
+}
+
+// ── Errors ──
+
+/** A refusal Clutch explained (4xx prose) or a generic line. Display only. */
+export function clutchErrorMessage(err: unknown, fallback: string): string {
+  if (!isClutchError(err)) return fallback;
+  if (err.kind === 'network') return 'We could not reach Club70. Check your connection and try again.';
+  if (err.code === 'rate_limit_exceeded') return 'Too many attempts. Wait a minute and try again.';
+  if (err.kind === 'api' && err.status < 500 && err.message) return err.message;
+  return fallback;
+}
+
+export function profileErrorMessage(err: unknown): string {
+  if (isClutchError(err)) {
+    switch (err.code) {
+      case 'username_taken':
+        return 'That username is taken. Try another.';
+      case 'invalid_username':
+        return 'Usernames are 3 to 20 letters, numbers or underscores.';
+      case 'name_required':
+        return 'Enter your name.';
+      case 'field_too_long':
+      case 'name_too_long':
+        return 'That is too long.';
+      default:
+        break;
+    }
+  }
+  return clutchErrorMessage(err, 'We could not save your profile. Please try again.');
+}
+
+export function avatarErrorMessage(err: unknown): string {
+  if (isClutchError(err)) {
+    switch (err.code) {
+      case 'unsupported_image_type':
+        return 'Profile photos must be JPG, PNG, WebP or GIF.';
+      case 'file_too_large':
+        return 'Profile photos must be 5 MB or smaller.';
+      default:
+        break;
+    }
+  }
+  return clutchErrorMessage(err, 'We could not update your photo. Please try again.');
+}
+
+/** The blockers of a 409 deletion_blocked (P5), or [] when absent or malformed. */
+export function deletionBlockers(details: Record<string, unknown> | undefined): DeletionBlocker[] {
+  const parsed = z.array(DeletionBlockerSchema).safeParse(details?.blockers);
+  return parsed.success ? parsed.data : [];
+}
+
+/** One blocker as a sentence: Clutch's own explanation, else its code in words. */
+export function blockerSentence(blocker: DeletionBlocker): string {
+  const message = blocker.message.trim();
+  if (message) return message;
+  const words = blocker.code.replace(/_/g, ' ');
+  return `${words.charAt(0).toUpperCase()}${words.slice(1)}.`;
+}
+
+// ── Tier changes ──
 
 /**
- * Cancel is allowed for any live subscription, including past_due / unpaid /
- * paused, so a member is never trapped (backend `member`). Only a terminal
- * membership cannot be cancelled.
+ * Whether Clutch's subscription now shows the tier the member switched to.
+ * Read after confirm; until it does, the switch is still settling (or waiting
+ * on the payment), and the screen says so instead of claiming success.
  */
-export function canCancelMembership(membership: MembershipSummary | null): boolean {
-  return (
-    membership !== null &&
-    membership.status !== 'canceled' &&
-    membership.status !== 'incomplete_expired'
-  );
-}
-
-// ── Delete-account blocked reasons ──
-
-/** "a" / "a and b" / "a, b and c" for the deletion-blocked message. */
-export function formatReasons(reasons: string[]): string {
-  if (reasons.length === 0) return '';
-  if (reasons.length === 1) return reasons[0];
-  return `${reasons.slice(0, -1).join(', ')} and ${reasons[reasons.length - 1]}`;
-}
-
-// ── Plan-change direction (proration preview copy + button label) ──
-
-export interface ChangeablePlan {
-  tier: string;
-  interval: BillingInterval;
-  amountCents: number;
-}
-
-/**
- * Client mirror of the backend's upgrade test; drives the preview copy and the
- * button label only (the POST /change response is authoritative). Precedence:
- * (1) tier (`pro` outranks `member`); (2) same tier, interval (month to year is
- * an upgrade); (3) same tier + interval (a higher price is an upgrade).
- */
-export function isPlanUpgrade(current: ChangeablePlan, target: ChangeablePlan): boolean {
-  const tierRank = (plan: ChangeablePlan) => (plan.tier === 'pro' ? 1 : 0);
-  if (tierRank(target) !== tierRank(current)) return tierRank(target) > tierRank(current);
-  if (target.interval !== current.interval) return target.interval === 'year';
-  return target.amountCents > current.amountCents;
-}
-
-export type PlanChangeKind = 'upgrade' | 'downgrade';
-
-export function planChangeKind(current: ChangeablePlan, target: ChangeablePlan): PlanChangeKind {
-  return isPlanUpgrade(current, target) ? 'upgrade' : 'downgrade';
-}
-
-/** The sentence under the plan cards describing when the change takes effect. */
-export function planChangeSummary(kind: PlanChangeKind, periodEndLabel: string): string {
-  if (kind === 'upgrade') {
-    return 'Your new plan starts right away. You will be charged a prorated amount for the rest of the current billing period.';
-  }
-  return `Your new plan starts on ${periodEndLabel}, when the current billing period ends. You keep your current plan until then; the difference is not refunded.`;
+export function tierChangeApplied(
+  sub: MySubscription | null,
+  target: { id: string; name: string },
+): boolean {
+  if (!sub) return false;
+  return sub.tier_id ? sub.tier_id === target.id : sub.tier_name === target.name;
 }

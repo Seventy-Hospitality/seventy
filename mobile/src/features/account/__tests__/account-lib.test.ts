@@ -1,122 +1,144 @@
-import type { MembershipSummary } from '../../../lib/api';
+import { makeProfile, makeSubscription } from '../../../lib/clutch/fixtures';
+import { clutchError, networkError } from '../../../lib/clutch/testing';
+import { asCardId, asTierId, type PaymentHistoryItem, type SavedPaymentMethod } from '../../../lib/clutch';
+import { TEST_CLUB_ID } from '../../../lib/clutch/testing';
 import {
-  billingMonthLabel,
-  billingMonthSummary,
-  canCancelMembership,
-  canChangeMembership,
-  cardExpiryLabel,
-  formatHours,
-  formatReasons,
-  instantDateLabel,
-  isPlanUpgrade,
-  membershipStatusLine,
+  avatarErrorMessage,
+  blockerSentence,
+  canCancel,
+  canChangeTier,
+  canResume,
+  clutchErrorMessage,
+  deletionBlockers,
   paymentMethodLabel,
-  planChangeKind,
-  planChangeSummary,
-  transactionAmountLabel,
+  paymentStatusLabel,
+  paymentTitle,
+  profileDisplayName,
+  profileErrorMessage,
+  refundLabel,
+  subscriptionStatusLine,
+  tierChangeApplied,
 } from '../account-lib';
 
-const MEMBER_MONTHLY = { tier: 'member', interval: 'month' as const, amountCents: 5000 };
-const MEMBER_ANNUAL = { tier: 'member', interval: 'year' as const, amountCents: 48000 };
-const PRO_ANNUAL = { tier: 'pro', interval: 'year' as const, amountCents: 96000 };
+const TZ = 'America/New_York';
 
-describe('isPlanUpgrade / planChangeKind (proration direction)', () => {
-  it('ranks a higher tier as an upgrade regardless of price', () => {
-    expect(isPlanUpgrade(MEMBER_ANNUAL, PRO_ANNUAL)).toBe(true);
-    expect(isPlanUpgrade(PRO_ANNUAL, MEMBER_ANNUAL)).toBe(false);
-  });
-
-  it('within a tier, month -> year is an upgrade and year -> month a downgrade', () => {
-    expect(isPlanUpgrade(MEMBER_MONTHLY, MEMBER_ANNUAL)).toBe(true);
-    expect(isPlanUpgrade(MEMBER_ANNUAL, MEMBER_MONTHLY)).toBe(false);
-  });
-
-  it('within a tier + interval, a higher price is an upgrade', () => {
-    const cheap = { tier: 'member', interval: 'month' as const, amountCents: 3000 };
-    expect(isPlanUpgrade(cheap, MEMBER_MONTHLY)).toBe(true);
-    expect(isPlanUpgrade(MEMBER_MONTHLY, cheap)).toBe(false);
-  });
-
-  it('maps direction to kind and copy', () => {
-    expect(planChangeKind(MEMBER_MONTHLY, MEMBER_ANNUAL)).toBe('upgrade');
-    expect(planChangeKind(MEMBER_ANNUAL, MEMBER_MONTHLY)).toBe('downgrade');
-    expect(planChangeSummary('upgrade', 'Mar 12, 2027')).toMatch(/starts right away/);
-    expect(planChangeSummary('downgrade', 'Mar 12, 2027')).toMatch(/starts on Mar 12, 2027/);
-    expect(planChangeSummary('downgrade', 'Mar 12, 2027')).toMatch(/not refunded/);
-  });
-});
-
-describe('money + date formatting', () => {
-  it('labels billing months and summaries', () => {
-    expect(billingMonthLabel('2026-07')).toBe('July 2026');
-    expect(billingMonthLabel('2026-01')).toBe('January 2026');
-    expect(billingMonthSummary(5, 19200)).toBe('5 transactions · $192');
-    expect(billingMonthSummary(1, -1800)).toBe('1 transaction · -$18');
-  });
-
-  it('signs transaction amounts by direction', () => {
-    expect(transactionAmountLabel({ direction: 'debit', amountCents: 1800 })).toBe('$18.00');
-    expect(transactionAmountLabel({ direction: 'credit', amountCents: 1800 })).toBe('-$18.00');
-  });
-
-  it('formats card expiry, hours, and the payment-method line', () => {
-    expect(cardExpiryLabel(9, 2027)).toBe('09/27');
-    expect(cardExpiryLabel(12, 2030)).toBe('12/30');
-    expect(formatHours(888)).toBe('888');
-    expect(formatHours(1.5)).toBe('1.5');
-    expect(paymentMethodLabel({ brand: 'visa', last4: '4242', expMonth: 9, expYear: 2027 })).toBe(
-      '•••• 4242 · exp 09/27',
-    );
-  });
-
-  it('renders instants in the given venue timezone', () => {
-    expect(instantDateLabel('2027-03-12T00:00:00.000Z', 'UTC')).toBe('Mar 12, 2027');
-  });
-});
-
-describe('membership status line + gates', () => {
-  const base: MembershipSummary = {
-    id: 'sub_1',
-    status: 'active',
-    currentPeriodEnd: '2027-03-12T00:00:00.000Z',
-    cancelAtPeriodEnd: false,
-    plan: { id: 'p1', name: 'Monthly', amountCents: 5000, interval: 'month', tier: 'member' },
-    pendingPlan: null,
-    pendingPlanEffectiveAt: null,
+function payment(over: Partial<PaymentHistoryItem> = {}): PaymentHistoryItem {
+  return {
+    id: 'p1',
+    club_id: TEST_CLUB_ID,
+    amount_cents: 3000,
+    currency: 'USD',
+    payment_type: 'booking',
+    payment_method: 'stripe',
+    status: 'succeeded',
+    reference_id: null,
+    description: null,
+    created_at: '2026-10-10T15:00:00.000Z',
+    refunded_amount_cents: 0,
+    ...over,
   };
+}
 
-  it('reports forward-looking state', () => {
-    expect(membershipStatusLine(base, 'UTC')).toBe('Renews Mar 12, 2027');
-    expect(membershipStatusLine({ ...base, cancelAtPeriodEnd: true }, 'UTC')).toBe('Ends Mar 12, 2027');
-    expect(membershipStatusLine({ ...base, status: 'past_due' }, 'UTC')).toBe('Payment past due');
-    expect(membershipStatusLine({ ...base, status: 'paused' }, 'UTC')).toBe('Paused');
-    expect(
-      membershipStatusLine(
-        { ...base, pendingPlan: { id: 'p2', name: 'Annual' }, pendingPlanEffectiveAt: '2027-03-12T00:00:00.000Z' },
-        'UTC',
-      ),
-    ).toBe('Switches to Annual on Mar 12, 2027');
-  });
-
-  it('gates change to active/trialing and cancel to any live subscription', () => {
-    expect(canChangeMembership(base)).toBe(true);
-    expect(canChangeMembership({ ...base, status: 'past_due' })).toBe(false);
-    expect(canChangeMembership(null)).toBe(false);
-    expect(canCancelMembership({ ...base, status: 'past_due' })).toBe(true);
-    expect(canCancelMembership({ ...base, status: 'paused' })).toBe(true);
-    expect(canCancelMembership({ ...base, status: 'canceled' })).toBe(false);
-    expect(canCancelMembership({ ...base, status: 'incomplete_expired' })).toBe(false);
-    expect(canCancelMembership(null)).toBe(false);
+describe('profileDisplayName', () => {
+  it('prefers the full name, then the username, then the email', () => {
+    expect(profileDisplayName(makeProfile())).toBe('Alex Morgan');
+    expect(profileDisplayName(makeProfile({ full_name: ' ', username: 'alexm' }))).toBe('@alexm');
+    expect(profileDisplayName(makeProfile({ full_name: null, username: null }))).toBe('alex');
   });
 });
 
-describe('formatReasons', () => {
-  it('joins deletion-blocked reasons in prose', () => {
-    expect(formatReasons([])).toBe('');
-    expect(formatReasons(['an open payment dispute'])).toBe('an open payment dispute');
-    expect(formatReasons(['a refund in flight', 'an open dispute'])).toBe(
-      'a refund in flight and an open dispute',
+describe('subscriptionStatusLine', () => {
+  it('says what happens next, from Clutch fields only', () => {
+    expect(subscriptionStatusLine(makeSubscription(), TZ)).toBe('Renews Nov 15, 2026');
+    expect(subscriptionStatusLine(makeSubscription({ cancel_at_period_end: true }), TZ)).toBe('Ends Nov 15, 2026');
+    expect(
+      subscriptionStatusLine(
+        makeSubscription({ pending_tier_name: 'Social', pending_effective_at: '2026-12-01T17:00:00.000Z' }),
+        TZ,
+      ),
+    ).toBe('Switches to Social on Dec 1, 2026');
+    expect(subscriptionStatusLine(makeSubscription({ subscription_status: 'past_due' }), TZ)).toBe('Payment past due');
+  });
+});
+
+describe('membership gates', () => {
+  it('offers change only on a live subscription with no cancellation scheduled', () => {
+    expect(canChangeTier(makeSubscription())).toBe(true);
+    expect(canChangeTier(makeSubscription({ subscription_status: 'past_due' }))).toBe(false);
+    expect(canChangeTier(makeSubscription({ cancel_at_period_end: true }))).toBe(false);
+    expect(canChangeTier(null)).toBe(false);
+  });
+
+  it('never traps a member: cancel stays open until the subscription is over', () => {
+    expect(canCancel(makeSubscription({ subscription_status: 'past_due' }))).toBe(true);
+    expect(canCancel(makeSubscription({ subscription_status: 'canceled' }))).toBe(false);
+  });
+
+  it('offers resume only for a scheduled cancellation', () => {
+    expect(canResume(makeSubscription({ cancel_at_period_end: true }))).toBe(true);
+    expect(canResume(makeSubscription())).toBe(false);
+  });
+
+  it('judges a tier change applied from the subscription Clutch returns', () => {
+    const target = { id: asTierId('t2'), name: 'Pro' };
+    expect(tierChangeApplied(makeSubscription({ tier_id: asTierId('t2') }), target)).toBe(true);
+    expect(tierChangeApplied(makeSubscription({ tier_id: asTierId('t1'), tier_name: 'Pro' }), target)).toBe(false);
+    expect(tierChangeApplied(makeSubscription({ tier_name: 'Pro' }), target)).toBe(true);
+    expect(tierChangeApplied(null, target)).toBe(false);
+  });
+});
+
+describe('payments', () => {
+  it('shows Clutch amounts and refunds without netting them', () => {
+    const item = payment({ amount_cents: 3000, refunded_amount_cents: 1000, status: 'succeeded' });
+    expect(refundLabel(item)).toBe('Refunded $10.00');
+    expect(refundLabel(payment())).toBeNull();
+    expect(paymentTitle(item)).toBe('Court booking');
+    expect(paymentTitle(payment({ description: 'Court 2, Oct 10' }))).toBe('Court 2, Oct 10');
+    expect(paymentStatusLabel('succeeded')).toBeNull();
+    expect(paymentStatusLabel('processing')).toBe('Processing');
+  });
+
+  it('labels a saved card', () => {
+    const card: SavedPaymentMethod = {
+      id: asCardId('c1'),
+      stripe_payment_method_id: 'pm_1',
+      type: 'card',
+      card_brand: 'visa',
+      card_last4: '4242',
+      card_exp_month: 9,
+      card_exp_year: 2027,
+      is_default: true,
+    };
+    expect(paymentMethodLabel(card)).toBe('Visa •••• 4242 · exp 09/27');
+  });
+});
+
+describe('error copy', () => {
+  it('maps profile codes', () => {
+    expect(profileErrorMessage(clutchError('username_taken'))).toMatch(/taken/);
+    expect(profileErrorMessage(clutchError('invalid_username', 400))).toMatch(/3 to 20/);
+  });
+
+  it('maps avatar codes', () => {
+    expect(avatarErrorMessage(clutchError('unsupported_image_type', 400))).toMatch(/JPG/);
+    expect(avatarErrorMessage(clutchError('file_too_large', 400))).toMatch(/5 MB/);
+  });
+
+  it('shows a Clutch refusal, and generic copy for outages', () => {
+    expect(clutchErrorMessage(clutchError('cannot_cancel', 409, undefined, 'This card pays your membership.'), 'x')).toBe(
+      'This card pays your membership.',
     );
-    expect(formatReasons(['a', 'b', 'c'])).toBe('a, b and c');
+    expect(clutchErrorMessage(networkError(), 'x')).toMatch(/connection/);
+    expect(clutchErrorMessage(new Error('boom'), 'fallback')).toBe('fallback');
+  });
+
+  it('reads deletion blockers and phrases them', () => {
+    const blockers = deletionBlockers({
+      blockers: [{ code: 'open_dispute', message: 'You have an open payment dispute.' }, { code: 'club_owner', message: '' }],
+    });
+    expect(blockers.map(blockerSentence)).toEqual(['You have an open payment dispute.', 'Club owner.']);
+    expect(deletionBlockers({ blockers: 'nope' })).toEqual([]);
+    expect(deletionBlockers(undefined)).toEqual([]);
   });
 });

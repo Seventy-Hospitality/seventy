@@ -1,99 +1,114 @@
 /**
- * Onboarding step 2 (Figma onboarding/checkout 26:841 / 32:569), native.
+ * Onboarding checkout (Figma onboarding/checkout 26:841 / 32:569).
  *
- * Subscription-first Stripe flow, adapted from the web Elements version to the
- * native PaymentSheet. Because the sheet is presented on demand (not an inline
- * element that needs a client secret to render), we subscribe lazily when the
- * member commits by tapping Confirm with the terms checkbox checked:
+ *  1. POST /me/membership/subscribe {tier, terms_version} (PENDING P2) starts
+ *     a subscription attempt, or reuses the incomplete one for this tier, and
+ *     returns its PaymentSheet bundle. A $0 or trial tier returns a SetupIntent
+ *     (intentType 'setup') so a card is saved for later.
+ *  2. Stripe mode: presentConnectedSheet on the club's connected account.
+ *     Simulated mode: no sheet at all.
+ *  3. POST /me/membership/confirm (PENDING P2) makes Clutch re-read Stripe
+ *     through its one state function; then GET /me/membership is re-read and
+ *     the outcome is decided from Clutch's subscription, never from the sheet.
+ *     A charge still clearing parks in a "processing" hold with a re-check
+ *     (re-checking reads, it never charges again).
  *
- *  1. POST /api/me/membership/subscribe (plan + termsVersion) creates (or
- *     re-enters) a default_incomplete subscription and returns the
- *     confirmation client secret + the customer id + ephemeral key for the
- *     saved-cards sheet. Card data never touches our code (PCI SAQ A).
- *  2. usePaymentSheet() presents the native sheet on that secret; the sheet
- *     handles decline/SCA. We map canceled / failed / unconfigured explicitly.
- *  3. On completed, POST /api/me/membership/confirm reads the subscription
- *     back synchronously and activates the membership; on success we advance
- *     to the ID step. A charge that reached Stripe but has not cleared
- *     (processing) parks in a "payment processing" hold with a manual re-check
- *     instead of a retry that could double-charge; a genuinely failed charge
- *     returns to the form.
+ * Resume: with no ?tier param, an incomplete attempt (P2 subscription_status
+ * 'incomplete') is resumed for its tier.
  */
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Redirect, useLocalSearchParams, useRouter } from 'expo-router';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
-  api,
-  ApiError,
-  type MembershipStatus,
-  type OnboardingState,
-  type Plan,
-} from '../../lib/api';
-import { useSession } from '../../lib/session';
-import { usePaymentSheet, usePaymentsConfigured } from '../../lib/stripe';
+  clutch,
+  hasCode,
+  isClutchError,
+  toSheetIntent,
+  useMutationKey,
+  type MembershipTier,
+  type MySubscription,
+  type TierId,
+} from '../../lib/clutch';
+import { membershipQuery, queryKeys, tiersQuery } from '../../lib/queries';
+import { usePresentConnectedSheet } from '../../lib/stripe';
 import { AppScreen } from '../../components/AppScreen';
 import { Checkbox } from '../../components/Checkbox';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { Skeleton } from '../../components/Skeleton';
 import { colors, fonts, radius, spacing, typography } from '../../theme/tokens';
-import { TERMS_VERSION } from './onboarding';
-import { formatAmountWithCents } from './plan-pricing';
-import { billingQuery, plansQuery } from './queries';
+import { billingState, checkoutOutcome, TERMS_VERSION } from './onboarding';
+import { formatCentsExact, intervalNoun } from './tier-format';
 
-/** What the summary + subscribe call need; satisfied by a catalog Plan row
-    or by the plan summary on an incomplete membership (resume). */
-interface CheckoutPlan {
-  id: string;
+/** What the summary and subscribe need. */
+export interface CheckoutTier {
+  id: TierId;
   name: string;
-  amountCents: number;
-  interval: 'month' | 'year';
-  tier: string;
+  description: string | null;
+  price_cents: number;
+  currency: string;
+  interval: string;
 }
 
-function resolveCheckoutPlan(
-  planParam: string | null,
-  plans: Plan[],
-  membershipPlan: CheckoutPlan | null,
-  membershipStatus: MembershipStatus | null,
-): CheckoutPlan | null {
-  if (planParam !== null) {
-    const row = plans.find((plan) => plan.id === planParam);
-    return row && row.active && !row.inviteOnly ? row : null;
+/**
+ * The tier being bought: the ?tier param when it names an active tier,
+ * otherwise the tier of an incomplete attempt being resumed.
+ */
+export function resolveCheckoutTier(
+  tierParam: string | null,
+  tiers: MembershipTier[],
+  subscription: MySubscription | null,
+): CheckoutTier | null {
+  if (tierParam !== null) {
+    return tiers.find((tier) => tier.id === tierParam && tier.is_active) ?? null;
   }
-  // No plan param: resume an unpaid purchase from its membership row.
-  if (membershipStatus === 'incomplete' && membershipPlan) return membershipPlan;
+  if (subscription && billingState(subscription) === 'incomplete' && subscription.tier_id) {
+    const tierId = subscription.tier_id;
+    const listed = tiers.find((tier) => tier.id === tierId);
+    return (
+      listed ?? {
+        id: tierId,
+        name: subscription.tier_name,
+        description: subscription.tier_description,
+        price_cents: subscription.price_cents,
+        currency: subscription.currency,
+        interval: subscription.interval,
+      }
+    );
+  }
   return null;
+}
+
+function subscribeErrorMessage(err: unknown): string {
+  if (!isClutchError(err)) return 'We could not start your checkout. Please try again.';
+  switch (err.code) {
+    case 'tier_not_found':
+    case 'tier_not_configured':
+      return 'That membership is no longer available. Go back and choose another.';
+    case 'club_stripe_not_connected':
+      return 'The club cannot take payments right now. Please try again later.';
+    case 'rate_limit_exceeded':
+      return 'Too many attempts. Wait a minute and try again.';
+    case 'not_club_member':
+      return 'Your club membership is not set up yet. Go back and try again.';
+    default:
+      return err.kind === 'network'
+        ? 'We could not reach Club70. Check your connection and try again.'
+        : 'We could not start your checkout. Please try again.';
+  }
 }
 
 type PayPhase = 'idle' | 'paying' | 'processing';
 
 export function CheckoutScreen() {
-  const params = useLocalSearchParams<{ plan?: string | string[] }>();
-  const router = useRouter();
-  const queryClient = useQueryClient();
-  const { refresh, emailVerified } = useSession();
-  const configured = usePaymentsConfigured();
-  const presentSheet = usePaymentSheet();
+  const params = useLocalSearchParams<{ tier?: string | string[] }>();
+  const tierParam = Array.isArray(params.tier) ? (params.tier[0] ?? null) : (params.tier ?? null);
 
-  const planParam = Array.isArray(params.plan) ? (params.plan[0] ?? null) : (params.plan ?? null);
+  const tiers = useQuery(tiersQuery);
+  const membership = useQuery(membershipQuery);
 
-  const plans = useQuery(plansQuery);
-  // Only read billing to recover the plan when resuming without a ?plan param.
-  const billing = useQuery({ ...billingQuery, enabled: planParam === null });
-
-  const [agreed, setAgreed] = useState(false);
-  const [phase, setPhase] = useState<PayPhase>('idle');
-  const [payError, setPayError] = useState<string | null>(null);
-
-  const subscribe = useMutation({ mutationFn: api.subscribeMembership });
-  const confirm = useMutation({ mutationFn: api.confirmMembership });
-
-  const plansPending = plans.isPending;
-  const billingPending = planParam === null && billing.isPending;
-
-  if (plansPending || billingPending) {
+  if (tiers.isPending || membership.isPending) {
     return (
       <CheckoutFrame>
         <View style={styles.loading} accessibilityRole="progressbar" accessibilityLabel="Loading checkout">
@@ -104,7 +119,7 @@ export function CheckoutScreen() {
     );
   }
 
-  if (plans.isError || (planParam === null && billing.isError)) {
+  if (tiers.isError || membership.isError) {
     return (
       <CheckoutFrame>
         <View style={styles.errorBox} accessibilityRole="alert">
@@ -113,8 +128,8 @@ export function CheckoutScreen() {
             label="Try again"
             variant="ghost"
             onPress={() => {
-              if (plans.isError) void plans.refetch();
-              if (billing.isError) void billing.refetch();
+              if (tiers.isError) void tiers.refetch();
+              if (membership.isError) void membership.refetch();
             }}
           />
         </View>
@@ -123,187 +138,155 @@ export function CheckoutScreen() {
     );
   }
 
-  const membershipSummary = billing.data?.membership ?? null;
-  const activePlan = resolveCheckoutPlan(
-    planParam,
-    plans.data ?? [],
-    membershipSummary?.plan
-      ? {
-          id: membershipSummary.plan.id,
-          name: membershipSummary.plan.name,
-          amountCents: membershipSummary.plan.amountCents,
-          interval: membershipSummary.plan.interval,
-          tier: membershipSummary.plan.tier,
-        }
-      : null,
-    membershipSummary?.status ?? null,
-  );
+  const tier = resolveCheckoutTier(tierParam, tiers.data.tiers, membership.data.subscription);
+  if (!tier) return <Redirect href="/onboarding/plan" />;
+  return <CheckoutView tier={tier} />;
+}
 
-  // No resolvable plan (bad/missing ?plan and nothing to resume): choose one.
-  if (activePlan === null) {
-    return <Redirect href="/onboarding/plan" />;
+function CheckoutView({ tier }: { tier: CheckoutTier }) {
+  const router = useRouter();
+  const queryClient = useQueryClient();
+  const presentSheet = usePresentConnectedSheet();
+  const subscribeKey = useMutationKey();
+  const confirmKey = useMutationKey();
+
+  const [agreed, setAgreed] = useState(false);
+  const [phase, setPhase] = useState<PayPhase>('idle');
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [simulated, setSimulated] = useState(false);
+
+  /** Clutch's view of the membership changed: every screen that shows it re-reads. */
+  function invalidateMembershipViews() {
+    for (const queryKey of [queryKeys.me, queryKeys.tiers, queryKeys.home, queryKeys.paymentMethods, queryKeys.payments]) {
+      void queryClient.invalidateQueries({ queryKey });
+    }
   }
 
-  const busy = phase !== 'idle';
-
-  // Self-contained: never rejects, so the "Check again" handler in the
-  // processing hold can call it without an unhandled rejection.
-  async function runConfirm(): Promise<void> {
-    let data;
+  /** Ask Clutch to re-read Stripe, then decide from GET /me/membership. Never rejects. */
+  async function confirmWithClutch(): Promise<void> {
+    setChecking(true);
     try {
-      data = await confirm.mutateAsync();
-    } catch {
-      // Confirm failed (network/5xx) AFTER the charge reached Stripe. Park in
-      // the processing hold with a manual re-check; the card is not charged
-      // twice by retrying the read.
-      setPayError('Your payment went through, but we could not confirm your membership. Try again.');
-      setPhase('processing');
-      return;
-    }
-
-    if (data.activated) {
-      setPayError(null);
-      // Patch the resume cache to the ID step BEFORE navigating so the gate
-      // resolves the new step from fresh data (no bounce back to checkout).
-      queryClient.setQueryData<OnboardingState>(['onboarding'], (prev) => ({
-        emailVerified: prev?.emailVerified ?? emailVerified,
-        membership: { status: data.membership?.status ?? 'active', everLive: true },
-        idVerification: prev?.idVerification ?? { status: 'not_submitted', skippedAt: null },
-        nextStep: 'id-verification',
-      }));
-      void queryClient.invalidateQueries({ queryKey: ['onboarding'], refetchType: 'none' });
-      void queryClient.invalidateQueries({ queryKey: ['membership'], refetchType: 'none' });
-      void queryClient.invalidateQueries({ queryKey: ['billing'], refetchType: 'none' });
-      // The membership is active server-side and the resume cache is already
-      // patched to the ID step, so navigating is safe regardless of refresh.
-      // Guard it so a transient getMe() blip cannot strand a paid member on
-      // the processing hold (and cannot reject the "Check again" caller) —
-      // this is what keeps runConfirm's "never rejects" contract true.
       try {
-        await refresh();
+        await confirmKey.run('confirm', (k) => clutch.membership.confirm({ idempotencyKey: k }));
       } catch {
-        // Session read failed transiently; the gate re-reads on the next
-        // screen. Proceed to the ID step either way.
+        // Confirm is a read of Stripe; a failure says nothing about the charge.
+        // Fall through to the membership read, which decides.
       }
-      setPhase('idle');
-      router.replace('/onboarding/verify-identity');
-      return;
-    }
-
-    // Charge reached Stripe but the subscription is not active yet.
-    if (data.paymentStatus === 'requires_payment_method' || data.paymentStatus === 'canceled') {
-      setPayError('Your payment was not completed. Please try again.');
-      setPhase('idle');
-      return;
-    }
-    // processing / requires_action / succeeded-but-not-yet-active / unknown:
-    // an async method still clearing. Offer a manual re-check, not a retry.
-    setPayError(null);
-    setPhase('processing');
-  }
-
-  async function pay(plan: CheckoutPlan): Promise<void> {
-    if (busy) return;
-    setPayError(null);
-
-    if (!configured) {
-      setPayError('Payments are not configured in this environment.');
-      return;
-    }
-
-    setPhase('paying');
-    try {
-      let sub;
+      let subscription: MySubscription | null;
       try {
-        sub = await subscribe.mutateAsync({ planId: plan.id, termsVersion: TERMS_VERSION });
-      } catch (err) {
-        if (err instanceof ApiError && err.code === 'MEMBERSHIP_ERROR') {
-          // Already has a membership (paid elsewhere / a webhook raced us).
-          // Refresh the resume read and let the gate route to the right step.
-          await queryClient.invalidateQueries({ queryKey: ['onboarding'] });
-          await refresh();
-          setPhase('idle');
-          return;
-        }
-        setPayError(
-          err instanceof ApiError && err.code !== 'UNKNOWN'
-            ? err.message
-            : 'We could not start your checkout.',
-        );
-        setPhase('idle');
+        const fresh = await queryClient.fetchQuery({ ...membershipQuery, staleTime: 0 });
+        subscription = fresh.subscription;
+      } catch {
+        setError('We could not check your membership. Check again in a moment; you will not be charged twice.');
+        setPhase('processing');
         return;
       }
-
-      // A subscription with nothing to collect is confirmed directly.
-      if (sub.clientSecret !== null) {
-        const result = await presentSheet({
-          clientSecret: sub.clientSecret,
-          customerId: sub.customerId,
-          ephemeralKeySecret: sub.ephemeralKeySecret,
-          merchantDisplayName: 'Club70',
-        });
-        if (result.status === 'unconfigured') {
-          setPayError('Payments are not configured in this environment.');
+      switch (checkoutOutcome(subscription)) {
+        case 'active':
+          setError(null);
+          setPhase('idle');
+          invalidateMembershipViews();
+          router.replace('/(tabs)');
+          return;
+        case 'processing':
+          setError(null);
+          setPhase('processing');
+          return;
+        case 'failed':
+          setError('Your payment was not completed. Please try again.');
           setPhase('idle');
           return;
-        }
-        if (result.status === 'canceled') {
-          // The member dismissed the sheet; the incomplete subscription is
-          // re-entrant, so leave everything as-is for another attempt.
-          setPhase('idle');
-          return;
-        }
-        if (result.status === 'failed') {
-          setPayError(result.message || 'Your payment could not be completed.');
-          setPhase('idle');
-          return;
-        }
       }
-
-      await runConfirm();
-    } catch {
-      setPayError('Something went wrong completing your payment. Please try again.');
-      setPhase('idle');
+    } finally {
+      setChecking(false);
     }
+  }
+
+  async function pay(): Promise<void> {
+    if (phase !== 'idle') return;
+    setError(null);
+    setPhase('paying');
+
+    let result;
+    try {
+      const input = { tierId: tier.id, terms: TERMS_VERSION };
+      result = await subscribeKey.run(input, (k) =>
+        clutch.membership.subscribe(tier.id, TERMS_VERSION, { idempotencyKey: k }),
+      );
+    } catch (err) {
+      if (hasCode(err, 'subscription_exists')) {
+        // Already subscribed (another device, or a webhook got there first):
+        // re-read and let Clutch's state route the member.
+        await confirmWithClutch();
+        return;
+      }
+      setError(subscribeErrorMessage(err));
+      setPhase('idle');
+      return;
+    }
+
+    const intent = toSheetIntent(result);
+    if (intent.mode === 'stripe') {
+      const sheet = await presentSheet(intent, { merchantDisplayName: 'Club70' });
+      switch (sheet.status) {
+        case 'canceled':
+          // The attempt stays incomplete and is reused on the next tap.
+          setPhase('idle');
+          return;
+        case 'unconfigured':
+          setError('Payments are not configured in this build.');
+          setPhase('idle');
+          return;
+        case 'failed':
+          setError(sheet.message || 'Your payment could not be completed.');
+          setPhase('idle');
+          return;
+        case 'completed':
+          break;
+      }
+    } else {
+      setSimulated(true);
+    }
+    await confirmWithClutch();
   }
 
   return (
     <CheckoutFrame>
-      <OrderSummary plan={activePlan} />
+      <OrderSummary tier={tier} />
 
-      {!configured && (
-        <View style={styles.errorBox} accessibilityRole="alert">
-          <Text style={styles.emptyTitle}>Payments are not configured</Text>
-          <Text style={styles.emptyBody}>
-            Set EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY to enable checkout in this environment.
-          </Text>
-        </View>
-      )}
-
-      {configured && phase === 'processing' && (
+      {phase === 'processing' ? (
         <View style={styles.processing} accessibilityRole="progressbar">
-          {payError && (
+          {error ? (
             <Text style={styles.payAlert} accessibilityRole="alert">
-              {payError}
+              {error}
             </Text>
-          )}
+          ) : null}
           <Text style={styles.processingTitle}>Your payment is processing</Text>
           <Text style={styles.processingBody}>
-            Your membership will activate as soon as the payment clears. This can take a moment for
+            Your membership starts as soon as the club confirms the payment. This can take a moment for
             some payment methods.
           </Text>
           <PrimaryButton
             label="Check again"
             variant="ghost"
-            loading={confirm.isPending}
-            onPress={() => void runConfirm()}
+            loading={checking}
+            onPress={() => void confirmWithClutch()}
           />
         </View>
-      )}
-
-      {configured && phase !== 'processing' && (
+      ) : (
         <>
-          <PaymentMethodNotice />
+          <View style={styles.paymentNotice}>
+            <Text style={styles.sectionLabel}>Payment</Text>
+            <View style={styles.paymentRow}>
+              <Ionicons name="lock-closed-outline" size={18} color={colors.textMuted} />
+              <Text style={styles.paymentText}>
+                {simulated
+                  ? 'Payments are simulated in this environment: no card is charged.'
+                  : 'Card details are entered securely when you confirm.'}
+              </Text>
+            </View>
+          </View>
 
           <Checkbox
             checked={agreed}
@@ -316,32 +299,30 @@ export function CheckoutScreen() {
             }
           />
 
-          {payError && (
+          {error ? (
             <Text style={styles.payAlert} accessibilityRole="alert">
-              {payError}
+              {error}
             </Text>
-          )}
+          ) : null}
         </>
       )}
 
       <View style={styles.footer}>
         <BackToPlans />
-        {configured && phase !== 'processing' && (
+        {phase !== 'processing' ? (
           <PrimaryButton
             label="Confirm membership"
-            loading={busy}
+            loading={phase === 'paying'}
             disabled={!agreed}
-            onPress={() => {
-              if (!busy) void pay(activePlan);
-            }}
+            onPress={() => void pay()}
           />
-        )}
+        ) : null}
       </View>
     </CheckoutFrame>
   );
 }
 
-function CheckoutFrame({ children }: { children: React.ReactNode }) {
+function CheckoutFrame({ children }: { children: ReactNode }) {
   return (
     <AppScreen contentStyle={styles.content}>
       <Text style={styles.title}>Checkout</Text>
@@ -359,61 +340,27 @@ function BackToPlans() {
   );
 }
 
-/** Native translation of the Figma "CARD DETAILS" block: the card is entered
-    in the secure native sheet, so we never render raw card fields. */
-function PaymentMethodNotice() {
-  return (
-    <View style={styles.paymentNotice}>
-      <Text style={styles.sectionLabel}>Payment</Text>
-      <View style={styles.paymentRow}>
-        <Ionicons name="lock-closed-outline" size={18} color={colors.textMuted} />
-        <Text style={styles.paymentText}>
-          Card details are entered securely when you confirm.
-        </Text>
-      </View>
-    </View>
-  );
-}
-
-function OrderSummary({ plan }: { plan: CheckoutPlan }) {
-  const yearly = plan.interval === 'year';
-  const description =
-    plan.tier === 'member'
-      ? `Standard ${yearly ? 'annual' : 'monthly'} club membership`
-      : plan.name;
-
+/** The tier's own price, formatted; the sheet shows what Stripe will charge. */
+function OrderSummary({ tier }: { tier: CheckoutTier }) {
   return (
     <View style={styles.summary}>
       <Text style={styles.sectionLabel}>Order summary</Text>
       <View style={styles.summaryRow}>
-        <Text style={styles.summaryFeeLabel}>Membership fee</Text>
+        <Text style={styles.summaryFeeLabel}>{tier.name}</Text>
         <Text style={styles.summaryPrice}>
-          {formatAmountWithCents(plan.amountCents)}
-          <Text style={styles.summaryPeriod}> /{yearly ? 'year' : 'month'}</Text>
+          {formatCentsExact(tier.price_cents, tier.currency)}
+          <Text style={styles.summaryPeriod}> / {intervalNoun(tier.interval)}</Text>
         </Text>
       </View>
-      <Text style={styles.summaryCaption}>{description}</Text>
-      <View style={styles.divider} />
-      <View style={styles.summaryRow}>
-        <Text style={styles.totalLabel}>Total due today</Text>
-        <Text style={styles.totalValue}>{formatAmountWithCents(plan.amountCents)}</Text>
-      </View>
+      {tier.description ? <Text style={styles.summaryCaption}>{tier.description}</Text> : null}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  content: {
-    gap: spacing.lg,
-  },
-  title: {
-    ...typography.display,
-    color: colors.text,
-    marginTop: spacing.sm,
-  },
-  loading: {
-    gap: spacing.md,
-  },
+  content: { gap: spacing.lg },
+  title: { ...typography.display, color: colors.text, marginTop: spacing.sm },
+  loading: { gap: spacing.md },
   errorBox: {
     gap: spacing.sm,
     padding: spacing.md,
@@ -422,18 +369,7 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: colors.bgElevated,
   },
-  errorText: {
-    ...typography.body,
-    color: colors.text,
-  },
-  emptyTitle: {
-    ...typography.h3,
-    color: colors.text,
-  },
-  emptyBody: {
-    ...typography.body,
-    color: colors.textMuted,
-  },
+  errorText: { ...typography.body, color: colors.text },
   summary: {
     borderRadius: radius.lg,
     borderWidth: 1,
@@ -442,50 +378,13 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     gap: spacing.sm,
   },
-  sectionLabel: {
-    ...typography.label,
-    color: colors.textMuted,
-    textTransform: 'uppercase',
-  },
-  summaryRow: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    justifyContent: 'space-between',
-    gap: spacing.md,
-  },
-  summaryFeeLabel: {
-    ...typography.bodyStrong,
-    color: colors.text,
-  },
-  summaryPrice: {
-    ...typography.bodyStrong,
-    color: colors.text,
-  },
-  summaryPeriod: {
-    ...typography.caption,
-    color: colors.textMuted,
-  },
-  summaryCaption: {
-    ...typography.caption,
-    color: colors.textSubtle,
-  },
-  divider: {
-    height: 1,
-    backgroundColor: colors.border,
-    marginVertical: spacing.xs,
-  },
-  totalLabel: {
-    ...typography.bodyStrong,
-    color: colors.text,
-  },
-  totalValue: {
-    fontFamily: fonts.displayBold,
-    fontSize: 22,
-    color: colors.accent,
-  },
-  paymentNotice: {
-    gap: spacing.sm,
-  },
+  sectionLabel: { ...typography.label, color: colors.textMuted, textTransform: 'uppercase' },
+  summaryRow: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', gap: spacing.md },
+  summaryFeeLabel: { ...typography.bodyStrong, color: colors.text, flexShrink: 1 },
+  summaryPrice: { fontFamily: fonts.displayBold, fontSize: 22, color: colors.accent },
+  summaryPeriod: { ...typography.caption, color: colors.textMuted },
+  summaryCaption: { ...typography.caption, color: colors.textSubtle },
+  paymentNotice: { gap: spacing.sm },
   paymentRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -496,24 +395,10 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: colors.bgElevated,
   },
-  paymentText: {
-    ...typography.body,
-    color: colors.textMuted,
-    flex: 1,
-  },
-  termsLabel: {
-    ...typography.body,
-    color: colors.text,
-    flex: 1,
-  },
-  termsLink: {
-    color: colors.accent,
-    textDecorationLine: 'underline',
-  },
-  payAlert: {
-    ...typography.body,
-    color: colors.danger,
-  },
+  paymentText: { ...typography.body, color: colors.textMuted, flex: 1 },
+  termsLabel: { ...typography.body, color: colors.text, flex: 1 },
+  termsLink: { color: colors.accent, textDecorationLine: 'underline' },
+  payAlert: { ...typography.body, color: colors.danger },
   processing: {
     gap: spacing.sm,
     padding: spacing.lg,
@@ -522,21 +407,8 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: colors.bgElevated,
   },
-  processingTitle: {
-    ...typography.h3,
-    color: colors.text,
-  },
-  processingBody: {
-    ...typography.body,
-    color: colors.textMuted,
-  },
-  footer: {
-    gap: spacing.md,
-    marginTop: spacing.sm,
-  },
-  footerLink: {
-    ...typography.bodyStrong,
-    color: colors.accent,
-    textAlign: 'center',
-  },
+  processingTitle: { ...typography.h3, color: colors.text },
+  processingBody: { ...typography.body, color: colors.textMuted },
+  footer: { gap: spacing.md, marginTop: spacing.sm },
+  footerLink: { ...typography.bodyStrong, color: colors.accent, textAlign: 'center' },
 });

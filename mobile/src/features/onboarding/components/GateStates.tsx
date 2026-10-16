@@ -1,9 +1,7 @@
 /**
- * Shared full-screen states for the onboarding gate: the loading spinner
- * while the resume read is in flight, a retryable error, and the "no member
- * profile" support screen (a verified account with no linked member row,
- * which must never be redirected into a loop). Mirrors the web
- * OnboardingGate's GateError / NoProfileScreen.
+ * Full-screen states for the onboarding gate: loading, a retryable error,
+ * joining the club, and the support screen for a membership whose standing is
+ * not active (the member has to talk to the club; redirecting would loop).
  */
 import { useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
@@ -20,63 +18,78 @@ export function GateLoading({ label = 'Loading your membership' }: { label?: str
   );
 }
 
-export function GateError({ onRetry }: { onRetry: () => void }) {
+export function GateError({
+  title = 'We could not load your membership',
+  body = 'Check your connection and try again.',
+  onRetry,
+  retrying = false,
+  onSignOut,
+}: {
+  title?: string;
+  body?: string;
+  onRetry: () => void;
+  retrying?: boolean;
+  onSignOut?: () => Promise<unknown>;
+}) {
   return (
     <View style={styles.center} accessibilityRole="alert">
       <Ionicons name="cloud-offline-outline" size={40} color={colors.textMuted} />
-      <Text style={styles.title}>We could not load your membership</Text>
-      <Text style={styles.muted}>Check your connection and try again.</Text>
+      <Text style={styles.title}>{title}</Text>
+      <Text style={styles.muted}>{body}</Text>
       <View style={styles.action}>
-        <PrimaryButton label="Try again" onPress={onRetry} />
+        <PrimaryButton label="Try again" loading={retrying} onPress={onRetry} />
+        {onSignOut ? <SignOutButton onSignOut={onSignOut} /> : null}
       </View>
     </View>
   );
 }
 
-export function NoProfileScreen({
+export function InactiveMembershipScreen({
+  status,
   onRefresh,
   onSignOut,
 }: {
+  status: string | null;
   onRefresh: () => Promise<unknown>;
   onSignOut: () => Promise<unknown>;
 }) {
   const [refreshing, setRefreshing] = useState(false);
-  const [signingOut, setSigningOut] = useState(false);
-
-  async function run(
-    fn: () => Promise<unknown>,
-    setBusy: (value: boolean) => void,
-  ): Promise<void> {
-    setBusy(true);
-    try {
-      await fn();
-    } finally {
-      setBusy(false);
-    }
-  }
-
+  const standing = status ? ` (${status.replace(/_/g, ' ')})` : '';
   return (
     <View style={styles.center} accessibilityRole="alert">
       <Ionicons name="person-remove-outline" size={40} color={colors.textMuted} />
-      <Text style={styles.title}>We could not find your member profile</Text>
+      <Text style={styles.title}>Your club membership is not active</Text>
       <Text style={styles.muted}>
-        Your account is not linked to a club member profile yet. Contact the club to get set up, or
-        sign out and use a different account.
+        Your membership at Club70 is on hold{standing}. Contact the club to get it sorted, or sign
+        out and use a different account.
       </Text>
       <View style={styles.action}>
         <PrimaryButton
           label="Check again"
           loading={refreshing}
-          onPress={() => void run(onRefresh, setRefreshing)}
+          onPress={() => {
+            setRefreshing(true);
+            void onRefresh().finally(() => setRefreshing(false));
+          }}
         />
-        <PrimaryButton
-          label="Sign out"
-          variant="ghost"
-          loading={signingOut}
-          onPress={() => void run(onSignOut, setSigningOut)}
-        />
+        <SignOutButton onSignOut={onSignOut} />
       </View>
     </View>
+  );
+}
+
+function SignOutButton({ onSignOut }: { onSignOut: () => Promise<unknown> }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <PrimaryButton
+      label="Sign out"
+      variant="ghost"
+      loading={busy}
+      onPress={() => {
+        setBusy(true);
+        void onSignOut().finally(() => setBusy(false));
+      }}
+    />
   );
 }
 

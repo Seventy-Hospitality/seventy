@@ -1,19 +1,20 @@
 /**
- * Avatar picker + upload for the account screen (M6). Wraps expo-image-picker
- * (camera or library) with the same client-side validation the backend media
- * spec enforces (JPG/PNG/WebP, 5 MB), so the member gets an inline message
- * instead of a 413/422. On a valid pick it runs api.uploadAvatar and patches
- * the ['profile'] cache, mirroring member-web's optimistic avatar mutation.
+ * Avatar picker + upload for the account header. expo-image-picker (camera or
+ * library), a pre-check that mirrors Clutch's own (uploadAvatar: JPG, PNG,
+ * WebP or GIF, 5 MB) so the member gets an instant message, then
+ * POST /me/avatar with an RN file part. Clutch's verdict (unsupported_image_type,
+ * file_too_large) is still what counts; the profile is re-read afterwards.
  */
 import { useCallback } from 'react';
 import { Alert } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { api, ApiError, type MyProfile } from '../../lib/api';
+import { clutch, useMutationKey, type Me, type UploadFile } from '../../lib/clutch';
+import { queryKeys } from '../../lib/queries';
 import { useToast } from '../../components';
+import { avatarErrorMessage } from './account-lib';
 
-/** Mirror of MEDIA_USAGE_SPECS.avatar (api/lib/contexts/media). */
-const ACCEPTED_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
+const ACCEPTED_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'] as const;
 const MAX_BYTES = 5 * 1024 * 1024;
 
 const EXTENSION_TYPES: Record<string, string> = {
@@ -21,6 +22,7 @@ const EXTENSION_TYPES: Record<string, string> = {
   jpeg: 'image/jpeg',
   png: 'image/png',
   webp: 'image/webp',
+  gif: 'image/gif',
 };
 
 function inferType(asset: ImagePicker.ImagePickerAsset): string {
@@ -29,19 +31,16 @@ function inferType(asset: ImagePicker.ImagePickerAsset): string {
   return EXTENSION_TYPES[ext] ?? 'image/jpeg';
 }
 
-/** Validate a picked avatar; returns an error message or null. */
+/** The local pre-check; returns a message or null. */
 export function avatarImageError(image: { type: string; size?: number | null }): string | null {
   if (!(ACCEPTED_TYPES as readonly string[]).includes(image.type)) {
-    return 'Avatars must be JPG, PNG, or WebP files.';
+    return 'Profile photos must be JPG, PNG, WebP or GIF.';
   }
-  if (image.size != null && image.size > MAX_BYTES) {
-    return 'Avatars must be 5 MB or smaller.';
-  }
+  if (image.size != null && image.size > MAX_BYTES) return 'Profile photos must be 5 MB or smaller.';
   return null;
 }
 
 export interface AvatarUploadController {
-  /** Prompt camera vs library, pick + validate, then upload. */
   choose: () => void;
   isUploading: boolean;
 }
@@ -49,24 +48,21 @@ export interface AvatarUploadController {
 export function useAvatarUpload(): AvatarUploadController {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const key = useMutationKey();
 
   const upload = useMutation({
-    mutationFn: (image: { uri: string; name: string; type: string }) => api.uploadAvatar(image),
-    onSuccess: ({ avatarUrl }) => {
-      queryClient.setQueryData<MyProfile>(['profile'], (prev) =>
-        prev ? { ...prev, member: { ...prev.member, avatarUrl } } : prev,
+    mutationFn: (file: UploadFile) =>
+      key.run(file, (k) => clutch.me.uploadAvatar(file, { idempotencyKey: k })),
+    onSuccess: (avatarUrl) => {
+      // Show the new photo at once; the re-read below is the source of truth.
+      queryClient.setQueryData<Me>(queryKeys.me, (prev) =>
+        prev ? { ...prev, profile: { ...prev.profile, avatar_url: avatarUrl } } : prev,
       );
-      void queryClient.invalidateQueries({ queryKey: ['home'] });
-      void queryClient.invalidateQueries({ queryKey: ['clubs'] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.me });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.home });
       toast({ variant: 'success', message: 'Profile photo updated.' });
     },
-    onError: (error) => {
-      const message =
-        error instanceof ApiError && (error.code === 'INVALID_IMAGE' || error.code === 'FILE_TOO_LARGE')
-          ? error.message
-          : 'We could not update your photo. Please try again.';
-      toast({ variant: 'error', message });
-    },
+    onError: (error) => toast({ variant: 'error', message: avatarErrorMessage(error) }),
   });
 
   const pickFrom = useCallback(
@@ -86,28 +82,23 @@ export function useAvatarUpload(): AvatarUploadController {
           });
           return;
         }
-
+        const options: ImagePicker.ImagePickerOptions = {
+          mediaTypes: ['images'],
+          allowsEditing: true,
+          aspect: [1, 1],
+          quality: 0.8,
+        };
         const result =
           source === 'camera'
-            ? await ImagePicker.launchCameraAsync({
-                mediaTypes: ['images'],
-                allowsEditing: true,
-                aspect: [1, 1],
-                quality: 0.8,
-              })
-            : await ImagePicker.launchImageLibraryAsync({
-                mediaTypes: ['images'],
-                allowsEditing: true,
-                aspect: [1, 1],
-                quality: 0.8,
-              });
-
+            ? await ImagePicker.launchCameraAsync(options)
+            : await ImagePicker.launchImageLibraryAsync(options);
         if (result.canceled || result.assets.length === 0) return;
+
         const asset = result.assets[0];
         const type = inferType(asset);
-        const validation = avatarImageError({ type, size: asset.fileSize ?? null });
-        if (validation) {
-          toast({ variant: 'error', message: validation });
+        const invalid = avatarImageError({ type, size: asset.fileSize ?? null });
+        if (invalid) {
+          toast({ variant: 'error', message: invalid });
           return;
         }
         const name = asset.fileName ?? asset.uri.split('/').pop() ?? 'avatar.jpg';

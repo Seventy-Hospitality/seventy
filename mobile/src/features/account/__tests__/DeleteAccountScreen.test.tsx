@@ -1,80 +1,127 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react-native';
-import { ApiError, api, type AuthIdentities } from '../../../lib/api';
+import type { MockClutch } from '../../../lib/clutch/testing';
+import { clutchError } from '../../../lib/clutch/testing';
 import { DeleteAccountScreen } from '../DeleteAccountScreen';
+import { stepUpMethods } from '../step-up';
 import { renderWithProviders } from './render-account';
 
-const mockReplace = jest.fn();
-const mockSignOut = jest.fn(async () => {});
+jest.mock('../../../lib/clutch', () => {
+  const actual = jest.requireActual('../../../lib/clutch');
+  const { createMockClutch } = jest.requireActual('../../../lib/clutch/testing');
+  return { ...actual, clutch: createMockClutch() };
+});
+const mockClutch = (jest.requireMock('../../../lib/clutch') as { clutch: MockClutch }).clutch;
 
+const mockReplace = jest.fn();
 jest.mock('expo-router', () => ({
   useRouter: () => ({ push: jest.fn(), replace: mockReplace, back: jest.fn(), canGoBack: () => true }),
 }));
 
+const mockSignOut = jest.fn(async () => undefined);
 jest.mock('../../../lib/session', () => ({
-  useSession: () => ({ principal: { email: 'alice@example.com' }, signOut: mockSignOut }),
+  useSession: () => ({ status: 'authenticated', userId: 'user-1', email: 'alex@example.com', signOut: mockSignOut }),
 }));
 
-jest.mock('../account-data', () => {
-  const actual = jest.requireActual('../account-data');
-  const { api: liveApi } = require('../../../lib/api');
-  return {
-    ...actual,
-    authIdentitiesQuery: { queryKey: ['auth-identities'], queryFn: () => liveApi.getAuthIdentities() },
-  };
-});
-
-const PASSWORD_ACCOUNT: AuthIdentities = { hasPassword: true, identities: [] };
+const mockAuth = {
+  getUserIdentities: jest.fn(),
+  signInWithPassword: jest.fn(),
+  signInWithOtp: jest.fn(),
+  verifyOtp: jest.fn(),
+  signInWithIdToken: jest.fn(),
+};
+jest.mock('../../../lib/supabase', () => ({
+  getSupabase: () => ({ auth: mockAuth }),
+  isSupabaseConfigured: () => true,
+  SupabaseNotConfiguredError: class extends Error {},
+}));
 
 beforeEach(() => {
-  jest.restoreAllMocks();
-  mockReplace.mockClear();
-  mockSignOut.mockClear();
-  jest.spyOn(api, 'getAuthIdentities').mockResolvedValue(PASSWORD_ACCOUNT);
+  jest.clearAllMocks();
+  mockAuth.getUserIdentities.mockResolvedValue({ data: { identities: [{ provider: 'email' }] }, error: null });
+  mockAuth.signInWithPassword.mockResolvedValue({ data: { user: { id: 'user-1' } }, error: null });
+  mockAuth.signInWithOtp.mockResolvedValue({ data: {}, error: null });
+  mockAuth.verifyOtp.mockResolvedValue({ data: { user: { id: 'user-1' } }, error: null });
+  mockClutch.me.deleteAccount.mockResolvedValue({ status: 'deleted' });
 });
 
-describe('DeleteAccountScreen: step-up gating', () => {
-  it('gates deletion behind proof: disabled with no password, then a two-step confirm', async () => {
-    const deleteSpy = jest.spyOn(api, 'deleteAccount').mockResolvedValue({ status: 'completed' });
+async function confirmWithPassword() {
+  fireEvent.press(await screen.findByLabelText('I understand this permanently deletes my account'));
+  fireEvent.changeText(screen.getByLabelText('Password'), 'hunter2');
+  fireEvent.press(screen.getByLabelText('Delete with password'));
+}
 
+describe('DeleteAccountScreen', () => {
+  it('signs in afresh with the password, then deletes, then signs out locally', async () => {
     renderWithProviders(<DeleteAccountScreen />);
+    await confirmWithPassword();
 
-    // With no password entered, the delete button is disabled and no request runs.
-    const deleteButton = await screen.findByLabelText('Delete my account');
-    expect(deleteButton.props.accessibilityState.disabled).toBe(true);
-    fireEvent.press(deleteButton);
-    expect(screen.queryByLabelText('Permanently delete my account')).toBeNull();
-    expect(deleteSpy).not.toHaveBeenCalled();
-
-    // Enter the password -> the destructive confirm opens; only then does it delete.
-    fireEvent.changeText(screen.getByLabelText('Current password'), 'hunter2');
-    fireEvent.press(screen.getByLabelText('Delete my account'));
-
-    const confirm = await screen.findByLabelText('Permanently delete my account');
-    fireEvent.press(confirm);
-
-    await waitFor(() => expect(deleteSpy).toHaveBeenCalledWith({ password: 'hunter2' }));
     await waitFor(() => expect(mockSignOut).toHaveBeenCalled());
-    await waitFor(() => expect(mockReplace).toHaveBeenCalledWith('/auth/sign-in'));
+    expect(mockAuth.signInWithPassword).toHaveBeenCalledWith({ email: 'alex@example.com', password: 'hunter2' });
+    expect(mockClutch.me.deleteAccount).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: expect.any(String) }),
+    );
+    expect(mockAuth.signInWithPassword.mock.invocationCallOrder[0]).toBeLessThan(
+      mockClutch.me.deleteAccount.mock.invocationCallOrder[0],
+    );
+    expect(mockReplace).toHaveBeenCalledWith('/auth/sign-in');
   });
 
-  it('surfaces the blocked state (open dispute) instead of deleting', async () => {
-    jest
-      .spyOn(api, 'deleteAccount')
-      .mockRejectedValue(
-        new ApiError('DELETION_BLOCKED', 'Account deletion is blocked', 409, {
-          reasons: ['an open payment dispute'],
-        }),
-      );
-
+  it('steps up with an emailed code that never creates an account', async () => {
     renderWithProviders(<DeleteAccountScreen />);
-
-    fireEvent.changeText(await screen.findByLabelText('Current password'), 'hunter2');
-    fireEvent.press(screen.getByLabelText('Delete my account'));
-    fireEvent.press(await screen.findByLabelText('Permanently delete my account'));
-
+    fireEvent.press(await screen.findByLabelText('I understand this permanently deletes my account'));
+    fireEvent.press(screen.getByLabelText('Email me a code'));
     await waitFor(() =>
-      expect(screen.getByText(/Deletion is blocked by an open payment dispute/i)).toBeTruthy(),
+      expect(mockAuth.signInWithOtp).toHaveBeenCalledWith({
+        email: 'alex@example.com',
+        options: { shouldCreateUser: false },
+      }),
     );
+    fireEvent.changeText(await screen.findByLabelText('Code'), '123456');
+    fireEvent.press(screen.getByLabelText('Delete with code'));
+
+    await waitFor(() => expect(mockClutch.me.deleteAccount).toHaveBeenCalled());
+    expect(mockAuth.verifyOtp).toHaveBeenCalledWith({ email: 'alex@example.com', token: '123456', type: 'email' });
+  });
+
+  it('lists the blockers Clutch returns and does not sign out', async () => {
+    mockClutch.me.deleteAccount.mockRejectedValue(
+      clutchError('deletion_blocked', 409, {
+        blockers: [{ code: 'open_dispute', message: 'A payment dispute is still open.' }],
+      }),
+    );
+    renderWithProviders(<DeleteAccountScreen />);
+    await confirmWithPassword();
+
+    expect(await screen.findByText('A payment dispute is still open.')).toBeTruthy();
     expect(mockSignOut).not.toHaveBeenCalled();
+  });
+
+  it('asks for a fresh sign-in again on step_up_required', async () => {
+    mockClutch.me.deleteAccount.mockRejectedValue(clutchError('step_up_required', 403));
+    renderWithProviders(<DeleteAccountScreen />);
+    await confirmWithPassword();
+
+    expect(await screen.findByText(/confirm it is you again/)).toBeTruthy();
+    expect(mockSignOut).not.toHaveBeenCalled();
+  });
+
+  it('never deletes when the sign-in lands on another account', async () => {
+    mockAuth.signInWithPassword.mockResolvedValue({ data: { user: { id: 'someone-else' } }, error: null });
+    renderWithProviders(<DeleteAccountScreen />);
+    await confirmWithPassword();
+
+    await waitFor(() => expect(mockSignOut).toHaveBeenCalled());
+    expect(mockClutch.me.deleteAccount).not.toHaveBeenCalled();
+  });
+});
+
+describe('stepUpMethods', () => {
+  it('offers password and code for an email identity, and each linked provider', () => {
+    expect(stepUpMethods([{ provider: 'email' }, { provider: 'apple' }])).toEqual([
+      { kind: 'password' },
+      { kind: 'code' },
+      { kind: 'federated', provider: 'apple' },
+    ]);
+    expect(stepUpMethods([{ provider: 'google' }])).toEqual([{ kind: 'federated', provider: 'google' }]);
   });
 });

@@ -1,62 +1,70 @@
-import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
-import { api, type NotificationPreferences } from '../../../lib/api';
+import { fireEvent, screen, waitFor } from '@testing-library/react-native';
+import * as Notifications from 'expo-notifications';
+import type { MockClutch } from '../../../lib/clutch/testing';
+import { clutchError } from '../../../lib/clutch/testing';
+import type { NotificationPreferences } from '../../../lib/clutch';
 import { PreferencesScreen } from '../PreferencesScreen';
 import { renderWithProviders } from './render-account';
+
+jest.mock('../../../lib/clutch', () => {
+  const actual = jest.requireActual('../../../lib/clutch');
+  const { createMockClutch } = jest.requireActual('../../../lib/clutch/testing');
+  return { ...actual, clutch: createMockClutch() };
+});
+const mockClutch = (jest.requireMock('../../../lib/clutch') as { clutch: MockClutch }).clutch;
 
 jest.mock('expo-router', () => ({
   useRouter: () => ({ push: jest.fn(), replace: jest.fn(), back: jest.fn(), canGoBack: () => true }),
 }));
 
-// Route the preferences read through the live (spied) api at call time; the
-// real queryOptions captures api.getPreferences by reference at import, which a
-// later spy cannot replace.
-jest.mock('../account-data', () => {
-  const actual = jest.requireActual('../account-data');
-  const { api: liveApi } = require('../../../lib/api');
-  return { ...actual, preferencesQuery: { queryKey: ['preferences'], queryFn: () => liveApi.getPreferences() } };
-});
-
-let server: NotificationPreferences;
+const off = { push: false, email: false, sms: false };
+const PREFS: NotificationPreferences = {
+  bookings: { push: false, email: true, sms: true },
+  tournaments: { push: true, email: false, sms: false },
+  leagues: off,
+  messages: off,
+  clubAnnouncements: off,
+  promotions: off,
+  smsPhone: '+15550100',
+};
 
 beforeEach(() => {
-  jest.restoreAllMocks();
-  server = { pushNotifications: false, emailNotifications: true, bookingReminders: true };
-  // The refetch that onSettled fires reads the (mutable) server truth.
-  jest.spyOn(api, 'getPreferences').mockImplementation(async () => ({ ...server }));
+  jest.clearAllMocks();
+  mockClutch.me.preferences.mockResolvedValue(PREFS);
+  mockClutch.me.putPreferences.mockResolvedValue(null);
+  mockClutch.me.registerDevice.mockResolvedValue({ token: 'ExponentPushToken[test]', platform: 'ios' });
 });
 
-describe('PreferencesScreen: optimistic toggle + rollback', () => {
-  it('applies the toggle optimistically and rolls it back when the save fails', async () => {
-    jest.spyOn(api, 'putPreferences').mockRejectedValue(new Error('network'));
-
+describe('PreferencesScreen', () => {
+  it('PUTs the whole matrix, keeping hidden categories, sms and smsPhone', async () => {
     renderWithProviders(<PreferencesScreen />);
-    const push = () => screen.getByLabelText('Push notifications');
-    await waitFor(() => expect(push().props.value).toBe(false));
 
-    fireEvent(push(), 'valueChange', true);
+    fireEvent(await screen.findByLabelText('Bookings email notifications'), 'valueChange', false);
 
-    // The optimistic flip sends ONLY the push key...
-    await waitFor(() => expect(api.putPreferences).toHaveBeenCalledWith({ pushNotifications: true }));
-    // ...then the failed save rolls the push key back to off and toasts an error.
-    await waitFor(() => expect(screen.getByText(/could not save that setting/i)).toBeTruthy());
-    await waitFor(() => expect(push().props.value).toBe(false));
+    await waitFor(() => expect(mockClutch.me.putPreferences).toHaveBeenCalledTimes(1));
+    expect(mockClutch.me.putPreferences).toHaveBeenCalledWith(
+      { ...PREFS, bookings: { push: false, email: false, sms: true } },
+      expect.objectContaining({ idempotencyKey: expect.any(String) }),
+    );
   });
 
-  it('keeps the confirmed value when the save succeeds', async () => {
-    jest.spyOn(api, 'putPreferences').mockImplementation(async (patch) => {
-      server = { ...server, ...patch };
-      return { ...server };
-    });
-
+  it('rolls back only the switch whose save failed', async () => {
+    mockClutch.me.putPreferences.mockRejectedValue(clutchError('invalid_field', 400));
     renderWithProviders(<PreferencesScreen />);
-    const email = () => screen.getByLabelText('Email notifications');
-    await waitFor(() => expect(email().props.value).toBe(true));
 
-    await act(async () => {
-      fireEvent(email(), 'valueChange', false);
-    });
+    const toggle = await screen.findByLabelText('Messages email notifications');
+    fireEvent(toggle, 'valueChange', true);
 
-    await waitFor(() => expect(api.putPreferences).toHaveBeenCalledWith({ emailNotifications: false }));
-    await waitFor(() => expect(email().props.value).toBe(false));
+    await waitFor(() => expect(mockClutch.me.putPreferences).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByLabelText('Messages email notifications').props.value).toBe(false));
+  });
+
+  it('may prompt for permission only when the member turns push on', async () => {
+    renderWithProviders(<PreferencesScreen />);
+
+    fireEvent(await screen.findByLabelText('Bookings push notifications'), 'valueChange', true);
+
+    await waitFor(() => expect(Notifications.requestPermissionsAsync).toHaveBeenCalled());
+    await waitFor(() => expect(mockClutch.me.putPreferences).toHaveBeenCalled());
   });
 });

@@ -1,32 +1,39 @@
 /**
- * App preferences (Figma app-preferences 107:9789), native. Notification
- * toggles saved optimistically per key with rollback (ported from member-web's
- * AppPreferencesPage), Expo push-device registration wired to the push toggle,
- * plus the Data & privacy / Help & support / About rows and the delete-account
- * entry.
+ * App preferences (Figma app-preferences 107:9789): notification switches
+ * per category and channel, the push registration that follows them, and
+ * the Data & privacy / Help & support / About rows.
+ *
+ * Each switch updates the cached matrix at once and PUTs the WHOLE matrix
+ * (Clutch replaces it), built from the cache at send time so quick taps
+ * compose. A failed save rolls back only that switch.
  */
-import { useEffect, useRef } from 'react';
 import { StyleSheet, Switch, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import Constants from 'expo-constants';
-import { api, type NotificationPreferences } from '../../lib/api';
+import {
+  clutch,
+  useMutationKey,
+  type NotificationCategory,
+  type NotificationChannel,
+  type NotificationPreferences,
+} from '../../lib/clutch';
+import { preferencesQuery } from '../../lib/queries';
 import { PrimaryButton, Skeleton, useToast } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
 import { AccountFrame } from './AccountFrame';
-import { preferencesQuery } from './account-data';
+import { SHOWN_CATEGORIES, SHOWN_CHANNELS, withToggle } from './preferences';
 import { SettingsGroup, SettingsRow } from './SettingsList';
 import { usePushRegistration } from './usePushRegistration';
 
-type PreferenceKey = keyof NotificationPreferences;
-
-const TOGGLES: { key: PreferenceKey; label: string }[] = [
-  { key: 'pushNotifications', label: 'Push notifications' },
-  { key: 'emailNotifications', label: 'Email notifications' },
-  { key: 'bookingReminders', label: 'Booking reminders' },
-];
-
 const APP_VERSION = Constants.expoConfig?.version ?? '1.0.0';
+const SAVE_KEY = ['preferences-save'];
+
+interface Toggle {
+  category: NotificationCategory;
+  channel: NotificationChannel;
+  value: boolean;
+}
 
 export function PreferencesScreen() {
   const router = useRouter();
@@ -34,128 +41,92 @@ export function PreferencesScreen() {
   const { toast } = useToast();
   const preferences = useQuery(preferencesQuery);
   const push = usePushRegistration();
+  const key = useMutationKey();
 
-  // Register this device once when the screen opens with push already enabled.
-  const pushBootstrapped = useRef(false);
-  useEffect(() => {
-    if (!pushBootstrapped.current && preferences.data?.pushNotifications) {
-      pushBootstrapped.current = true;
-      void push.enable();
-    }
-  }, [preferences.data?.pushNotifications, push]);
-
-  const update = useMutation({
-    mutationKey: ['preferences-update'],
-    mutationFn: (patch: Partial<NotificationPreferences>) => api.putPreferences(patch),
-    onMutate: async (patch) => {
+  const save = useMutation({
+    mutationKey: SAVE_KEY,
+    onMutate: async ({ category, channel, value }: Toggle) => {
       await queryClient.cancelQueries({ queryKey: preferencesQuery.queryKey });
       const previous = queryClient.getQueryData<NotificationPreferences>(preferencesQuery.queryKey);
-      queryClient.setQueryData<NotificationPreferences>(preferencesQuery.queryKey, (prev) =>
-        prev ? { ...prev, ...patch } : prev,
-      );
-      return { previous };
+      if (!previous) return { previousValue: !value };
+      const next = withToggle(previous, category, channel, value);
+      queryClient.setQueryData(preferencesQuery.queryKey, next);
+      // Turning push on is the one moment the OS prompt may show.
+      if (channel === 'push') void push.syncWith(next, { prompt: value });
+      return { previousValue: previous[category][channel] };
     },
-    onError: (_error, patch, context) => {
-      // Roll back ONLY this patch's keys, so a slow save never clobbers another
-      // toggle the member flipped while it was in flight.
-      const previous = context?.previous;
-      if (previous) {
-        queryClient.setQueryData<NotificationPreferences>(preferencesQuery.queryKey, (prev) => {
-          if (!prev) return prev;
-          const next = { ...prev };
-          for (const key of Object.keys(patch) as PreferenceKey[]) next[key] = previous[key];
-          return next;
-        });
+    mutationFn: async () => {
+      const body = queryClient.getQueryData<NotificationPreferences>(preferencesQuery.queryKey);
+      if (!body) throw new Error('Preferences are not loaded.');
+      await key.run(body, (k) => clutch.me.putPreferences(body, { idempotencyKey: k }));
+    },
+    onError: (_err, { category, channel }, context) => {
+      if (context) {
+        queryClient.setQueryData<NotificationPreferences>(preferencesQuery.queryKey, (prev) =>
+          prev ? withToggle(prev, category, channel, context.previousValue) : prev,
+        );
+        const restored = queryClient.getQueryData<NotificationPreferences>(preferencesQuery.queryKey);
+        if (channel === 'push' && restored) void push.syncWith(restored, { prompt: false });
       }
       toast({ variant: 'error', message: 'We could not save that setting. Please try again.' });
     },
-    onSuccess: (server, patch) => {
-      queryClient.setQueryData<NotificationPreferences>(preferencesQuery.queryKey, (prev) => {
-        if (!prev) return server;
-        const next = { ...prev };
-        for (const key of Object.keys(patch) as PreferenceKey[]) next[key] = server[key];
-        return next;
-      });
-    },
     onSettled: () => {
-      // Converge once, only when this was the last in-flight toggle.
-      if (queryClient.isMutating({ mutationKey: ['preferences-update'] }) === 1) {
+      // Converge once, after the last in-flight save.
+      if (queryClient.isMutating({ mutationKey: SAVE_KEY }) === 1) {
         void queryClient.invalidateQueries({ queryKey: preferencesQuery.queryKey });
       }
     },
   });
 
-  const onToggle = (key: PreferenceKey, next: boolean) => {
-    update.mutate({ [key]: next });
-    if (key === 'pushNotifications') {
-      if (next) void push.enable();
-      else void push.disable();
-    }
-  };
-
   return (
     <AccountFrame title="App preferences" backLabel="Back to account" backTo="/(tabs)/account">
-      {/* ── Notifications ── */}
       {preferences.isPending ? (
         <View style={styles.group}>
           <Text style={styles.groupLabel}>Notifications</Text>
-          <Skeleton height={168} borderRadius={radius.lg} />
+          <Skeleton height={220} borderRadius={radius.lg} />
         </View>
       ) : preferences.isError ? (
         <View style={styles.group}>
           <Text style={styles.groupLabel}>Notifications</Text>
           <View style={styles.errorBox} accessibilityRole="alert">
             <Text style={styles.errorText}>We could not load your preferences.</Text>
-            <PrimaryButton
-              label="Try again"
-              variant="secondary"
-              onPress={() => void preferences.refetch()}
-            />
+            <PrimaryButton label="Try again" variant="secondary" onPress={() => void preferences.refetch()} />
           </View>
         </View>
       ) : (
-        <SettingsGroup label="Notifications">
-          {TOGGLES.map(({ key, label }) => (
-            <SettingsRow
-              key={key}
-              label={label}
-              trailing={
-                <Switch
-                  value={preferences.data[key]}
-                  onValueChange={(next) => onToggle(key, next)}
-                  accessibilityLabel={label}
-                  trackColor={{ false: colors.surfaceOverlay, true: colors.accent }}
-                  thumbColor={colors.text}
-                  ios_backgroundColor={colors.surfaceOverlay}
-                />
-              }
-            />
-          ))}
-        </SettingsGroup>
+        SHOWN_CHANNELS.map(({ channel, label: channelLabel }) => (
+          <SettingsGroup key={channel} label={`${channelLabel} notifications`}>
+            {SHOWN_CATEGORIES.map(({ category, label }) => (
+              <SettingsRow
+                key={category}
+                label={label}
+                trailing={
+                  <Switch
+                    value={preferences.data[category][channel]}
+                    onValueChange={(value) => save.mutate({ category, channel, value })}
+                    accessibilityLabel={`${label} ${channelLabel.toLowerCase()} notifications`}
+                    trackColor={{ false: colors.surfaceOverlay, true: colors.accent }}
+                    thumbColor={colors.text}
+                    ios_backgroundColor={colors.surfaceOverlay}
+                  />
+                }
+              />
+            ))}
+          </SettingsGroup>
+        ))
       )}
 
-      {/* ── Data & privacy ── */}
       <SettingsGroup label="Data & privacy">
         <SettingsRow label="Privacy policy" comingSoon />
-        <SettingsRow
-          icon="key-outline"
-          label="Sign-in methods"
-          onPress={() => router.push('/account/sign-in-methods')}
-        />
-        <SettingsRow
-          label="Delete my account"
-          accent
-          onPress={() => router.push('/account/delete')}
-        />
+        <SettingsRow icon="key-outline" label="Sign-in methods" onPress={() => router.push('/account/sign-in-methods')} />
+        <SettingsRow label="Delete my account" accent onPress={() => router.push('/account/delete')} />
       </SettingsGroup>
 
-      {/* ── Help & support ── */}
       <SettingsGroup label="Help & support">
         <SettingsRow label="Contact us" comingSoon />
         <SettingsRow label="Rate the app" comingSoon />
       </SettingsGroup>
 
-      {/* ── About ── */}
       <SettingsGroup label="About">
         <SettingsRow label="Version" value={APP_VERSION} />
         <SettingsRow label="Terms of Service" comingSoon />
@@ -165,9 +136,7 @@ export function PreferencesScreen() {
 }
 
 const styles = StyleSheet.create({
-  group: {
-    gap: spacing.sm,
-  },
+  group: { gap: spacing.sm },
   groupLabel: {
     color: colors.textMuted,
     fontFamily: fonts.bodySemibold,
@@ -184,9 +153,5 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: colors.bgElevated,
   },
-  errorText: {
-    color: colors.text,
-    fontFamily: fonts.body,
-    fontSize: 15,
-  },
+  errorText: { color: colors.text, fontFamily: fonts.body, fontSize: 15 },
 });

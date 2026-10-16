@@ -1,18 +1,31 @@
 /**
- * Expo push-token device registration for the account preferences screen (M6).
+ * Expo push: this install's token registered with Clutch (POST /me/devices,
+ * PENDING P1 feat/expo-push) whenever the member wants any push, removed
+ * (DELETE /me/devices/{token}) on sign-out and when every push channel is off.
  *
- * When push notifications are enabled we register this device's Expo push token
- * with POST /api/me/devices; when disabled we DELETE it. Everything degrades
- * silently: on the simulator / web, without notification permission, or without
- * an EAS projectId, `getExpoPushTokenAsync` throws or returns nothing and the
- * helpers no-op rather than surfacing an error. The push preference boolean is
- * saved independently (optimistic), so a device-registration miss never blocks
- * the toggle.
+ * Rules:
+ * - Never prompt for permission when push is off. Only an explicit "turn push
+ *   on" (a switch the member flipped) may show the OS prompt; the launch sync
+ *   registers only when permission was already granted.
+ * - Everything degrades silently: simulator, web, no permission, no EAS
+ *   projectId all make the token unavailable and the helpers no-op. The
+ *   preference itself is saved independently, so a registration miss never
+ *   blocks a toggle.
+ * - Clutch says to register on every launch (re-registering is harmless and a
+ *   token another account held moves to the caller).
  */
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { Platform } from 'react-native';
 import * as Notifications from 'expo-notifications';
-import { api } from '../../lib/api';
+import { useQuery } from '@tanstack/react-query';
+import {
+  clutch,
+  NOTIFICATION_CATEGORIES,
+  useMutationKey,
+  type NotificationPreferences,
+} from '../../lib/clutch';
+import { preferencesQuery } from '../../lib/queries';
+import { useSession } from '../../lib/session';
 
 type DevicePlatform = 'ios' | 'android';
 
@@ -21,22 +34,24 @@ function devicePlatform(): DevicePlatform | null {
   return null;
 }
 
+/** True when the member wants push for any category (shown or not). */
+export function anyPushOn(prefs: NotificationPreferences): boolean {
+  return NOTIFICATION_CATEGORIES.some((category) => prefs[category].push);
+}
+
 /**
- * Resolve this device's Expo push token. Returns null (never throws) when push
- * is unavailable or declined. `promptIfNeeded` gates the OS permission prompt:
- * enabling push may ask, but disabling must NEVER prompt (turning a toggle OFF
- * should not pop a permission dialog; if permission was never granted there is
- * nothing registered to remove anyway).
+ * This device's Expo push token, or null (never throws). `prompt` allows the
+ * OS permission dialog; without it a token is read only when permission was
+ * already granted.
  */
-async function resolvePushToken(promptIfNeeded: boolean): Promise<string | null> {
+export async function readPushToken(prompt: boolean): Promise<string | null> {
   if (!devicePlatform()) return null;
   try {
     const current = await Notifications.getPermissionsAsync();
     let granted = current.granted;
     if (!granted) {
-      if (!promptIfNeeded || !current.canAskAgain) return null;
-      const requested = await Notifications.requestPermissionsAsync();
-      granted = requested.granted;
+      if (!prompt || !current.canAskAgain) return null;
+      granted = (await Notifications.requestPermissionsAsync()).granted;
     }
     if (!granted) return null;
     const token = await Notifications.getExpoPushTokenAsync();
@@ -46,36 +61,82 @@ async function resolvePushToken(promptIfNeeded: boolean): Promise<string | null>
   }
 }
 
+/**
+ * Remove this install's registration, best effort. Used on sign-out (before
+ * the session goes, while the request can still authenticate) and when every
+ * push channel is turned off. Never prompts.
+ */
+export async function unregisterThisDevice(idempotencyKey?: string): Promise<void> {
+  const token = await readPushToken(false);
+  if (!token) return;
+  try {
+    await clutch.me.unregisterDevice(token, { idempotencyKey });
+  } catch {
+    // Best effort: Clutch prunes tokens Expo reports as unregistered.
+  }
+}
+
 export interface PushRegistrationController {
-  /** Register this device's push token. Resolves false when unavailable. */
-  enable: () => Promise<boolean>;
-  /** Unregister this device's push token (best-effort). */
-  disable: () => Promise<void>;
+  /** Register this device. `prompt` only for an explicit "turn push on". */
+  register: (options: { prompt: boolean }) => Promise<boolean>;
+  unregister: () => Promise<void>;
+  /** Register or unregister to match the matrix after a change. */
+  syncWith: (prefs: NotificationPreferences, options: { prompt: boolean }) => Promise<void>;
 }
 
 export function usePushRegistration(): PushRegistrationController {
-  const enable = useCallback(async (): Promise<boolean> => {
-    const token = await resolvePushToken(true);
-    const platform = devicePlatform();
-    if (!token || !platform) return false;
-    try {
-      await api.registerDevice({ token, platform });
-      return true;
-    } catch {
-      return false;
-    }
-  }, []);
+  const registerKey = useMutationKey();
+  const unregisterKey = useMutationKey();
 
-  const disable = useCallback(async (): Promise<void> => {
-    // Never prompt when turning push off.
-    const token = await resolvePushToken(false);
-    if (!token) return;
-    try {
-      await api.unregisterDevice(token);
-    } catch {
-      // Idempotent server-side; a miss is harmless.
-    }
-  }, []);
+  const register = useCallback(
+    async ({ prompt }: { prompt: boolean }): Promise<boolean> => {
+      const platform = devicePlatform();
+      const token = await readPushToken(prompt);
+      if (!token || !platform) return false;
+      const input = { token, platform };
+      try {
+        await registerKey.run(input, (k) => clutch.me.registerDevice(input, { idempotencyKey: k }));
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [registerKey],
+  );
 
-  return { enable, disable };
+  const unregister = useCallback(
+    () => unregisterKey.run('unregister', (k) => unregisterThisDevice(k)),
+    [unregisterKey],
+  );
+
+  const syncWith = useCallback(
+    async (prefs: NotificationPreferences, { prompt }: { prompt: boolean }) => {
+      if (anyPushOn(prefs)) await register({ prompt });
+      else await unregister();
+    },
+    [register, unregister],
+  );
+
+  return { register, unregister, syncWith };
+}
+
+/**
+ * Registers this install once per signed-in session when the member wants any
+ * push and permission is already granted (no prompt). Mount it once inside
+ * the signed-in shell (the tabs layout).
+ */
+export function PushRegistrationSync() {
+  const { status, userId } = useSession();
+  const prefs = useQuery({ ...preferencesQuery, enabled: status === 'authenticated' });
+  const push = usePushRegistration();
+  const doneFor = useRef<string | null>(null);
+
+  const wanted = prefs.data ? anyPushOn(prefs.data) : false;
+  useEffect(() => {
+    if (!userId || !wanted || doneFor.current === userId) return;
+    doneFor.current = userId;
+    void push.register({ prompt: false });
+  }, [userId, wanted, push]);
+
+  return null;
 }

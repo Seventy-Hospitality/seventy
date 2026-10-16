@@ -1,252 +1,291 @@
 /**
- * Payment method screen (M6): save/replace the card on file. Mirrors
- * member-web's PaymentMethodPage translated to the native PaymentSheet: POST
- * /payment-methods/setup-intent, present the sheet in setup mode with the
- * customer + ephemeral key, read the saved payment-method id back, then POST it
- * to /payment-methods/:id/default. An async card that has not cleared parks in
- * a "confirming" hold with a manual re-check (no double-save). Card data never
- * touches our code (PCI SAQ A).
+ * Payment methods: the cards Clutch holds for this member at the club
+ * (GET /me/payment-methods), make one the default (PATCH), remove one
+ * (DELETE; Clutch may refuse to remove the card a live subscription bills,
+ * and its explanation is shown), and add a card:
+ *
+ *   POST /me/payment-methods/setup-intent (PENDING P2) -> SetupIntent sheet
+ *   on the club's connected account -> POST /me/payment-methods
+ *   {setup_intent_id} (PENDING P2): Clutch retrieves the SetupIntent and
+ *   stores the card it holds -> re-read the list.
+ *
+ * A completed sheet is not a saved card: only Clutch's save is. Simulated
+ * deployments show no sheet. Card data never touches our code (SAQ-A).
  */
-import { useCallback, useState } from 'react';
-import { useRouter } from 'expo-router';
+import { useState } from 'react';
+import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { api } from '../../lib/api';
-import { useSetupPaymentMethod } from '../../lib/stripe';
-import { EmptyStateView, PrimaryButton, Skeleton } from '../../components';
+import {
+  clutch,
+  toSheetIntent,
+  useMutationKey,
+  type CardId,
+  type SavedPaymentMethod,
+} from '../../lib/clutch';
+import { paymentMethodsQuery, queryKeys } from '../../lib/queries';
+import { usePresentConnectedSheet } from '../../lib/stripe';
+import { Badge, EmptyStateView, PrimaryButton, Skeleton, useToast } from '../../components';
 import { colors, fonts, radius, spacing, typography } from '../../theme/tokens';
 import { AccountFrame } from './AccountFrame';
-import { billingQuery, invalidateBillingState } from './account-data';
-import { paymentMethodLabel } from './account-lib';
-
-type Phase = 'idle' | 'saving' | 'processing';
+import { clutchErrorMessage, paymentMethodLabel } from './account-lib';
 
 export function PaymentMethodScreen() {
-  const router = useRouter();
-  const queryClient = useQueryClient();
-  const sheet = useSetupPaymentMethod();
-  const billing = useQuery(billingQuery);
-
-  const [phase, setPhase] = useState<Phase>('idle');
-  const [error, setError] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
-  const [processingSecret, setProcessingSecret] = useState<string | null>(null);
-  const [savedPmId, setSavedPmId] = useState<string | null>(null);
-
-  const setDefault = useMutation({
-    mutationFn: (paymentMethodId: string) => api.setDefaultPaymentMethod(paymentMethodId),
-    onSuccess: () => {
-      invalidateBillingState(queryClient);
-      done();
-    },
-    onError: () => {
-      setError('Your card was saved, but we could not make it your default. Try again; you will not be charged.');
-      setPhase('idle');
-    },
-  });
-
-  const done = useCallback(() => {
-    if (router.canGoBack()) router.back();
-    else router.replace('/account/billing');
-  }, [router]);
-
-  const promote = useCallback(
-    (paymentMethodId: string) => {
-      setSavedPmId(paymentMethodId);
-      setError(null);
-      setDefault.mutate(paymentMethodId);
-    },
-    [setDefault],
-  );
-
-  const save = useCallback(async () => {
-    if (phase === 'saving') return;
-    setError(null);
-    setNote(null);
-    if (!sheet.configured) {
-      setError('Payments are not configured in this environment.');
-      return;
-    }
-
-    setPhase('saving');
-    let intent;
-    try {
-      intent = await api.createSetupIntent();
-    } catch {
-      setError('We could not start the card update. Please try again.');
-      setPhase('idle');
-      return;
-    }
-
-    const result = await sheet.present({
-      clientSecret: intent.clientSecret,
-      customerId: intent.customerId,
-      ephemeralKeySecret: intent.ephemeralKeySecret,
-    });
-
-    if (result.status === 'canceled') {
-      setPhase('idle');
-      return;
-    }
-    if (result.status === 'unconfigured') {
-      setError('Payments are not configured in this environment.');
-      setPhase('idle');
-      return;
-    }
-    if (result.status === 'failed') {
-      setError(result.message || 'Your card could not be saved. Please try again.');
-      setPhase('idle');
-      return;
-    }
-    if (result.status === 'processing') {
-      setProcessingSecret(intent.clientSecret);
-      setPhase('processing');
-      return;
-    }
-    // completed
-    promote(result.paymentMethodId);
-  }, [phase, sheet, promote]);
-
-  const checkProcessing = useCallback(async () => {
-    if (!processingSecret) return;
-    setNote(null);
-    const result = await sheet.poll(processingSecret);
-    if (result.status === 'completed') {
-      setProcessingSecret(null);
-      promote(result.paymentMethodId);
-      return;
-    }
-    if (result.status === 'processing') {
-      setNote('Still confirming. Give it a moment and check again.');
-      return;
-    }
-    // failed / unconfigured
-    setProcessingSecret(null);
-    setPhase('idle');
-    setError('Your card could not be saved. Please try again.');
-  }, [processingSecret, sheet, promote]);
-
-  const currentCard = billing.data?.defaultPaymentMethod ?? null;
-  const busy = phase === 'saving' || setDefault.isPending;
+  const methods = useQuery(paymentMethodsQuery);
 
   return (
-    <AccountFrame title="Payment method" backLabel="Back to billing" backTo="/account/billing">
-      {!sheet.configured ? (
-        <EmptyStateView
-          title="Payments are not configured"
-          description="Set EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY to update your card in this environment."
-        />
-      ) : phase === 'processing' ? (
-        <View style={styles.panel} accessibilityRole="progressbar">
-          <Text style={styles.panelTitle}>Your payment method is being confirmed</Text>
-          <Text style={styles.panelBody}>
-            Your previous payment method stays the default until this one clears. Check again to finish
-            the switch.
-          </Text>
-          {note ? <Text style={styles.note}>{note}</Text> : null}
-          {setDefault.isError ? (
-            <Text style={styles.errorText} accessibilityRole="alert">
-              Your payment method cleared, but we could not make it your default. Check again to retry.
-            </Text>
-          ) : null}
-          <PrimaryButton
-            label="Check again"
-            loading={setDefault.isPending}
-            onPress={() => void checkProcessing()}
-          />
-          <PrimaryButton label="Back to billing" variant="ghost" onPress={done} />
+    <AccountFrame
+      title="Payment methods"
+      backLabel="Back to billing"
+      backTo="/account/billing"
+      refreshing={methods.isRefetching && !methods.isPending}
+      onRefresh={() => void methods.refetch()}
+    >
+      {methods.isPending ? (
+        <View accessibilityLabel="Loading payment methods" style={styles.list}>
+          <Skeleton height={64} borderRadius={radius.lg} />
+          <Skeleton height={64} borderRadius={radius.lg} />
+        </View>
+      ) : methods.isError ? (
+        <View style={styles.errorBox} accessibilityRole="alert">
+          <Text style={styles.body}>We could not load your payment methods.</Text>
+          <PrimaryButton label="Try again" variant="secondary" onPress={() => void methods.refetch()} />
         </View>
       ) : (
         <>
-          {billing.isPending ? (
-            <Skeleton height={64} borderRadius={radius.lg} />
-          ) : currentCard ? (
-            <View style={styles.currentCard}>
-              <Text style={styles.currentLabel}>Current card</Text>
-              <View style={styles.currentRow}>
-                <View style={styles.brandChip}>
-                  <Text style={styles.brandChipText}>{currentCard.brand.toUpperCase()}</Text>
-                </View>
-                <Text style={styles.currentText}>{paymentMethodLabel(currentCard)}</Text>
-              </View>
-            </View>
+          {methods.data.length === 0 ? (
+            <EmptyStateView
+              title="No payment methods"
+              description="Add a card to pay for your membership and bookings."
+            />
           ) : (
-            <Text style={styles.body}>Add a card to pay for your membership and bookings.</Text>
-          )}
-
-          <View style={styles.secureRow}>
-            <Ionicons name="lock-closed-outline" size={18} color={colors.textMuted} />
-            <Text style={styles.secureText}>Card details are entered securely in the next step.</Text>
-          </View>
-
-          {setDefault.isError && savedPmId ? (
-            <View style={styles.retryBox} accessibilityRole="alert">
-              <Text style={styles.errorText}>{error}</Text>
-              <PrimaryButton
-                label="Try again"
-                variant="secondary"
-                loading={setDefault.isPending}
-                onPress={() => promote(savedPmId)}
-              />
+            <View style={styles.card}>
+              {methods.data.map((method, index) => (
+                <MethodRow key={method.id} method={method} first={index === 0} />
+              ))}
             </View>
-          ) : error ? (
-            <Text style={styles.errorText} accessibilityRole="alert">
-              {error}
-            </Text>
-          ) : null}
-
-          <PrimaryButton
-            label={currentCard ? 'Update card' : 'Add card'}
-            loading={busy}
-            onPress={() => void save()}
-          />
+          )}
+          <AddCard />
         </>
       )}
     </AccountFrame>
   );
 }
 
+function MethodRow({ method, first }: { method: SavedPaymentMethod; first: boolean }) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const defaultKey = useMutationKey();
+  const removeKey = useMutationKey();
+
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.paymentMethods });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.membership, exact: true });
+  };
+
+  const makeDefault = useMutation({
+    mutationFn: (cardId: CardId) =>
+      defaultKey.run(cardId, (k) => clutch.paymentMethods.setDefault(cardId, { idempotencyKey: k })),
+    onSuccess: refresh,
+    onError: (err) => toast({ variant: 'error', message: clutchErrorMessage(err, 'We could not change your default card.') }),
+  });
+
+  const remove = useMutation({
+    mutationFn: (cardId: CardId) =>
+      removeKey.run(cardId, (k) => clutch.paymentMethods.remove(cardId, { idempotencyKey: k })),
+    onSuccess: () => {
+      refresh();
+      toast({ variant: 'success', message: 'Card removed.' });
+    },
+    // Clutch refuses to remove the card a live subscription bills: its reason is shown as is.
+    onError: (err) => toast({ variant: 'error', message: clutchErrorMessage(err, 'We could not remove that card.') }),
+  });
+
+  const label = paymentMethodLabel(method);
+  const confirmRemove = () =>
+    Alert.alert('Remove card?', label, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Remove', style: 'destructive', onPress: () => remove.mutate(method.id) },
+    ]);
+
+  return (
+    <View style={[styles.row, first ? null : styles.rowDivider]}>
+      <Ionicons name="card-outline" size={20} color={colors.textMuted} />
+      <View style={styles.rowText}>
+        <Text style={styles.rowLabel}>{label}</Text>
+        {method.is_default ? <Badge label="Default" variant="accent" /> : null}
+      </View>
+      <View style={styles.rowActions}>
+        {!method.is_default ? (
+          <TextAction
+            label="Make default"
+            accessibilityLabel={`Make ${label} the default`}
+            busy={makeDefault.isPending}
+            onPress={() => makeDefault.mutate(method.id)}
+          />
+        ) : null}
+        <TextAction
+          label="Remove"
+          accessibilityLabel={`Remove ${label}`}
+          destructive
+          busy={remove.isPending}
+          onPress={confirmRemove}
+        />
+      </View>
+    </View>
+  );
+}
+
+function TextAction({
+  label,
+  accessibilityLabel,
+  onPress,
+  busy,
+  destructive,
+}: {
+  label: string;
+  accessibilityLabel: string;
+  onPress: () => void;
+  busy: boolean;
+  destructive?: boolean;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityState={{ busy }}
+      disabled={busy}
+      onPress={onPress}
+      hitSlop={6}
+    >
+      <Text style={[styles.action, destructive ? styles.actionDestructive : null, busy ? styles.actionBusy : null]}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+type AddPhase = 'idle' | 'working';
+
+function AddCard() {
+  const queryClient = useQueryClient();
+  const presentSheet = usePresentConnectedSheet();
+  const setupKey = useMutationKey();
+  const saveKey = useMutationKey();
+
+  const [phase, setPhase] = useState<AddPhase>('idle');
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  /** A completed SetupIntent Clutch has not stored yet (the save failed): retry it. */
+  const [unsaved, setUnsaved] = useState<string | null>(null);
+
+  async function refreshList() {
+    await queryClient.invalidateQueries({ queryKey: queryKeys.paymentMethods });
+  }
+
+  async function saveWithClutch(setupIntentId: string) {
+    try {
+      await saveKey.run(setupIntentId, (k) => clutch.paymentMethods.save(setupIntentId, { idempotencyKey: k }));
+      setUnsaved(null);
+      setNotice('Card added.');
+      await refreshList();
+    } catch (err) {
+      setUnsaved(setupIntentId);
+      setError(clutchErrorMessage(err, 'Your card was accepted, but the club could not save it yet. Try again.'));
+    }
+  }
+
+  async function add() {
+    if (phase === 'working') return;
+    setError(null);
+    setNotice(null);
+    setPhase('working');
+    try {
+      if (unsaved) {
+        await saveWithClutch(unsaved);
+        return;
+      }
+      let bundle;
+      try {
+        bundle = await setupKey.run('setup-intent', (k) => clutch.paymentMethods.setupIntent({ idempotencyKey: k }));
+      } catch (err) {
+        setError(clutchErrorMessage(err, 'We could not start adding a card. Please try again.'));
+        return;
+      }
+      const intent = toSheetIntent(bundle);
+      if (intent.mode === 'simulated') {
+        // Simulated deployments have no Stripe: Clutch handles the card itself.
+        setNotice('Cards are simulated in this environment: no card details are needed.');
+        await refreshList();
+        return;
+      }
+      const sheet = await presentSheet(intent, { merchantDisplayName: 'Club70' });
+      switch (sheet.status) {
+        case 'canceled':
+          return;
+        case 'unconfigured':
+          setError('Payments are not configured in this build.');
+          return;
+        case 'failed':
+          setError(sheet.message || 'Your card could not be added. Please try again.');
+          return;
+        case 'completed':
+          await saveWithClutch(sheet.intentId);
+          return;
+      }
+    } finally {
+      setPhase('idle');
+    }
+  }
+
+  return (
+    <View style={styles.addBlock}>
+      <View style={styles.secureRow}>
+        <Ionicons name="lock-closed-outline" size={18} color={colors.textMuted} />
+        <Text style={styles.secureText}>Card details are entered securely in the next step.</Text>
+      </View>
+      {notice ? <Text style={styles.notice}>{notice}</Text> : null}
+      {error ? (
+        <Text style={styles.errorText} accessibilityRole="alert">
+          {error}
+        </Text>
+      ) : null}
+      <PrimaryButton
+        label={unsaved ? 'Finish saving card' : 'Add card'}
+        loading={phase === 'working'}
+        onPress={() => void add()}
+      />
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  body: {
-    ...typography.body,
-    color: colors.textMuted,
+  list: { gap: spacing.sm },
+  body: { ...typography.body, color: colors.textMuted },
+  errorBox: {
+    gap: spacing.md,
+    padding: spacing.md,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bgElevated,
   },
-  currentCard: {
+  card: {
     backgroundColor: colors.bgElevated,
     borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: colors.border,
-    padding: spacing.md,
-    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
   },
-  currentLabel: {
-    ...typography.label,
-    color: colors.textMuted,
-    textTransform: 'uppercase',
-  },
-  currentRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
-  brandChip: {
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 3,
-    borderRadius: radius.sm,
-    backgroundColor: colors.surfaceOverlay,
-  },
-  brandChipText: {
-    color: colors.text,
-    fontFamily: fonts.bodyBold,
-    fontSize: 11,
-    letterSpacing: 0.6,
-  },
-  currentText: {
-    color: colors.text,
-    fontFamily: fonts.bodyMedium,
-    fontSize: 15,
-  },
+  row: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingVertical: spacing.md },
+  rowDivider: { borderTopWidth: 1, borderTopColor: colors.border },
+  rowText: { flex: 1, gap: spacing.xs, alignItems: 'flex-start' },
+  rowLabel: { color: colors.text, fontFamily: fonts.bodyMedium, fontSize: 15 },
+  rowActions: { alignItems: 'flex-end', gap: spacing.sm },
+  action: { color: colors.accent, fontFamily: fonts.bodySemibold, fontSize: 14 },
+  actionDestructive: { color: colors.danger },
+  actionBusy: { opacity: 0.5 },
+  addBlock: { gap: spacing.md },
   secureRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -257,41 +296,7 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: colors.bgElevated,
   },
-  secureText: {
-    ...typography.body,
-    color: colors.textMuted,
-    flex: 1,
-  },
-  panel: {
-    gap: spacing.md,
-    padding: spacing.lg,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.bgElevated,
-  },
-  panelTitle: {
-    ...typography.h3,
-    color: colors.text,
-  },
-  panelBody: {
-    ...typography.body,
-    color: colors.textMuted,
-  },
-  note: {
-    ...typography.body,
-    color: colors.textMuted,
-  },
-  errorText: {
-    ...typography.body,
-    color: colors.danger,
-  },
-  retryBox: {
-    gap: spacing.sm,
-    padding: spacing.md,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.bgElevated,
-  },
+  secureText: { ...typography.body, color: colors.textMuted, flex: 1 },
+  notice: { ...typography.body, color: colors.textMuted },
+  errorText: { ...typography.body, color: colors.danger },
 });

@@ -1,70 +1,94 @@
-import { renderHook, act } from '@testing-library/react-native';
+import { waitFor } from '@testing-library/react-native';
+import * as Notifications from 'expo-notifications';
+import type { MockClutch } from '../../../lib/clutch/testing';
+import type { NotificationPreferences } from '../../../lib/clutch';
+import { anyPushOn, PushRegistrationSync, unregisterThisDevice } from '../usePushRegistration';
+import { renderWithProviders } from './render-account';
 
-const mockGetPermissions = jest.fn();
-const mockRequestPermissions = jest.fn();
-const mockGetExpoPushToken = jest.fn();
-const mockRegisterDevice = jest.fn();
-const mockUnregisterDevice = jest.fn();
+jest.mock('../../../lib/clutch', () => {
+  const actual = jest.requireActual('../../../lib/clutch');
+  const { createMockClutch } = jest.requireActual('../../../lib/clutch/testing');
+  return { ...actual, clutch: createMockClutch() };
+});
+const mockClutch = (jest.requireMock('../../../lib/clutch') as { clutch: MockClutch }).clutch;
 
-jest.mock('expo-notifications', () => ({
-  getPermissionsAsync: (...a: unknown[]) => mockGetPermissions(...a),
-  requestPermissionsAsync: (...a: unknown[]) => mockRequestPermissions(...a),
-  getExpoPushTokenAsync: (...a: unknown[]) => mockGetExpoPushToken(...a),
+jest.mock('../../../lib/session', () => ({
+  useSession: () => ({ status: 'authenticated', userId: 'u1' }),
 }));
 
-jest.mock('../../../lib/api', () => ({
-  api: {
-    registerDevice: (...a: unknown[]) => mockRegisterDevice(...a),
-    unregisterDevice: (...a: unknown[]) => mockUnregisterDevice(...a),
-  },
-}));
+const off = { push: false, email: true, sms: false };
+const ALL_OFF: NotificationPreferences = {
+  bookings: off,
+  tournaments: off,
+  leagues: off,
+  messages: off,
+  clubAnnouncements: off,
+  promotions: off,
+};
 
-// jest-expo defaults Platform.OS to 'ios', so devicePlatform() resolves.
-import { usePushRegistration } from '../usePushRegistration';
+const getPermissions = Notifications.getPermissionsAsync as jest.Mock;
+const requestPermissions = Notifications.requestPermissionsAsync as jest.Mock;
 
 beforeEach(() => {
-  mockGetPermissions.mockReset();
-  mockRequestPermissions.mockReset();
-  mockGetExpoPushToken.mockReset();
-  mockRegisterDevice.mockReset();
-  mockUnregisterDevice.mockReset();
-  mockGetExpoPushToken.mockResolvedValue({ data: 'ExponentPushToken[abc]' });
+  jest.clearAllMocks();
+  mockClutch.me.registerDevice.mockResolvedValue({ token: 'ExponentPushToken[test]', platform: 'ios' });
+  mockClutch.me.unregisterDevice.mockResolvedValue(null);
 });
 
-test('disable() never prompts for permission (toggling push off)', async () => {
-  mockGetPermissions.mockResolvedValue({ granted: false, canAskAgain: true });
-  const { result } = renderHook(() => usePushRegistration());
-
-  await act(async () => {
-    await result.current.disable();
+describe('anyPushOn', () => {
+  it('counts every category, shown or not', () => {
+    expect(anyPushOn(ALL_OFF)).toBe(false);
+    expect(anyPushOn({ ...ALL_OFF, leagues: { ...off, push: true } })).toBe(true);
   });
-
-  expect(mockRequestPermissions).not.toHaveBeenCalled();
-  // Nothing was registered (permission never granted), so nothing to unregister.
-  expect(mockUnregisterDevice).not.toHaveBeenCalled();
 });
 
-test('disable() unregisters when permission is already granted', async () => {
-  mockGetPermissions.mockResolvedValue({ granted: true, canAskAgain: false });
-  const { result } = renderHook(() => usePushRegistration());
+describe('PushRegistrationSync', () => {
+  it('registers this install when push is wanted and permission was already granted', async () => {
+    getPermissions.mockResolvedValueOnce({ granted: true, canAskAgain: true });
+    mockClutch.me.preferences.mockResolvedValue({ ...ALL_OFF, bookings: { ...off, push: true } });
 
-  await act(async () => {
-    await result.current.disable();
+    renderWithProviders(<PushRegistrationSync />);
+
+    await waitFor(() =>
+      expect(mockClutch.me.registerDevice).toHaveBeenCalledWith(
+        { token: 'ExponentPushToken[test]', platform: 'ios' },
+        expect.objectContaining({ idempotencyKey: expect.any(String) }),
+      ),
+    );
+    expect(requestPermissions).not.toHaveBeenCalled();
   });
 
-  expect(mockRequestPermissions).not.toHaveBeenCalled();
-  expect(mockUnregisterDevice).toHaveBeenCalledWith('ExponentPushToken[abc]');
+  it('never prompts on launch, even when push is wanted', async () => {
+    mockClutch.me.preferences.mockResolvedValue({ ...ALL_OFF, bookings: { ...off, push: true } });
+
+    renderWithProviders(<PushRegistrationSync />);
+
+    await waitFor(() => expect(getPermissions).toHaveBeenCalled());
+    expect(requestPermissions).not.toHaveBeenCalled();
+    expect(mockClutch.me.registerDevice).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when every push channel is off', async () => {
+    mockClutch.me.preferences.mockResolvedValue(ALL_OFF);
+
+    renderWithProviders(<PushRegistrationSync />);
+
+    await waitFor(() => expect(mockClutch.me.preferences).toHaveBeenCalled());
+    expect(getPermissions).not.toHaveBeenCalled();
+    expect(mockClutch.me.registerDevice).not.toHaveBeenCalled();
+  });
 });
 
-test('enable() may prompt when permission can be asked', async () => {
-  mockGetPermissions.mockResolvedValue({ granted: false, canAskAgain: true });
-  mockRequestPermissions.mockResolvedValue({ granted: true });
-  const { result } = renderHook(() => usePushRegistration());
-
-  await act(async () => {
-    await result.current.enable();
+describe('unregisterThisDevice', () => {
+  it('removes the registration without prompting', async () => {
+    getPermissions.mockResolvedValueOnce({ granted: true, canAskAgain: true });
+    await unregisterThisDevice('k1');
+    expect(mockClutch.me.unregisterDevice).toHaveBeenCalledWith('ExponentPushToken[test]', { idempotencyKey: 'k1' });
+    expect(requestPermissions).not.toHaveBeenCalled();
   });
 
-  expect(mockRequestPermissions).toHaveBeenCalled();
-  expect(mockRegisterDevice).toHaveBeenCalledWith({ token: 'ExponentPushToken[abc]', platform: 'ios' });
+  it('is a silent no-op without permission', async () => {
+    await unregisterThisDevice();
+    expect(mockClutch.me.unregisterDevice).not.toHaveBeenCalled();
+  });
 });

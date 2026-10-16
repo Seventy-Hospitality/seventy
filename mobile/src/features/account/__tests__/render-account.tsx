@@ -16,7 +16,7 @@ const METRICS = {
 
 export function makeClient(seed: [readonly unknown[], unknown][] = []): QueryClient {
   const client = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { retry: false, gcTime: Infinity } },
   });
   for (const [key, value] of seed) client.setQueryData(key as unknown[], value);
   return client;

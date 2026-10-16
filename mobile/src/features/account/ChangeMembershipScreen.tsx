@@ -1,416 +1,338 @@
 /**
- * Change membership (M6), native. Mirrors member-web's ChangeMembershipPage:
- * the plan catalog (reusing M1's plan-pricing cards), a preview of upgrade
- * (immediate + prorated) vs downgrade (scheduled at period end), the native
- * PaymentSheet for a proration charge, and a cancel flow (at-period-end default
- * or cancel-now). The POST /change response is authoritative; the client copy
- * only previews direction.
+ * Manage membership: the current tier, a switch to another tier, cancel and
+ * resume. Clutch decides everything and the screen re-reads it after every
+ * action (GET /me/membership); nothing is inferred locally.
+ *
+ * - Tiers on offer: GET /me/membership/change (Clutch's eligible list, each
+ *   marked upgrade or downgrade by Clutch).
+ * - Switch: POST /me/membership/change (PENDING P2). An upgrade applies now
+ *   and may need a payment sheet for the prorated invoice (built from the
+ *   bundle fields in the answer); then POST /me/membership/confirm (PENDING
+ *   P2) and a re-read. A downgrade is scheduled for `effectiveAt`.
+ * - Cancel at period end or now: DELETE /me/membership/subscription
+ *   (PENDING P2). Resume a scheduled cancellation: POST
+ *   /me/membership/subscription/resume (PENDING P2).
  */
-import { useCallback, useState } from 'react';
+import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { useRouter } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import {
-  ApiError,
-  api,
-  type BillingInterval,
-  type MembershipSummary,
-  type Plan,
-} from '../../lib/api';
-import { usePaymentSheet, usePaymentsConfigured } from '../../lib/stripe';
-import {
-  Badge,
-  Checkbox,
-  EmptyStateView,
-  PrimaryButton,
-  SegmentedControl,
-  Sheet,
-  Skeleton,
-  useToast,
-} from '../../components';
-import { useVenueTimezone } from '../reserve';
-import { plansQuery } from '../onboarding/queries';
+  clutch,
+  toSheetIntent,
+  useMutationKey,
+  type ChangeTierResult,
+  type EligibleChangeTier,
+  type MySubscription,
+  type SheetIntent,
+} from '../../lib/clutch';
+import { useClub } from '../../lib/club';
+import { membershipQuery, queryKeys } from '../../lib/queries';
+import { usePresentConnectedSheet } from '../../lib/stripe';
+import { Badge, Checkbox, EmptyStateView, PrimaryButton, Sheet, Skeleton, useToast } from '../../components';
 import { colors, fonts, radius, spacing, typography } from '../../theme/tokens';
 import { AccountFrame } from './AccountFrame';
-import { billingQuery, invalidateBillingState } from './account-data';
+import { refreshMembershipState } from './account-data';
 import {
-  PERIOD_LABELS,
-  billingCaption,
-  canCancelMembership,
-  canChangeMembership,
-  defaultBillingPeriod,
-  formatAmount,
+  canCancel,
+  canChangeTier,
+  canResume,
+  clutchErrorMessage,
+  formatCents,
   instantDateLabel,
-  listBillingPeriods,
-  periodSuffix,
-  planCardsForPeriod,
-  planChangeKind,
-  planChangeSummary,
-  tierLabel,
-  type PlanChangeKind,
-  type PlanCard,
+  intervalNoun,
+  subscriptionStatusLine,
+  tierChangeApplied,
 } from './account-lib';
 
-type PayPhase = 'idle' | 'paying' | 'processing';
+const eligibleChangesQuery = {
+  queryKey: queryKeys.eligibleTierChanges,
+  queryFn: () => clutch.membership.eligibleChanges(),
+};
 
-export function ChangeMembershipScreen() {
-  const plans = useQuery(plansQuery);
-  const billing = useQuery(billingQuery);
-
-  const pending = plans.isPending || billing.isPending;
-  const errored = plans.isError || billing.isError;
-
-  if (pending) {
-    return (
-      <AccountFrame title="Change membership" backLabel="Back to billing" backTo="/account/billing">
-        <View accessibilityLabel="Loading memberships" style={styles.loading}>
-          <Skeleton height={44} borderRadius={radius.pill} />
-          <Skeleton height={140} borderRadius={radius.lg} />
-          <Skeleton height={140} borderRadius={radius.lg} />
-        </View>
-      </AccountFrame>
-    );
-  }
-
-  if (errored) {
-    return (
-      <AccountFrame title="Change membership" backLabel="Back to billing" backTo="/account/billing">
-        <View style={styles.errorBox} accessibilityRole="alert">
-          <Text style={styles.errorText}>We could not load your membership.</Text>
-          <PrimaryButton
-            label="Try again"
-            variant="secondary"
-            onPress={() => {
-              if (plans.isError) void plans.refetch();
-              if (billing.isError) void billing.refetch();
-            }}
-          />
-        </View>
-      </AccountFrame>
-    );
-  }
-
-  return <ChangeView plans={plans.data ?? []} membership={billing.data?.membership ?? null} />;
+/** The sheet for an upgrade's prorated invoice, when Clutch asked for one. */
+export function changeSheetIntent(result: ChangeTierResult): SheetIntent | null {
+  if (result.kind !== 'upgraded') return null;
+  if (!result.clientSecret && !result.simulated) return null;
+  return toSheetIntent({
+    clientSecret: result.clientSecret,
+    intentType: result.intentType ?? 'payment',
+    customerId: result.customerId,
+    ephemeralKeySecret: result.ephemeralKeySecret,
+    stripeAccount: result.stripeAccount,
+    simulated: result.simulated ?? false,
+  });
 }
 
-function ChangeView({
-  plans,
-  membership,
-}: {
-  plans: Plan[];
-  membership: MembershipSummary | null;
-}) {
-  const router = useRouter();
+export function ChangeMembershipScreen() {
+  const membership = useQuery(membershipQuery);
+
+  return (
+    <AccountFrame
+      title="Membership"
+      backLabel="Back to billing"
+      backTo="/account/billing"
+      refreshing={membership.isRefetching && !membership.isPending}
+      onRefresh={() => void membership.refetch()}
+    >
+      {membership.isPending ? (
+        <View accessibilityLabel="Loading your membership" style={styles.stack}>
+          <Skeleton height={120} borderRadius={radius.lg} />
+          <Skeleton height={140} borderRadius={radius.lg} />
+        </View>
+      ) : membership.isError ? (
+        <View style={styles.box} accessibilityRole="alert">
+          <Text style={styles.text}>We could not load your membership.</Text>
+          <PrimaryButton label="Try again" variant="secondary" onPress={() => void membership.refetch()} />
+        </View>
+      ) : membership.data.subscription ? (
+        <ManageView subscription={membership.data.subscription} />
+      ) : (
+        <EmptyStateView
+          title="No membership tier on file"
+          description="Contact the club if this looks wrong."
+        />
+      )}
+    </AccountFrame>
+  );
+}
+
+type SwitchPhase =
+  | { name: 'idle' }
+  | { name: 'working' }
+  /** The upgrade waits on its payment: pay (again) to finish. */
+  | { name: 'pay'; intent: SheetIntent; target: EligibleChangeTier }
+  /** Paid, but Clutch does not show the new tier yet: re-check. */
+  | { name: 'settling'; target: EligibleChangeTier };
+
+function ManageView({ subscription }: { subscription: MySubscription }) {
   const queryClient = useQueryClient();
-  const timezone = useVenueTimezone();
   const { toast } = useToast();
-  const configured = usePaymentsConfigured();
-  const presentSheet = usePaymentSheet();
+  const timezone = useClub().data?.timezone;
+  const presentSheet = usePresentConnectedSheet();
+  const changeKey = useMutationKey();
+  const confirmKey = useMutationKey();
+  const cancelKey = useMutationKey();
+  const resumeKey = useMutationKey();
 
-  const currentPlan = membership?.plan ?? null;
-  const canChange = canChangeMembership(membership);
-  const canCancel = canCancelMembership(membership);
+  const changeable = canChangeTier(subscription);
+  const eligible = useQuery({ ...eligibleChangesQuery, enabled: changeable });
 
-  const periods = listBillingPeriods(plans);
-  const [period, setPeriod] = useState<BillingInterval>(() => {
-    if (currentPlan && periods.includes(currentPlan.interval)) return currentPlan.interval;
-    return defaultBillingPeriod(plans);
-  });
-  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
-  const [payPhase, setPayPhase] = useState<PayPhase>('idle');
-  const [payNotice, setPayNotice] = useState<string | null>(null);
-  const [changeError, setChangeError] = useState<string | null>(null);
-  const [clientSecret, setClientSecret] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [phase, setPhase] = useState<SwitchPhase>({ name: 'idle' });
+  const [notice, setNotice] = useState<string | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelNow, setCancelNow] = useState(false);
 
-  const periodEndLabel = membership
-    ? instantDateLabel(membership.currentPeriodEnd, timezone)
-    : '';
+  const periodEnd = subscription.current_period_end
+    ? instantDateLabel(subscription.current_period_end, timezone)
+    : null;
+  const selected = eligible.data?.find((tier) => tier.id === selectedId) ?? null;
 
-  const change = useMutation({ mutationFn: (planId: string) => api.changeMembership(planId) });
-  const confirm = useMutation({ mutationFn: () => api.confirmMembership() });
-  const cancel = useMutation({ mutationFn: (options: { now?: boolean }) => api.cancelMembership(options) });
-
-  const busy =
-    change.isPending || confirm.isPending || cancel.isPending || payPhase !== 'idle';
-
-  const finish = useCallback(
-    (message: string) => {
-      invalidateBillingState(queryClient);
-      toast({ variant: 'success', message });
-      if (router.canGoBack()) router.back();
-      else router.replace('/account/billing');
-    },
-    [queryClient, toast, router],
-  );
-
-  const runConfirm = useCallback(async () => {
-    let data;
+  /** Confirm with Clutch, re-read, and say what Clutch now shows. */
+  async function settle(target: EligibleChangeTier) {
     try {
-      data = await confirm.mutateAsync();
+      await confirmKey.run('confirm', (k) => clutch.membership.confirm({ idempotencyKey: k }));
     } catch {
-      setPayNotice('Your payment went through, but we could not confirm the change. Try again.');
-      setPayPhase('processing');
-      return;
+      // A failed re-read of Stripe decides nothing; the membership read below does.
     }
-    if (data.activated || data.paymentStatus === 'succeeded') {
-      finish('Membership updated');
-      return;
+    let fresh: MySubscription | null = null;
+    try {
+      fresh = (await queryClient.fetchQuery({ ...membershipQuery, staleTime: 0 })).subscription;
+    } catch {
+      // Unknown: offer a re-check rather than guessing.
     }
-    if (data.paymentStatus === 'requires_payment_method' || data.paymentStatus === 'canceled') {
-      setPayNotice('Your payment was not completed. Please try again.');
-      setPayPhase('idle');
-      return;
+    await refreshMembershipState(queryClient);
+    if (tierChangeApplied(fresh, target)) {
+      setPhase({ name: 'idle' });
+      setSelectedId(null);
+      setNotice(null);
+      toast({ variant: 'success', message: `You are now on ${target.name}.` });
+    } else {
+      setPhase({ name: 'settling', target });
     }
-    setPayNotice(null);
-    setPayPhase('processing');
-  }, [confirm, finish]);
-
-  const payProration = useCallback(
-    async (secret: string) => {
-      if (!configured) {
-        setPayNotice('Payments are not configured in this environment.');
-        setPayPhase('idle');
-        return;
-      }
-      setPayPhase('paying');
-      const result = await presentSheet({ clientSecret: secret, merchantDisplayName: 'Club70' });
-      if (result.status === 'unconfigured') {
-        setPayNotice('Payments are not configured in this environment.');
-        setPayPhase('idle');
-        return;
-      }
-      if (result.status === 'canceled') {
-        // The upgrade already applied server-side (allow_incomplete); the
-        // proration invoice stays open. Keep the payment step so the member can
-        // retry, and point them at billing.
-        setPayNotice(
-          'Your plan was changed, but the payment did not complete. Retry below, or update your payment method on the billing page.',
-        );
-        setPayPhase('idle');
-        return;
-      }
-      if (result.status === 'failed') {
-        setPayNotice(result.message || 'Your payment could not be completed.');
-        setPayPhase('idle');
-        return;
-      }
-      await runConfirm();
-    },
-    [configured, presentSheet, runConfirm],
-  );
-
-  const onSwitch = useCallback(
-    async (planId: string) => {
-      if (busy) return;
-      setChangeError(null);
-      setPayNotice(null);
-      let result;
-      try {
-        result = await change.mutateAsync(planId);
-      } catch (err) {
-        setChangeError(
-          err instanceof ApiError && err.code !== 'UNKNOWN'
-            ? err.message
-            : 'We could not change your membership. Please try again.',
-        );
-        return;
-      }
-      if (result.kind === 'downgrade_scheduled') {
-        finish(
-          `Plan change scheduled for ${
-            result.pendingPlanEffectiveAt
-              ? instantDateLabel(result.pendingPlanEffectiveAt, timezone)
-              : periodEndLabel
-          }`,
-        );
-        return;
-      }
-      if (result.clientSecret === null) {
-        finish('Membership updated');
-        return;
-      }
-      setClientSecret(result.clientSecret);
-      await payProration(result.clientSecret);
-    },
-    [busy, change, finish, payProration, periodEndLabel, timezone],
-  );
-
-  // No changeable/cancellable membership at all.
-  if (!currentPlan || (!canChange && !canCancel)) {
-    return (
-      <AccountFrame title="Change membership" backLabel="Back to billing" backTo="/account/billing">
-        <EmptyStateView
-          title="No active membership to change"
-          description="You do not have a membership that can be changed or cancelled right now."
-        />
-      </AccountFrame>
-    );
   }
 
-  // ── Payment step (proration charge for an upgrade) ──
-  const inPaymentStep = clientSecret !== null || payPhase === 'processing' || confirm.isPending;
-  if (inPaymentStep) {
-    const selectedPlan = plans.find((plan) => plan.id === selectedPlanId) ?? null;
-    return (
-      <AccountFrame title="Change membership" backLabel="Back to billing" backTo="/account/billing">
-        {payPhase === 'processing' ? (
-          <View style={styles.panel} accessibilityRole="progressbar">
-            {payNotice ? (
-              <Text style={styles.payAlert} accessibilityRole="alert">
-                {payNotice}
-              </Text>
-            ) : null}
-            <Text style={styles.panelTitle}>Your payment is processing</Text>
-            <Text style={styles.panelBody}>
-              Your plan change completes as soon as the charge clears. This can take a moment for some
-              payment methods.
-            </Text>
-            <PrimaryButton
-              label="Check again"
-              loading={confirm.isPending}
-              onPress={() => void runConfirm()}
-            />
-          </View>
-        ) : (
-          <View style={styles.panel}>
-            <Text style={styles.panelBody}>
-              Confirm the prorated charge to finish switching to {selectedPlan?.name ?? 'your new plan'}.
-            </Text>
-            {payNotice ? (
-              <Text style={styles.payAlert} accessibilityRole="alert">
-                {payNotice}
-              </Text>
-            ) : null}
-            <PrimaryButton
-              label="Pay and switch plan"
-              loading={payPhase === 'paying'}
-              onPress={() => {
-                if (clientSecret) void payProration(clientSecret);
-              }}
-            />
-            <PrimaryButton
-              label="Back to billing"
-              variant="ghost"
-              disabled={busy}
-              onPress={() => router.replace('/account/billing')}
-            />
-          </View>
-        )}
-      </AccountFrame>
-    );
+  async function pay(intent: SheetIntent, target: EligibleChangeTier) {
+    if (intent.mode === 'stripe') {
+      const sheet = await presentSheet(intent, { merchantDisplayName: 'Club70' });
+      switch (sheet.status) {
+        case 'canceled':
+          setNotice('The switch waits for this payment. Pay to finish it, or leave it and keep your current tier.');
+          setPhase({ name: 'pay', intent, target });
+          return;
+        case 'unconfigured':
+          setNotice('Payments are not configured in this build.');
+          setPhase({ name: 'pay', intent, target });
+          return;
+        case 'failed':
+          setNotice(sheet.message || 'Your payment could not be completed.');
+          setPhase({ name: 'pay', intent, target });
+          return;
+        case 'completed':
+          break;
+      }
+    }
+    setPhase({ name: 'working' });
+    await settle(target);
   }
 
-  // ── Plan picker ──
-  const cards = planCardsForPeriod(plans, period);
-  const selectedPlan = cards.find((card) => card.plan.id === selectedPlanId)?.plan ?? null;
-  const isCurrent = selectedPlan?.id === currentPlan.id;
-  const changeKind: PlanChangeKind | null =
-    selectedPlan && !isCurrent
-      ? planChangeKind(
-          { tier: currentPlan.tier, interval: currentPlan.interval, amountCents: currentPlan.amountCents },
-          { tier: selectedPlan.tier, interval: selectedPlan.interval, amountCents: selectedPlan.amountCents },
-        )
-      : null;
+  async function switchTo(target: EligibleChangeTier) {
+    if (phase.name === 'working') return;
+    setNotice(null);
+    setPhase({ name: 'working' });
+    let result: ChangeTierResult;
+    try {
+      result = await changeKey.run(target.id, (k) => clutch.membership.change(target.id, { idempotencyKey: k }));
+    } catch (err) {
+      setNotice(clutchErrorMessage(err, 'We could not change your membership. Please try again.'));
+      setPhase({ name: 'idle' });
+      await refreshMembershipState(queryClient);
+      return;
+    }
+    if (result.kind === 'downgrade_scheduled') {
+      await refreshMembershipState(queryClient);
+      setPhase({ name: 'idle' });
+      setSelectedId(null);
+      const when = result.effectiveAt ? instantDateLabel(result.effectiveAt, timezone) : periodEnd;
+      toast({ variant: 'success', message: when ? `Switch to ${target.name} scheduled for ${when}.` : `Switch to ${target.name} scheduled.` });
+      return;
+    }
+    const intent = changeSheetIntent(result);
+    if (intent) await pay(intent, target);
+    else await settle(target);
+  }
+
+  const cancel = useMutation({
+    mutationFn: (at: 'period_end' | 'now') =>
+      cancelKey.run(at, (k) => clutch.membership.cancel(at, { idempotencyKey: k })),
+    onSettled: () => refreshMembershipState(queryClient),
+    onSuccess: () => {
+      setCancelOpen(false);
+      toast({ variant: 'success', message: 'Cancellation received. Your membership status is shown below.' });
+    },
+    onError: (err) => {
+      setCancelOpen(false);
+      toast({ variant: 'error', message: clutchErrorMessage(err, 'We could not cancel your membership. Please try again.') });
+    },
+  });
+
+  const resume = useMutation({
+    mutationFn: () => resumeKey.run('resume', (k) => clutch.membership.resume({ idempotencyKey: k })),
+    onSettled: () => refreshMembershipState(queryClient),
+    onSuccess: () => toast({ variant: 'success', message: 'Resume received. Your membership status is shown below.' }),
+    onError: (err) =>
+      toast({ variant: 'error', message: clutchErrorMessage(err, 'We could not resume your membership. Please try again.') }),
+  });
+
+  const working = phase.name === 'working';
 
   return (
-    <AccountFrame title="Change membership" backLabel="Back to billing" backTo="/account/billing">
-      {payNotice ? (
-        <Text style={styles.payAlert} accessibilityRole="alert">
-          {payNotice}
+    <>
+      <View style={styles.box}>
+        <Text style={styles.label}>Current tier</Text>
+        <View style={styles.tierRow}>
+          <Text style={styles.tierName}>{subscription.tier_name}</Text>
+          <Text style={styles.price}>
+            {formatCents(subscription.price_cents, subscription.currency)}
+            <Text style={styles.per}> / {intervalNoun(subscription.interval)}</Text>
+          </Text>
+        </View>
+        <Text style={styles.muted}>{subscriptionStatusLine(subscription, timezone)}</Text>
+      </View>
+
+      {notice ? (
+        <Text style={styles.alert} accessibilityRole="alert">
+          {notice}
         </Text>
       ) : null}
 
-      {canChange ? (
-        <>
-          {periods.length > 1 ? (
-            <SegmentedControl
-              label="Billing period"
-              options={periods.map((value) => ({ value, label: PERIOD_LABELS[value] }))}
-              value={period}
-              onChange={(next) => {
-                setPeriod(next);
-                setSelectedPlanId(null);
-              }}
-            />
-          ) : null}
-
-          <View style={styles.cards} accessibilityRole="radiogroup" accessibilityLabel="Membership plans">
-            {cards.map((card) => (
-              <PlanChoiceCard
-                key={card.tier}
-                card={card}
-                currentPlanId={currentPlan.id}
-                scheduledPlanId={membership?.pendingPlan?.id ?? null}
-                selected={selectedPlan?.id === card.plan.id}
-                onSelect={() => setSelectedPlanId(card.plan.id)}
-              />
-            ))}
-          </View>
-
-          {selectedPlan && !isCurrent && changeKind ? (
-            <View style={styles.summaryBox}>
-              <Text style={styles.summaryText}>{planChangeSummary(changeKind, periodEndLabel)}</Text>
-              {changeKind === 'upgrade' && !configured ? (
-                <Text style={styles.hint}>
-                  Payments are not configured in this environment, so an upgrade that needs a charge
-                  cannot be completed.
-                </Text>
-              ) : null}
-              {changeError ? (
-                <Text style={styles.payAlert} accessibilityRole="alert">
-                  {changeError}
-                </Text>
-              ) : null}
-              <PrimaryButton
-                label={changeKind === 'upgrade' ? 'Switch now' : `Switch on ${periodEndLabel}`}
-                loading={busy}
-                onPress={() => void onSwitch(selectedPlan.id)}
-              />
-            </View>
-          ) : null}
-
-          {selectedPlan && isCurrent && membership?.pendingPlan ? (
-            <View style={styles.summaryBox}>
-              <Text style={styles.summaryText}>
-                Staying on {currentPlan.name} removes the scheduled switch to{' '}
-                {membership.pendingPlan.name}.
-              </Text>
-              {changeError ? (
-                <Text style={styles.payAlert} accessibilityRole="alert">
-                  {changeError}
-                </Text>
-              ) : null}
-              <PrimaryButton
-                label={`Keep ${currentPlan.name}`}
-                loading={busy}
-                onPress={() => void onSwitch(currentPlan.id)}
-              />
-            </View>
-          ) : null}
-        </>
-      ) : (
-        <View style={styles.summaryBox}>
-          <Text style={styles.summaryText}>
-            {membership?.status === 'past_due' || membership?.status === 'unpaid'
-              ? 'Your payment is past due, so plan changes are unavailable. Update your payment method on the billing page, or cancel your membership below.'
-              : 'Plan changes need an active membership. You can still cancel your membership below.'}
-          </Text>
+      {phase.name === 'pay' ? (
+        <View style={styles.box}>
+          <Text style={styles.text}>Pay the prorated amount to finish switching to {phase.target.name}.</Text>
+          <PrimaryButton label="Pay and switch" onPress={() => void pay(phase.intent, phase.target)} />
+          <PrimaryButton label="Not now" variant="ghost" onPress={() => setPhase({ name: 'idle' })} />
         </View>
-      )}
+      ) : phase.name === 'settling' ? (
+        <View style={styles.box} accessibilityRole="progressbar">
+          <Text style={styles.title}>Your switch is being confirmed</Text>
+          <Text style={styles.muted}>
+            The club has not confirmed {phase.target.name} yet. This can take a moment while the payment clears.
+          </Text>
+          <PrimaryButton
+            label="Check again"
+            onPress={() => {
+              const { target } = phase;
+              setPhase({ name: 'working' });
+              void settle(target);
+            }}
+          />
+        </View>
+      ) : null}
 
-      {/* ── Cancel zone ── */}
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Cancel membership"
-        onPress={() => setCancelOpen(true)}
-        hitSlop={8}
-        style={styles.cancelZone}
-      >
-        <Text style={styles.cancelLink}>Cancel membership</Text>
-      </Pressable>
+      {canResume(subscription) ? (
+        <View style={styles.box}>
+          <Text style={styles.text}>
+            {periodEnd ? `Your membership ends ${periodEnd}.` : 'Your membership is set to end.'} Resume it to keep
+            your tier.
+          </Text>
+          <PrimaryButton label="Resume membership" loading={resume.isPending} onPress={() => resume.mutate()} />
+        </View>
+      ) : null}
+
+      {changeable && (phase.name === 'idle' || phase.name === 'working') ? (
+        <View style={styles.stack}>
+          <Text style={styles.label}>Switch tier</Text>
+          {eligible.isPending ? (
+            <Skeleton height={120} borderRadius={radius.lg} />
+          ) : eligible.isError ? (
+            <View style={styles.box} accessibilityRole="alert">
+              <Text style={styles.text}>We could not load the tiers you can switch to.</Text>
+              <PrimaryButton label="Try again" variant="secondary" onPress={() => void eligible.refetch()} />
+            </View>
+          ) : eligible.data.length === 0 ? (
+            <Text style={styles.muted}>There are no other tiers to switch to right now.</Text>
+          ) : (
+            <View style={styles.stack} accessibilityRole="radiogroup" accessibilityLabel="Tiers">
+              {eligible.data.map((tier) => (
+                <TierChoice
+                  key={tier.id}
+                  tier={tier}
+                  selected={tier.id === selectedId}
+                  onSelect={() => setSelectedId(tier.id)}
+                />
+              ))}
+            </View>
+          )}
+
+          {selected ? (
+            <View style={styles.box}>
+              <Text style={styles.text}>
+                {selected.changeType === 'upgrade'
+                  ? `${selected.name} starts right away. If there is a prorated charge, you confirm it in the next step.`
+                  : `${selected.name} starts when this billing period ends${periodEnd ? ` (${periodEnd})` : ''}. You keep ${subscription.tier_name} until then.`}
+              </Text>
+              <PrimaryButton
+                label={selected.changeType === 'upgrade' ? 'Switch now' : 'Schedule switch'}
+                loading={working}
+                onPress={() => void switchTo(selected)}
+              />
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+
+      {canCancel(subscription) && !subscription.cancel_at_period_end ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Cancel membership"
+          onPress={() => setCancelOpen(true)}
+          hitSlop={8}
+          style={styles.cancelZone}
+        >
+          <Text style={styles.cancelLink}>Cancel membership</Text>
+        </Pressable>
+      ) : null}
 
       <Sheet
         open={cancelOpen}
@@ -420,12 +342,10 @@ function ChangeView({
         title="Cancel membership"
       >
         <View style={styles.dialog}>
-          <Text style={styles.dialogText}>
-            {membership?.cancelAtPeriodEnd
-              ? `Your membership is already set to end on ${periodEndLabel}. You can still cancel immediately below.`
-              : canChange
-                ? `Your membership stays active until ${periodEndLabel}, then ends. You will not be charged again.`
-                : `Your membership ends on ${periodEndLabel}. You will not be charged again.`}
+          <Text style={styles.text}>
+            {periodEnd
+              ? `Your membership stays active until ${periodEnd}, then ends. You will not be charged again.`
+              : 'Your membership stays active until the end of this billing period, then ends.'}
           </Text>
           <Checkbox
             checked={cancelNow}
@@ -433,119 +353,69 @@ function ChangeView({
             accessibilityLabel="Cancel immediately instead of at the end of the billing period"
             label={
               <Text style={styles.checkboxLabel}>
-                Cancel immediately instead. Access ends now and the remaining time is not refunded.
+                Cancel immediately instead. Access ends now and the rest of the period is not refunded.
               </Text>
             }
           />
-          <View style={styles.dialogActions}>
-            <PrimaryButton
-              label={cancelNow ? 'Cancel immediately' : 'Cancel membership'}
-              variant="danger"
-              loading={cancel.isPending}
-              onPress={() =>
-                cancel.mutate(
-                  { now: cancelNow },
-                  {
-                    onSuccess: (result) => {
-                      setCancelOpen(false);
-                      finish(
-                        result.canceledImmediately
-                          ? 'Your membership has been canceled'
-                          : `Your membership ends ${instantDateLabel(result.effectiveAt, timezone)}`,
-                      );
-                    },
-                    onError: () => {
-                      setCancelOpen(false);
-                      toast({
-                        variant: 'error',
-                        message: 'We could not cancel your membership. Please try again.',
-                      });
-                    },
-                  },
-                )
-              }
-            />
-            <PrimaryButton
-              label="Keep membership"
-              variant="ghost"
-              disabled={cancel.isPending}
-              onPress={() => setCancelOpen(false)}
-            />
-          </View>
+          <PrimaryButton
+            label={cancelNow ? 'Cancel immediately' : 'Cancel membership'}
+            variant="danger"
+            loading={cancel.isPending}
+            onPress={() => cancel.mutate(cancelNow ? 'now' : 'period_end')}
+          />
+          <PrimaryButton
+            label="Keep membership"
+            variant="ghost"
+            disabled={cancel.isPending}
+            onPress={() => setCancelOpen(false)}
+          />
         </View>
       </Sheet>
-    </AccountFrame>
+    </>
   );
 }
 
-function PlanChoiceCard({
-  card,
-  currentPlanId,
-  scheduledPlanId,
+function TierChoice({
+  tier,
   selected,
   onSelect,
 }: {
-  card: PlanCard;
-  currentPlanId: string;
-  scheduledPlanId: string | null;
+  tier: EligibleChangeTier;
   selected: boolean;
   onSelect: () => void;
 }) {
-  const { plan, locked } = card;
-  const isCurrent = plan.id === currentPlanId;
-  const isScheduled = plan.id === scheduledPlanId;
-
-  if (locked) {
-    return (
-      <View
-        style={styles.lockedCard}
-        accessibilityLabel={`${tierLabel(plan.tier)} membership, invite only`}
-      >
-        <View style={styles.cardHeader}>
-          <Text style={styles.lockedName}>{tierLabel(plan.tier)}</Text>
-          <Badge label="Invite only" variant="neutral" />
-        </View>
-        {plan.features.length > 0 ? (
-          <Text style={styles.lockedSummary}>{plan.features.join(' · ')}</Text>
-        ) : null}
-      </View>
-    );
-  }
-
+  const price = formatCents(tier.price_cents, tier.currency);
   return (
     <Pressable
       accessibilityRole="radio"
       accessibilityState={{ selected }}
-      accessibilityLabel={`${tierLabel(plan.tier)} membership, ${formatAmount(plan.amountCents)} ${periodSuffix(plan.interval)}`}
+      accessibilityLabel={`${tier.name}, ${price} per ${intervalNoun(tier.interval)}, ${tier.changeType}`}
       onPress={onSelect}
-      style={[styles.card, selected ? styles.cardSelected : null]}
+      style={[styles.choice, selected ? styles.choiceSelected : null]}
     >
-      <View style={styles.cardHeader}>
-        <Text style={styles.cardName}>{tierLabel(plan.tier)}</Text>
-        <View style={styles.cardBadges}>
-          {isCurrent ? <Badge label="Current plan" variant="accent" /> : null}
-          {isScheduled ? <Badge label="Scheduled" variant="neutral" /> : null}
+      <View style={styles.tierRow}>
+        <Text style={styles.tierName}>{tier.name}</Text>
+        <View style={styles.badges}>
+          <Badge label={tier.changeType === 'upgrade' ? 'Upgrade' : 'Downgrade'} variant={tier.changeType === 'upgrade' ? 'accent' : 'neutral'} />
           {selected ? (
-            <View style={styles.checkCircle}>
+            <View style={styles.check}>
               <Ionicons name="checkmark" size={16} color={colors.textOnAccent} />
             </View>
           ) : null}
         </View>
       </View>
-      <View style={styles.priceRow}>
-        <Text style={styles.price}>{formatAmount(plan.amountCents)}</Text>
-        <Text style={styles.priceSuffix}> {periodSuffix(plan.interval)}</Text>
-      </View>
-      <Text style={styles.priceCaption}>{billingCaption(plan)}</Text>
+      <Text style={styles.price}>
+        {price}
+        <Text style={styles.per}> / {intervalNoun(tier.interval)}</Text>
+      </Text>
+      {tier.description ? <Text style={styles.muted}>{tier.description}</Text> : null}
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
-  loading: {
-    gap: spacing.md,
-  },
-  errorBox: {
+  stack: { gap: spacing.md },
+  box: {
     gap: spacing.md,
     padding: spacing.md,
     borderRadius: radius.lg,
@@ -553,40 +423,17 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: colors.bgElevated,
   },
-  errorText: {
-    ...typography.body,
-    color: colors.text,
-  },
-  cards: {
-    gap: spacing.md,
-  },
-  card: {
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surfaceOverlay,
-    padding: spacing.lg,
-    gap: spacing.xs,
-  },
-  cardSelected: {
-    borderColor: colors.borderActive,
-  },
-  cardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: spacing.sm,
-  },
-  cardBadges: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
-  cardName: {
-    ...typography.h2,
-    color: colors.text,
-  },
-  checkCircle: {
+  label: { ...typography.label, color: colors.textMuted, textTransform: 'uppercase' },
+  title: { ...typography.h3, color: colors.text },
+  text: { ...typography.body, color: colors.text },
+  muted: { ...typography.body, color: colors.textMuted },
+  alert: { ...typography.body, color: colors.danger },
+  tierRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm },
+  tierName: { ...typography.h2, color: colors.text, flexShrink: 1 },
+  price: { fontFamily: fonts.displayBold, fontSize: 22, color: colors.accent },
+  per: { fontFamily: fonts.body, fontSize: 14, color: colors.textMuted },
+  badges: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  check: {
     width: 26,
     height: 26,
     borderRadius: radius.pill,
@@ -594,100 +441,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  priceRow: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    marginTop: spacing.xs,
-  },
-  price: {
-    fontFamily: fonts.displayHeavy,
-    fontSize: 40,
-    lineHeight: 46,
-    color: colors.accent,
-  },
-  priceSuffix: {
-    ...typography.body,
-    color: colors.textMuted,
-  },
-  priceCaption: {
-    ...typography.caption,
-    color: colors.textSubtle,
-  },
-  lockedCard: {
+  choice: {
     borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: colors.border,
-    backgroundColor: colors.backgroundDeep,
+    backgroundColor: colors.surfaceOverlay,
     padding: spacing.lg,
-    gap: spacing.sm,
+    gap: spacing.xs,
   },
-  lockedName: {
-    ...typography.h2,
-    color: colors.textMuted,
-  },
-  lockedSummary: {
-    ...typography.body,
-    color: colors.textSubtle,
-  },
-  summaryBox: {
-    gap: spacing.md,
-    padding: spacing.md,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.bgElevated,
-  },
-  summaryText: {
-    ...typography.body,
-    color: colors.text,
-  },
-  hint: {
-    ...typography.caption,
-    color: colors.textMuted,
-  },
-  payAlert: {
-    ...typography.body,
-    color: colors.danger,
-  },
-  panel: {
-    gap: spacing.md,
-    padding: spacing.lg,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.bgElevated,
-  },
-  panelTitle: {
-    ...typography.h3,
-    color: colors.text,
-  },
-  panelBody: {
-    ...typography.body,
-    color: colors.textMuted,
-  },
-  cancelZone: {
-    alignItems: 'center',
-    paddingVertical: spacing.md,
-  },
-  cancelLink: {
-    ...typography.bodyStrong,
-    color: colors.danger,
-  },
-  dialog: {
-    gap: spacing.md,
-    paddingBottom: spacing.sm,
-  },
-  dialogText: {
-    ...typography.body,
-    color: colors.text,
-  },
-  checkboxLabel: {
-    flex: 1,
-    ...typography.body,
-    color: colors.textMuted,
-  },
-  dialogActions: {
-    gap: spacing.sm,
-    marginTop: spacing.xs,
-  },
+  choiceSelected: { borderColor: colors.borderActive },
+  cancelZone: { alignItems: 'center', paddingVertical: spacing.md },
+  cancelLink: { ...typography.bodyStrong, color: colors.danger },
+  dialog: { gap: spacing.md, paddingBottom: spacing.sm },
+  checkboxLabel: { flex: 1, ...typography.body, color: colors.textMuted },
 });
