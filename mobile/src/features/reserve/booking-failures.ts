@@ -541,7 +541,8 @@ export function describeBookingFailure(error: unknown, context: FailureContext =
     case 'club_limit_reached':
     case 'email_in_use':
     case 'tier_not_configured':
-    case 'device_token_taken':
+    case 'device_verification_invalid':
+    case 'device_verification_unavailable':
     case 'already_subscribed':
     case 'already_on_tier':
     case 'tier_interval_mismatch':

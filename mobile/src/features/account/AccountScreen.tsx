@@ -121,6 +121,7 @@ function AccountView({ profile }: { profile: Profile }) {
 
       <SettingsGroup label="Account settings">
         <SettingsRow icon="qr-code-outline" label="View membership card" onPress={() => setCardOpen(true)} />
+        <SettingsRow icon="notifications-outline" label="Notifications" onPress={() => router.push('/account/notifications')} />
         <SettingsRow icon="calendar-outline" label="Billing history" onPress={() => router.push('/account/billing')} />
         <SettingsRow icon="card-outline" label="Payment methods" onPress={() => router.push('/account/payment-method')} />
         <SettingsRow icon="options-outline" label="App preferences" onPress={() => router.push('/account/preferences')} />

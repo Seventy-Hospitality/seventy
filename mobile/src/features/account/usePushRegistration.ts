@@ -11,9 +11,14 @@
  *   when Expo rotates the token, and when the member turns push on. A failed
  *   registration that may succeed later (offline, 5xx) is retried with
  *   backoff and again on the next foreground.
- * - 409 device_token_taken: another account holds this token from another
- *   install. Nothing the app can do fixes that, so it is logged and left
- *   alone (no loop).
+ * - 202 verification_required: the token is another account's and this
+ *   install cannot show its secret. Clutch pushes a code to the token;
+ *   push-verification.ts catches it (foreground listener here, background
+ *   task) and posts it to /me/devices/verify. No code: the next launch
+ *   registers again for a new one.
+ * - 503 device_verification_unavailable: the code could not be pushed; the
+ *   next launch tries again with a freshly read token (no retry loop now:
+ *   codes are limited per token per hour).
  * - Unregister on every sign-out path, BEFORE the session ends (the request
  *   must still authenticate): useSignOut, account deletion, and
  *   `unregisterPushForSignOut()` for any other caller.
@@ -38,14 +43,18 @@ import {
 import { preferencesQuery } from '../../lib/queries';
 import { useSession } from '../../lib/session';
 import { anyPushOn } from './preferences';
+import {
+  handlePushPayload,
+  registerVerificationTask,
+  rememberPendingVerification,
+  REGISTERED_TOKEN_KEY,
+} from './push-verification';
 
 export { anyPushOn } from './preferences';
 
 type DevicePlatform = 'ios' | 'android';
 
 const DEVICE_SECRET_KEY = 'clutch.push.device_secret';
-/** The token this install last registered, so sign-out can remove it without asking the OS again. */
-const REGISTERED_TOKEN_KEY = 'clutch.push.registered_token';
 
 /** Backoff for a registration that failed transiently; the next foreground starts over. */
 export const REGISTER_RETRY_DELAYS_MS = [5_000, 30_000, 120_000] as const;
@@ -138,11 +147,11 @@ async function storeToken(token: string | null): Promise<void> {
 /**
  * - registered: Clutch pushes to this install for the caller.
  * - unavailable: nothing to register (no permission, simulator, capability off).
- * - taken: 409 device_token_taken; left alone.
+ * - verifying: 202, waiting for the pushed code (push-verification.ts).
  * - retry: no decision (offline, 5xx); worth trying again later.
  * - refused: another definitive refusal; trying again would get the same.
  */
-export type RegisterOutcome = 'registered' | 'unavailable' | 'taken' | 'retry' | 'refused';
+export type RegisterOutcome = 'registered' | 'unavailable' | 'verifying' | 'retry' | 'refused';
 
 const registerKey = createMutationKey();
 const unregisterKey = createMutationKey();
@@ -165,14 +174,21 @@ export async function registerThisDevice({ prompt }: { prompt: boolean }): Promi
 
   const epoch = sessionEpoch;
   const input = { token, platform, device_secret: secret };
+  let answer;
   try {
-    await registerKey.run(input, (k) => clutch.me.registerDevice(input, { idempotencyKey: k }));
+    answer = await registerKey.run(input, (k) => clutch.me.registerDevice(input, { idempotencyKey: k }));
   } catch (err) {
-    if (hasCode(err, 'device_token_taken')) {
-      console.warn('[push] this push token belongs to another account on another install; not registering');
-      return 'taken';
+    if (hasCode(err, 'device_verification_unavailable')) {
+      console.warn('[push] Clutch could not push the device verification code; trying again next launch');
+      return 'refused';
     }
     return isTransient(err) ? 'retry' : 'refused';
+  }
+  if (answer.status === 'verification_required') {
+    if (epoch !== sessionEpoch) return 'unavailable';
+    await rememberPendingVerification({ token: answer.token, expiresAt: answer.expiresAt });
+    void registerVerificationTask();
+    return 'verifying';
   }
   if (epoch !== sessionEpoch) {
     // A sign-out started while this was in flight: take it back while the session may still answer.
@@ -221,6 +237,7 @@ export async function unregisterThisDevice(): Promise<void> {
  */
 export async function unregisterPushForSignOut(): Promise<void> {
   sessionEpoch += 1;
+  await rememberPendingVerification(null);
   stopListeners.forEach((stop) => stop());
   let timer: ReturnType<typeof setTimeout> | undefined;
   await Promise.race([
@@ -322,6 +339,16 @@ export function PushRegistrationSync() {
     } catch {
       tokenSub = null;
     }
+    // The verification code arrives as a data-only push; in the foreground it
+    // comes through here (in the background, through the task).
+    let receivedSub: { remove(): void } | null = null;
+    try {
+      receivedSub = Notifications.addNotificationReceivedListener((notification) => {
+        void handlePushPayload(notification);
+      });
+    } catch {
+      receivedSub = null;
+    }
     const appSub = AppState.addEventListener('change', (next) => {
       if (next === 'active' && last === 'retry') restart();
     });
@@ -332,6 +359,7 @@ export function PushRegistrationSync() {
       disposed = true;
       clearTimeout(timer);
       tokenSub?.remove();
+      receivedSub?.remove();
       appSub.remove();
       resyncListeners.delete(restart);
       stopListeners.delete(halt);

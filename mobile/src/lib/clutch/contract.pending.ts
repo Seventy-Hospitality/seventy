@@ -34,8 +34,9 @@ import {
 // ─── Error codes these branches add ─────────────────────────────────────────
 
 export const PENDING_ERROR_CODES = [
-  // P1
-  'device_token_taken',
+  // P1 (origin/feat/expo-push @ 550e77c)
+  'device_verification_invalid',
+  'device_verification_unavailable',
   // P2 (packages/db/src/errors.ts on feat/native-payments)
   'already_subscribed',
   'membership_not_active',
@@ -63,18 +64,58 @@ export const PENDING_ERROR_CODES = [
   'checkin_unavailable',
 ] as const;
 
-// ─── P1: push devices ───────────────────────────────────────────────────────
+// ─── P1: push devices (origin/feat/expo-push, me/devices/{route,verify/route,respond}.ts, _shape.ts publicDevice) ─
 
-/** POST /me/devices `{ token, platform, device_secret }` answers this. */
-export const RegisteredDeviceSchema = z.object({
+/** The device is registered for the caller (200, and the verify answer). */
+export const DeviceRegisteredSchema = z.object({
+  status: z.literal('registered'),
   token: z.string(),
   platform: z.enum(['ios', 'android']),
-  registeredAt: z.string().optional(),
+  registeredAt: z.string(),
 });
+
+/**
+ * 202: the token is another account's and this install could not show the
+ * secret it was registered with. Clutch pushed a data-only message
+ * `{type: "clutch.device_verification", code}` to the token; the app on that
+ * device posts the code to POST /me/devices/verify before `expiresAt`.
+ */
+export const DeviceVerificationRequiredSchema = z.object({
+  status: z.literal('verification_required'),
+  token: z.string(),
+  expiresAt: z.string(),
+});
+
+/** POST /me/devices `{ token, platform, device_secret }`. */
+export const RegisteredDeviceSchema = z.discriminatedUnion('status', [
+  DeviceRegisteredSchema,
+  DeviceVerificationRequiredSchema,
+]);
 export type RegisteredDevice = z.infer<typeof RegisteredDeviceSchema>;
+
+/** POST /me/devices/verify `{ token, code }`; 409 device_verification_invalid otherwise. */
+export const VerifiedDeviceSchema = DeviceRegisteredSchema;
 
 /** DELETE /me/devices `{ token }` answers this. */
 export const RemovedDeviceSchema = z.object({ removed: z.boolean() });
+
+/** `data.type` of the verification push (packages/notifications/src/push.ts). */
+export const DEVICE_VERIFICATION_PUSH_TYPE = 'clutch.device_verification';
+
+/** `data` of every notice Clutch pushes (packages/notifications/src/expo.ts PushData). */
+export const PushNoticeDataSchema = z.object({
+  notificationId: z.string(),
+  type: z.string(),
+  clubId: z.string(),
+  /** The path that shows the notice: today always the inbox ("/notifications"). */
+  link: z.string(),
+});
+export type PushNoticeData = z.infer<typeof PushNoticeDataSchema>;
+
+export const DeviceVerificationPushSchema = z.object({
+  type: z.literal(DEVICE_VERIFICATION_PUSH_TYPE),
+  code: z.string(),
+});
 
 // ─── P5: account deletion and member check-in ───────────────────────────────
 

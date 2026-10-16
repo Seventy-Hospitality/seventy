@@ -47,7 +47,23 @@ jest.mock('expo-notifications', () => ({
   getPermissionsAsync: jest.fn(async () => ({ granted: false, canAskAgain: true })),
   requestPermissionsAsync: jest.fn(async () => ({ granted: false, canAskAgain: false })),
   getExpoPushTokenAsync: jest.fn(async () => ({ data: 'ExponentPushToken[test]' })),
+  addPushTokenListener: jest.fn(() => ({ remove: jest.fn() })),
+  addNotificationReceivedListener: jest.fn(() => ({ remove: jest.fn() })),
+  addNotificationResponseReceivedListener: jest.fn(() => ({ remove: jest.fn() })),
+  getLastNotificationResponseAsync: jest.fn(async () => null),
+  setNotificationHandler: jest.fn(),
+  registerTaskAsync: jest.fn(async () => null),
 }));
+
+// expo-task-manager -> records defined tasks so tests can run them.
+jest.mock('expo-task-manager', () => {
+  const tasks = new Map();
+  return {
+    defineTask: jest.fn((name, fn) => tasks.set(name, fn)),
+    isTaskDefined: jest.fn((name) => tasks.has(name)),
+    __tasks: tasks,
+  };
+});
 
 // expo-clipboard -> a spyable no-op (the club invite "Copy link" action).
 jest.mock('expo-clipboard', () => ({

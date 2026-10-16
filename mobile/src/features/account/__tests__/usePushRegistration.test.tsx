@@ -37,7 +37,13 @@ jest.mock('expo-notifications', () => ({
     mockTokenListener = listener;
     return { remove: () => (mockTokenListener = null) };
   }),
+  addNotificationReceivedListener: jest.fn((listener: (n: unknown) => void) => {
+    mockReceived = listener;
+    return { remove: () => (mockReceived = null) };
+  }),
+  registerTaskAsync: jest.fn(async () => null),
 }));
+let mockReceived: ((n: unknown) => void) | null = null;
 
 jest.mock('../../../lib/session', () => ({
   useSession: () => ({ status: 'authenticated', userId: 'u1' }),
@@ -64,7 +70,12 @@ beforeEach(async () => {
   (mockClutch.capabilities as Capabilities).pushDevices = true;
   getPermissions.mockResolvedValue(GRANTED);
   getToken.mockResolvedValue({ data: 'ExponentPushToken[test]' });
-  mockClutch.me.registerDevice.mockResolvedValue({ token: 'ExponentPushToken[test]', platform: 'ios' });
+  mockClutch.me.registerDevice.mockResolvedValue({
+    status: 'registered',
+    token: 'ExponentPushToken[test]',
+    platform: 'ios',
+    registeredAt: '2026-10-16T12:00:00.000Z',
+  });
   mockClutch.me.unregisterDevice.mockResolvedValue({ removed: true });
   await SecureStore.deleteItemAsync('clutch.push.registered_token');
 });
@@ -103,11 +114,23 @@ describe('registerThisDevice', () => {
     );
   });
 
-  it('leaves a token another account holds alone (409 device_token_taken)', async () => {
+  it('waits for the pushed code when the token is another account (202 verification_required)', async () => {
+    mockClutch.me.registerDevice.mockResolvedValue({
+      status: 'verification_required',
+      token: 'ExponentPushToken[test]',
+      expiresAt: '2999-01-01T00:00:00.000Z',
+    });
+    expect(await registerThisDevice({ prompt: false })).toBe('verifying');
+    expect(JSON.parse((await SecureStore.getItemAsync('clutch.push.pending_verification')) ?? '{}')).toMatchObject({
+      token: 'ExponentPushToken[test]',
+    });
+    expect(Notifications.registerTaskAsync).toHaveBeenCalled();
+  });
+
+  it('tries again next launch, not now, when the code could not be pushed (503)', async () => {
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
-    mockClutch.me.registerDevice.mockRejectedValue(clutchError('device_token_taken'));
-    expect(await registerThisDevice({ prompt: false })).toBe('taken');
-    expect(warn).toHaveBeenCalled();
+    mockClutch.me.registerDevice.mockRejectedValue(clutchError('device_verification_unavailable', 503));
+    expect(await registerThisDevice({ prompt: false })).toBe('refused');
     warn.mockRestore();
   });
 
@@ -180,13 +203,13 @@ describe('PushRegistrationSync', () => {
     expect(mockClutch.me.registerDevice.mock.calls[1][0]).toMatchObject({ token: 'ExponentPushToken[rotated]' });
   });
 
-  it('retries a transient failure with backoff, and never loops on device_token_taken', async () => {
+  it('retries a transient failure with backoff, and never loops when the code cannot be pushed', async () => {
     jest.useFakeTimers();
     try {
       mockClutch.me.preferences.mockResolvedValue(makePreferences());
       mockClutch.me.registerDevice
         .mockRejectedValueOnce(networkError())
-        .mockRejectedValueOnce(clutchError('device_token_taken'));
+        .mockRejectedValueOnce(clutchError('device_verification_unavailable', 503));
       const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
 
       renderWithProviders(<PushRegistrationSync />);
@@ -231,5 +254,34 @@ describe('unregisterPushForSignOut', () => {
     await registerThisDevice({ prompt: false });
     mockClutch.me.unregisterDevice.mockRejectedValue(networkError());
     await expect(unregisterPushForSignOut()).resolves.toBeUndefined();
+  });
+});
+
+describe('verification code in the foreground', () => {
+  it('posts the pushed code for the pending token', async () => {
+    mockClutch.me.preferences.mockResolvedValue(makePreferences());
+    mockClutch.me.registerDevice.mockResolvedValue({
+      status: 'verification_required',
+      token: 'ExponentPushToken[test]',
+      expiresAt: '2999-01-01T00:00:00.000Z',
+    });
+    mockClutch.me.verifyDevice.mockResolvedValue({
+      status: 'registered',
+      token: 'ExponentPushToken[test]',
+      platform: 'ios',
+      registeredAt: '2026-10-16T12:00:00.000Z',
+    });
+    renderWithProviders(<PushRegistrationSync />);
+    await waitFor(() => expect(mockClutch.me.registerDevice).toHaveBeenCalled());
+    await waitFor(() => expect(mockReceived).not.toBeNull());
+    await act(async () => {
+      mockReceived?.({ request: { content: { data: { type: 'clutch.device_verification', code: '483920' } } } });
+    });
+    await waitFor(() =>
+      expect(mockClutch.me.verifyDevice).toHaveBeenCalledWith(
+        { token: 'ExponentPushToken[test]', code: '483920' },
+        expect.objectContaining({ idempotencyKey: expect.any(String) }),
+      ),
+    );
   });
 });

@@ -40,7 +40,12 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockClutch.me.preferences.mockResolvedValue(PREFS);
   mockClutch.me.putPreferences.mockImplementation(async (prefs) => prefs);
-  mockClutch.me.registerDevice.mockResolvedValue({ token: 'ExponentPushToken[test]', platform: 'ios' });
+  mockClutch.me.registerDevice.mockResolvedValue({
+    status: 'registered',
+    token: 'ExponentPushToken[test]',
+    platform: 'ios',
+    registeredAt: '2026-10-16T12:00:00.000Z',
+  });
   mockClutch.me.unregisterDevice.mockResolvedValue({ removed: true });
 });
 

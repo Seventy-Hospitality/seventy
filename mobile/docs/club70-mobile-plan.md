@@ -85,6 +85,24 @@ hands the intent id to Clutch (`confirm` / `save`) and shows Clutch's answer.
 `EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY` is the Clutch platform key. Physical venue
 memberships use Stripe, never IAP (App Store 3.1.3(e)).
 
+## Push (`src/features/account/usePushRegistration.ts`, `push-verification.ts`, `src/features/notifications/`)
+- Register `{token, platform, device_secret}` at launch, after every sign-in
+  and on token rotation; unregister (`DELETE /me/devices {token}`) on every
+  sign-out path before the session ends.
+- `202 verification_required`: the token was another account's and this
+  install cannot show its secret. Clutch pushes a data-only
+  `{type: "clutch.device_verification", code}`; the app catches it in the
+  foreground listener or the background task (iOS `remote-notification`
+  background mode, content-available; Android data message), never shows it,
+  and posts `/me/devices/verify {token, code}`. `409
+  device_verification_invalid` drops it; `503 device_verification_unavailable`
+  or a code that never arrives: the next launch registers again for a new
+  code.
+- A tapped notice (`data: {notificationId, type, clubId, link}`) opens the
+  in-app inbox (`/account/notifications`, GET/POST `/me/notifications`)
+  focused on that notice and marks it read, also when the tap launched the
+  app or arrived before sign-in.
+
 ## Legal and contact
 `src/lib/links.ts` holds the privacy and terms URLs
 (seventyhospitality.com/privacy.html, /terms.html, opened in the in-app
@@ -122,7 +140,7 @@ final `openapi.json`.
 
 | Capability | Clutch branch | State | What it unlocks |
 |---|---|---|---|
-| `pushDevices` | P1 feat/expo-push | on | register / unregister this install (device_secret) |
+| `pushDevices` | P1 feat/expo-push | on | register / unregister this install (device_secret); prove a taken token with the pushed code (`/me/devices/verify`) |
 | `checkinToken` | P5 feat/account-deletion-and-checkin | on | signed member QR |
 | `accountDeletion` | P5 | on | deletion preview, delete with step-up |
 | `bookingParity` | P4 feat/member-booking-parity | off | quote with tax, per-sport booking rules, accept/decline, remove/leave, member search, reschedule quote and paid moves, players paying their share, pending-only hold release |

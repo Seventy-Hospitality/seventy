@@ -37,7 +37,12 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "club.seventy.mobile",
-      "usesAppleSignIn": true
+      "usesAppleSignIn": true,
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "remote-notification"
+        ]
+      }
     },
     "android": {
       "package": "club.seventy.mobile"

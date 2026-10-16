@@ -53,7 +53,9 @@ import {
   ListClubCourtsResponseSchema,
   ListClubMembershipTiersResponseSchema,
   ListMyBookingsResponseSchema,
+  ListMyNotificationsResponseSchema,
   ListMyPaymentsResponseSchema,
+  MarkMyNotificationsReadResponseSchema,
   PreviewGroupInviteResponseSchema,
   RemoveGroupMemberResponseSchema,
   ReplaceMyPreferencesResponseSchema,
@@ -90,6 +92,7 @@ import {
   RegisteredDeviceSchema,
   RemovedCardSchema,
   RemovedDeviceSchema,
+  VerifiedDeviceSchema,
   RescheduleQuoteSchema,
   ResumeSubscriptionResultSchema,
   SavedCardSchema,
@@ -1049,7 +1052,32 @@ export function createClutchClient(options: ClutchClientOptions) {
         idempotencyKey: opts?.idempotencyKey,
       }),
 
-    /** P1: register this install's Expo push token (idempotent; call on every launch and sign-in). */
+    /** The in-app inbox (what push notices open). */
+    async notifications(q: { limit?: number; offset?: number } = {}) {
+      const { data, count } = await request({
+        method: 'GET',
+        path: '/me/notifications',
+        query: q,
+        schema: dataOf(ListMyNotificationsResponseSchema),
+      });
+      return { items: data, count: count ?? data.length };
+    },
+
+    /** Mark one notice read (`id`) or all of them (`all: true`). */
+    markNotificationsRead: (input: { id: string } | { all: true }, opts?: MutationOptions) =>
+      call({
+        method: 'POST',
+        path: '/me/notifications',
+        body: input,
+        schema: dataOf(MarkMyNotificationsReadResponseSchema),
+        idempotencyKey: opts?.idempotencyKey,
+      }),
+
+    /**
+     * P1: register this install's Expo push token (idempotent; call on every
+     * launch and sign-in). 202 `verification_required`: the token is another
+     * account's; prove the device with the pushed code (verifyDevice).
+     */
     registerDevice: (
       input: { token: string; platform: 'ios' | 'android'; device_secret: string },
       opts?: MutationOptions,
@@ -1060,6 +1088,18 @@ export function createClutchClient(options: ClutchClientOptions) {
         path: '/me/devices',
         body: input,
         schema: RegisteredDeviceSchema,
+        idempotencyKey: opts?.idempotencyKey,
+      });
+    },
+
+    /** P1: complete a `verification_required` registration with the pushed code. */
+    verifyDevice: (input: { token: string; code: string }, opts?: MutationOptions) => {
+      need('pushDevices');
+      return call({
+        method: 'POST',
+        path: '/me/devices/verify',
+        body: input,
+        schema: VerifiedDeviceSchema,
         idempotencyKey: opts?.idempotencyKey,
       });
     },
