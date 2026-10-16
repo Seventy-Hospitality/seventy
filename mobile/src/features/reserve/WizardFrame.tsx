@@ -4,12 +4,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, spacing } from '../../theme/tokens';
 
-export type WizardStep = 1 | 2 | 3;
+export type WizardStep = 1 | 2;
 
 export const STEP_NAMES: Record<WizardStep, string> = {
   1: 'Choose a time',
-  2: 'Invite players',
-  3: 'Checkout',
+  2: 'Checkout',
 };
 
 interface WizardFrameProps {
@@ -17,29 +16,28 @@ interface WizardFrameProps {
   onClose: () => void;
   /** The active step; omitted on the frame-level states (loader/error/gate). */
   step?: WizardStep;
-  /** Total segments in the progress bar (booking is 3, M4 edit is 2). */
+  /** Total segments in the progress bar. */
   steps?: number;
   /** Overrides the derived step name for the progress accessibility label. */
   stepName?: string;
   /**
-   * Disables Back/Close while a submitted payment may have captured: leaving
-   * then would try to cancel a hold the member paid for. The hold ledger is
-   * the real backstop (release() skips the cancel when locked), this is UX.
+   * Disables Back/Close while a submitted payment is settling. The hold
+   * ledger is the real backstop (release() skips the cancel when locked).
    */
   chromeDisabled?: boolean;
   children: ReactNode;
 }
 
 /**
- * The full-screen wizard chrome (Figma "Booking badminton court" 26:630):
- * a back arrow, a close button, and the 3-segment progress bar. Rendered
- * outside the tab shell so the booking flow takes over the screen.
+ * The full-screen wizard chrome: a back arrow, a close button, and the
+ * progress bar. Rendered outside the tab shell so the booking flow takes over
+ * the screen.
  */
 export function WizardFrame({
   onBack,
   onClose,
   step,
-  steps = 3,
+  steps = 2,
   stepName,
   chromeDisabled = false,
   children,

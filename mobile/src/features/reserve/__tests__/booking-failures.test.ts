@@ -1,121 +1,68 @@
-import { ApiError } from '../../../lib/api';
-import {
-  classifyReissueError,
-  classifyReissueResult,
-  describeBookingFailure,
-  isPaymentClearing,
-  isTerminalHoldError,
-} from '../booking-failures';
+import { describeBookingFailure, type FailureAction } from '../booking-failures';
+import { ClutchError, type ErrorCode } from '../../../lib/clutch';
+import { clutchError, networkError } from '../../../lib/clutch/testing';
 
-const err = (code: string, status = 409) => new ApiError(code, `${code} message`, status);
+describe('describeBookingFailure', () => {
+  const cases: Array<[ErrorCode, FailureAction]> = [
+    ['slot_already_booked', 'pick-time'],
+    ['slot_unavailable', 'pick-time'],
+    ['court_not_available', 'pick-time'],
+    ['cannot_book_past', 'pick-time'],
+    ['advance_booking_exceeded', 'pick-time'],
+    ['duration_out_of_range', 'pick-time'],
+    ['booking_changed', 'pick-time'],
+    ['booking_not_pending', 'pick-time'],
+    ['not_club_member', 'membership'],
+    ['members_only', 'membership'],
+    ['tier_required', 'membership'],
+    ['no_show_penalty', 'none'],
+    ['waiver_required', 'waiver'],
+    ['club_stripe_not_connected', 'none'],
+    ['payment_failed', 'retry-payment'],
+    ['payment_requires_action', 'retry-payment'],
+    ['payment_not_verified', 'check-again'],
+    ['payment_processing', 'check-again'],
+    ['rate_limit_exceeded', 'retry'],
+    ['cancellation_window_passed', 'none'],
+    ['reschedule_costs_more', 'pick-time'],
+    ['booking_not_found', 'refresh'],
+  ];
 
-describe('describeBookingFailure (quote/create error -> checkout state)', () => {
-  it('sends a just-taken slot back to time selection', () => {
-    const failure = describeBookingFailure(err('SLOT_UNAVAILABLE'));
-    expect(failure).toEqual({
-      kind: 'back-to-time',
-      message: 'That time was just taken by another member. Pick another slot.',
-    });
+  it.each(cases)('%s -> %s', (code, action) => {
+    const failure = describeBookingFailure(clutchError(code));
+    expect(failure.action).toBe(action);
+    expect(failure.title.length).toBeGreaterThan(0);
+    expect(failure.message.length).toBeGreaterThan(0);
   });
 
-  it('maps membership problems to the membership gate, keeping the server message', () => {
-    expect(describeBookingFailure(err('INACTIVE_MEMBERSHIP', 403))).toEqual({
-      kind: 'membership',
-      message: 'INACTIVE_MEMBERSHIP message',
-    });
-    expect(describeBookingFailure(err('TIER_REQUIRED', 403))?.kind).toBe('membership');
+  it('never shows the message Clutch sent', () => {
+    const failure = describeBookingFailure(clutchError('slot_unavailable', 409, undefined, 'RAW SERVER PROSE'));
+    expect(failure.message).not.toContain('RAW SERVER PROSE');
+    expect(failure.title).not.toContain('RAW SERVER PROSE');
   });
 
-  it('sends limit / horizon / hours errors back to time selection', () => {
-    for (const code of ['MAX_BOOKINGS', 'BOOKING_IN_PAST', 'TOO_FAR_ADVANCE', 'OUTSIDE_HOURS', 'INVALID_SLOTS']) {
-      expect(describeBookingFailure(err(code, 422))?.kind).toBe('back-to-time');
-    }
+  it('says when booking opens again after a no show', () => {
+    const failure = describeBookingFailure(clutchError('no_show_penalty', 403, { until: '2026-10-20T00:00:00Z' }));
+    expect(failure.until).toBe('2026-10-20T00:00:00Z');
+    expect(failure.message).toContain('Oct 20');
   });
 
-  it('asks the member to review invites when an invitee or club is gone', () => {
-    expect(describeBookingFailure(err('INVITEE_NOT_FOUND', 404))?.kind).toBe('retry');
-    expect(describeBookingFailure(err('CLUB_NOT_FOUND', 404))?.kind).toBe('retry');
+  it('carries the club of a missing waiver', () => {
+    const failure = describeBookingFailure(clutchError('waiver_required', 403, { club_id: 'club-1' }));
+    expect(failure.clubId).toBe('club-1');
   });
 
-  it('falls back to a generic retry, and is null with no error', () => {
-    expect(describeBookingFailure(err('SOMETHING_ELSE', 500))?.kind).toBe('retry');
-    expect(describeBookingFailure(new Error('boom'))?.kind).toBe('retry');
-    expect(describeBookingFailure(null)).toBeNull();
-  });
-});
-
-describe('confirm-time error classification', () => {
-  it('treats a still-clearing charge as non-terminal (re-check, do not retry)', () => {
-    expect(isPaymentClearing(err('PAYMENT_REQUIRED', 402))).toBe(true);
-    expect(isTerminalHoldError(err('PAYMENT_REQUIRED', 402))).toBe(false);
+  it('treats no answer as retry with connection copy', () => {
+    const failure = describeBookingFailure(networkError());
+    expect(failure).toMatchObject({ action: 'retry', title: 'No connection' });
   });
 
-  it('treats an expired / consumed / missing hold as terminal', () => {
-    expect(isTerminalHoldError(err('HOLD_EXPIRED'))).toBe(true);
-    expect(isTerminalHoldError(err('INVALID_STATUS'))).toBe(true);
-    expect(isTerminalHoldError(err('NOT_FOUND', 404))).toBe(true);
-    expect(isTerminalHoldError(err('SLOT_UNAVAILABLE'))).toBe(false);
-  });
-});
-
-describe('reissue disposition (money-lock safety after a failed PaymentSheet)', () => {
-  // The load-bearing invariant the reserve review turns on: the payment lock
-  // is cleared for EXACTLY ONE disposition — 'retry-in-place' — because that
-  // is the only proven-unpaid outcome. Every other path keeps the lock so a
-  // client cancel can never settle a possibly-captured hold at the
-  // cancellation percent (0% within 2h of start).
-  const clearsLock = (kind: string) => kind === 'retry-in-place';
-
-  it('settles (keeps the lock) when the previous intent already captured', () => {
-    const d = classifyReissueResult({ alreadyPaid: true, clientSecret: null, expiresAt: null });
-    expect(d.kind).toBe('paid');
-    expect(clearsLock(d.kind)).toBe(false);
-  });
-
-  it('unlocks and retries in place ONLY when a fresh secret was minted', () => {
-    const d = classifyReissueResult({
-      alreadyPaid: false,
-      clientSecret: 'pi_new_secret',
-      expiresAt: '2026-08-12T10:12:00.000Z',
-    });
-    expect(d).toEqual({
-      kind: 'retry-in-place',
-      clientSecret: 'pi_new_secret',
-      expiresAt: '2026-08-12T10:12:00.000Z',
-    });
-    expect(clearsLock(d.kind)).toBe(true);
-  });
-
-  it('keeps the lock on an unexpected response with neither capture nor secret', () => {
-    // The backend does not produce this for a live hold; treat as indeterminate
-    // rather than unlocking on an unproven-unpaid state.
-    const d = classifyReissueResult({ alreadyPaid: false, clientSecret: null, expiresAt: null });
-    expect(d.kind).toBe('recover');
-    expect(clearsLock(d.kind)).toBe(false);
-  });
-
-  it('routes a terminal (gone) hold to the sweeper WITHOUT unlocking', () => {
-    for (const code of ['HOLD_EXPIRED', 'INVALID_STATUS', 'NOT_FOUND']) {
-      const d = classifyReissueError(err(code, code === 'NOT_FOUND' ? 404 : 409));
-      expect(d.kind).toBe('expired');
-      expect(clearsLock(d.kind)).toBe(false);
-    }
-  });
-
-  it('keeps the lock on an indeterminate reissue failure (network / 5xx / non-terminal)', () => {
-    // The exact loss window in the finding: a network throw or a 5xx while the
-    // original charge may have captured must NEVER unlock the hold.
-    const cases: unknown[] = [
-      new TypeError('Network request failed'),
-      err('UNKNOWN', 500),
-      err('SERVER_ERROR', 503),
-      new Error('boom'),
-      err('SLOT_UNAVAILABLE', 409),
-    ];
-    for (const e of cases) {
-      const d = classifyReissueError(e);
-      expect(d.kind).toBe('recover');
-      expect(clearsLock(d.kind)).toBe(false);
-    }
+  it('falls back to a generic retry for unknown codes, contract drift and non-Clutch errors', () => {
+    const unknown = new ClutchError({ code: 'brand_new_code', message: 'x', status: 409, kind: 'api' });
+    expect(unknown.code).toBe('unknown');
+    expect(describeBookingFailure(unknown).action).toBe('retry');
+    const drift = new ClutchError({ code: 'invalid_response', message: 'x', status: 200, kind: 'contract' });
+    expect(describeBookingFailure(drift).action).toBe('retry');
+    expect(describeBookingFailure(new Error('boom')).action).toBe('retry');
   });
 });

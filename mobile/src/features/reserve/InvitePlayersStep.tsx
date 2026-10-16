@@ -2,84 +2,79 @@ import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import type { MemberSearchResult, MyClub } from '../../lib/api';
+import { clutch, type BookingId, type GroupSummary, type PlayerSearchResult } from '../../lib/clutch';
+import { groupsQuery } from '../../lib/queries';
 import { useSession } from '../../lib/session';
 import { Avatar, Chip, EmptyStateView, PrimaryButton, Skeleton } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
+import { describeBookingFailure } from './booking-failures';
 import {
-  addInviteClub,
-  clubChipLabel,
-  isClubSelected,
-  isMemberSelected,
-  memberDisplayName,
-  memberNumberLabel,
-  removeInviteClub,
-  removeInviteMember,
-  toggleInviteMember,
+  addGroup,
+  EMPTY_INVITE_SELECTION,
+  groupChipLabel,
+  inviteCount,
+  invitablePlayers,
+  isGroupSelected,
+  isPlayerSelected,
+  playerName,
+  removeGroup,
+  removePlayer,
+  togglePlayer,
   type InviteSelection,
 } from './invites';
-import { memberSearchQuery, myClubsQuery } from './booking-data';
 import { StepShell } from './StepShell';
+import { useSendInvites } from './useSendInvites';
 
 const SEARCH_DEBOUNCE_MS = 250;
 
 export interface InvitePlayersStepProps {
+  bookingId: BookingId;
   /** "Mon, Jul 6 · 9:30-11:30PM" under the title. */
   subtitle: string;
-  selection: InviteSelection;
-  onSelectionChange: (selection: InviteSelection) => void;
-  /** Members already on the reservation (post-confirm invite mode). */
-  excludeMemberIds?: string[];
-  continueLabel: string;
-  continueDisabled?: boolean;
-  continuePending?: boolean;
-  error?: string | null;
-  onContinue: () => void;
+  /** People already on the booking. */
+  excludeUserIds?: readonly string[];
+  /** Every pick was sent. */
+  onSent: () => void;
 }
 
 /**
- * Wizard step 2 (Figma invite-players 7:2482 / 77:2117 / 77:2233): search by
- * name or member ID, a CLUB row whose "Add all" produces a removable
- * "CLUB: name (n)" chip (expanded to the club's roster server-side), and
- * individual player rows with check toggles. Inviting is optional for the
- * booking; the same component runs the post-confirmation "Invite more" flow,
- * where it requires a pick. Mirrors member-web's InvitePlayersStep.
- *
- * The mobile members/search endpoint returns a directory listing for an
- * empty query, so we use it directly for both the initial suggestions and
- * the search (member-web fell back to club rosters because that endpoint
- * did not exist there yet).
+ * Invite players to a confirmed booking: search fellow members of the club
+ * (GET /clubs/{club}/players, PENDING P4) and pick them, or add a whole group
+ * of yours ("Add all" makes a removable group chip). Used from the
+ * confirmation sheet and from "Invite more" on the booking screen.
  */
-export function InvitePlayersStep({
-  subtitle,
-  selection,
-  onSelectionChange,
-  excludeMemberIds = [],
-  continueLabel,
-  continueDisabled = false,
-  continuePending = false,
-  error = null,
-  onContinue,
-}: InvitePlayersStepProps) {
-  const { memberId } = useSession();
+export function InvitePlayersStep({ bookingId, subtitle, excludeUserIds = [], onSent }: InvitePlayersStepProps) {
+  const { userId } = useSession();
   const [query, setQuery] = useState('');
-  const debouncedQuery = useDebouncedValue(query.trim(), SEARCH_DEBOUNCE_MS);
-  const searching = debouncedQuery.length > 0;
+  const debounced = useDebouncedValue(query.trim(), SEARCH_DEBOUNCE_MS);
+  const searching = debounced.length > 0;
+  const [selection, setSelection] = useState<InviteSelection>(EMPTY_INVITE_SELECTION);
 
-  const clubs = useQuery(myClubsQuery);
-  const search = useQuery(memberSearchQuery(debouncedQuery));
+  const groups = useQuery(groupsQuery);
+  const search = useQuery({
+    queryKey: ['reserve', 'player-search', debounced],
+    queryFn: () => clutch.club.searchPlayers(debounced),
+    staleTime: 30_000,
+  });
 
-  const excluded = useMemo(
-    () => new Set([memberId, ...excludeMemberIds].filter(Boolean) as string[]),
-    [memberId, excludeMemberIds],
+  const exclude = useMemo(
+    () => new Set([userId, ...excludeUserIds].filter((id): id is NonNullable<typeof id> => !!id)),
+    [userId, excludeUserIds],
   );
+  const players = useMemo(() => invitablePlayers(search.data ?? [], exclude), [search.data, exclude]);
 
-  const players: MemberSearchResult[] = useMemo(
-    () => (search.data ?? []).filter((member) => !excluded.has(member.id)),
-    [search.data, excluded],
-  );
+  const send = useSendInvites(bookingId, (progress) => {
+    // Drop what was sent, so a retry sends only what is left.
+    setSelection((current) => {
+      let next = current;
+      if (progress.playersSent) next = { ...next, players: [] };
+      if (progress.groupSent) next = removeGroup(next, progress.groupSent);
+      return next;
+    });
+  });
 
-  const hasChips = selection.clubs.length > 0 || selection.members.length > 0;
+  const hasChips = inviteCount(selection) > 0;
+  const failure = send.isError ? describeBookingFailure(send.error) : null;
 
   return (
     <StepShell
@@ -87,10 +82,17 @@ export function InvitePlayersStep({
       subtitle={subtitle}
       footer={
         <PrimaryButton
-          label={continueLabel}
-          loading={continuePending}
-          onPress={continueDisabled ? undefined : onContinue}
-          variant={continueDisabled ? 'ghost' : 'primary'}
+          label="Send invites"
+          loading={send.isPending}
+          variant={hasChips ? 'primary' : 'ghost'}
+          onPress={
+            hasChips
+              ? () =>
+                  send.mutate(selection, {
+                    onSuccess: onSent,
+                  })
+              : undefined
+          }
         />
       }
     >
@@ -98,9 +100,9 @@ export function InvitePlayersStep({
         <Ionicons name="search" size={18} color={colors.textMuted} />
         <TextInput
           style={styles.searchInput}
-          placeholder="Search by name or member ID"
+          placeholder="Search club members by name"
           placeholderTextColor={colors.textSubtle}
-          accessibilityLabel="Search by name or member ID"
+          accessibilityLabel="Search club members by name"
           value={query}
           onChangeText={setQuery}
           autoCapitalize="none"
@@ -111,33 +113,33 @@ export function InvitePlayersStep({
 
       {hasChips ? (
         <View style={styles.chipRow} accessibilityLabel="Selected invites">
-          {selection.clubs.map((club) => (
+          {selection.groups.map((group) => (
             <Chip
-              key={club.id}
-              label={clubChipLabel(club)}
-              onRemove={() => onSelectionChange(removeInviteClub(selection, club.id))}
+              key={group.id}
+              label={groupChipLabel(group)}
+              onRemove={() => setSelection(removeGroup(selection, group.id))}
             />
           ))}
-          {selection.members.map((member) => (
+          {selection.players.map((player) => (
             <Chip
-              key={member.id}
-              label={memberDisplayName(member)}
-              onRemove={() => onSelectionChange(removeInviteMember(selection, member.id))}
+              key={player.user_id}
+              label={playerName(player)}
+              onRemove={() => setSelection(removePlayer(selection, player.user_id))}
             />
           ))}
         </View>
       ) : null}
 
-      {clubs.isSuccess && clubs.data.length > 0 ? (
+      {groups.isSuccess && groups.data.length > 0 ? (
         <>
-          <Text style={styles.sectionLabel}>Club</Text>
+          <Text style={styles.sectionLabel}>Your groups</Text>
           <View style={styles.list}>
-            {clubs.data.map((club) => (
-              <ClubRow
-                key={club.id}
-                club={club}
-                added={isClubSelected(selection, club.id)}
-                onAdd={() => onSelectionChange(addInviteClub(selection, club))}
+            {groups.data.map((group) => (
+              <GroupRow
+                key={group.id}
+                group={group}
+                added={isGroupSelected(selection, group.id)}
+                onAdd={() => setSelection(addGroup(selection, group))}
               />
             ))}
           </View>
@@ -161,43 +163,41 @@ export function InvitePlayersStep({
         <EmptyStateView
           title={searching ? 'No members found' : 'Find your crew'}
           description={
-            searching
-              ? 'No member matches that name or ID.'
-              : 'Search for club members by name or member ID to invite them.'
+            searching ? 'No club member matches that name.' : 'Search club members by name to invite them.'
           }
         />
       ) : (
         <View style={styles.list}>
-          {players.map((member) => (
+          {players.map((player) => (
             <PlayerRow
-              key={member.id}
-              member={member}
-              selected={isMemberSelected(selection, member.id)}
-              onToggle={() => onSelectionChange(toggleInviteMember(selection, member))}
+              key={player.user_id}
+              player={player}
+              selected={isPlayerSelected(selection, player.user_id)}
+              onToggle={() => setSelection(togglePlayer(selection, player))}
             />
           ))}
         </View>
       )}
 
-      {error ? (
+      {failure ? (
         <Text accessibilityRole="alert" style={styles.formError}>
-          {error}
+          {failure.title}. {failure.message}
         </Text>
       ) : null}
     </StepShell>
   );
 }
 
-function ClubRow({ club, added, onAdd }: { club: MyClub; added: boolean; onAdd: () => void }) {
+function GroupRow({ group, added, onAdd }: { group: GroupSummary; added: boolean; onAdd: () => void }) {
   return (
     <View style={styles.row}>
-      <Avatar name={club.name} size="md" />
+      <Avatar name={group.name} src={group.cover_image_url} size="md" />
       <View style={styles.rowText}>
         <Text style={styles.rowTitle} numberOfLines={1}>
-          {club.name}
+          {group.name}
         </Text>
         <Text style={styles.rowSubtitle}>
-          {club.memberCount === 1 ? '1 member' : `${club.memberCount} members`}
+          {group.member_count === 1 ? '1 member' : `${group.member_count} members`}
         </Text>
       </View>
       {added ? (
@@ -205,7 +205,7 @@ function ClubRow({ club, added, onAdd }: { club: MyClub; added: boolean; onAdd: 
       ) : (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`Add all members of ${club.name}`}
+          accessibilityLabel={`Add all members of ${group.name}`}
           onPress={onAdd}
           style={({ pressed }) => [styles.addAll, pressed ? styles.addAllPressed : null]}
         >
@@ -217,15 +217,15 @@ function ClubRow({ club, added, onAdd }: { club: MyClub; added: boolean; onAdd: 
 }
 
 function PlayerRow({
-  member,
+  player,
   selected,
   onToggle,
 }: {
-  member: MemberSearchResult;
+  player: PlayerSearchResult;
   selected: boolean;
   onToggle: () => void;
 }) {
-  const name = memberDisplayName(member);
+  const name = playerName(player);
   return (
     <Pressable
       accessibilityRole="checkbox"
@@ -234,12 +234,12 @@ function PlayerRow({
       onPress={onToggle}
       style={({ pressed }) => [styles.row, pressed ? styles.rowPressed : null]}
     >
-      <Avatar name={name} src={member.avatarUrl} size="md" />
+      <Avatar name={name} src={player.avatar_url} size="md" />
       <View style={styles.rowText}>
         <Text style={styles.rowTitle} numberOfLines={1}>
           {name}
         </Text>
-        <Text style={styles.rowSubtitle}>{memberNumberLabel(member.memberNumber)}</Text>
+        {player.username ? <Text style={styles.rowSubtitle}>@{player.username}</Text> : null}
       </View>
       <View style={[styles.check, selected ? styles.checkSelected : null]}>
         {selected ? <Ionicons name="checkmark" size={16} color={colors.textOnAccent} /> : null}

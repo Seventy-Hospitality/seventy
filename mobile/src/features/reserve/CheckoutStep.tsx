@@ -1,379 +1,142 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { StyleSheet, Text, View } from 'react-native';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { StyleSheet, Text, View, Pressable } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
-  api,
-  type CreateReservationResult,
-  type Reservation,
-  type ResourceTypeSummary,
-} from '../../lib/api';
-import { usePaymentSheet, usePaymentsConfigured } from '../../lib/stripe';
-import { EmptyStateView, PrimaryButton, Skeleton } from '../../components';
+  clutch,
+  useMutationKey,
+  type Booking,
+  type CourtAvailability,
+} from '../../lib/clutch';
+import { queryKeys } from '../../lib/queries';
+import { PrimaryButton, Skeleton } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
 import {
-  formatAmount,
-  formatAmountWithCents,
   formatDateLong,
   formatDuration,
+  formatMoney,
   formatTimeRangeCompact,
-  resourceFeeLabel,
-  resourceNoun,
-  selectionSummary,
+  type TimeRange,
 } from './booking';
-import {
-  classifyReissueError,
-  classifyReissueResult,
-  describeBookingFailure,
-  isPaymentClearing,
-  isTerminalHoldError,
-} from './booking-failures';
-import { inviteesPayload, type InviteSelection } from './invites';
+import { describeBookingFailure, type BookingFailure } from './booking-failures';
+import { BookingSummaryCard } from './BookingSummaryCard';
+import type { HoldSession } from './hold-session';
 import { MembershipInactiveState } from './MembershipInactiveState';
 import { ProcessingOverlay } from './ProcessingOverlay';
-import { ReservationSummaryCard } from './ReservationSummaryCard';
 import { StepShell } from './StepShell';
+import { useBookingPayment } from './useBookingPayment';
 import { useCountdown } from './useCountdown';
 
 const HOLD_WARNING_SECONDS = 120;
 
 export interface CheckoutStepProps {
-  type: ResourceTypeSummary;
+  sport: string;
+  court: CourtAvailability;
   date: string;
-  slots: string[];
-  invites: InviteSelection;
-  /** Names a create attempt so the wizard can tell live holds from orphans. */
-  beginHoldAttempt: () => number;
-  onHoldCreated: (reservationId: string, attempt: number) => void;
-  /** True from payment submit until the charge is known NOT captured. */
-  onPaymentLock: (locked: boolean) => void;
-  onConfirmed: (reservation: Reservation) => void;
-  /** Slot taken / hold expired: release and return to the time step. */
+  range: TimeRange;
+  holdSession: HoldSession;
+  onConfirmed: (booking: Booking) => void;
+  /** The time cannot be had (taken, hold ended, released): back to times. */
   onPickAnotherTime: (message: string | null) => void;
+  /** A payment is clearing and the member leaves: open the booking to finish there. */
+  onLeaveToBooking: (booking: Booking) => void;
 }
 
 /**
- * Wizard step 3 (Figma checkout 14:582): the backend hold/pay/confirm
- * contract, native PaymentSheet edition.
+ * Checkout: hold the court, pay, confirm.
  *
- *  1. POST /api/reservations/quote prices the selection server-side.
- *  2. POST /api/reservations HOLDS the slot (pending_payment, ~12 min TTL),
- *     assigns a specific court (revealed here) and returns a PaymentIntent
- *     client secret.
- *  3. The native PaymentSheet collects and confirms the card on that secret.
- *  4. POST /api/reservations/:id/confirm asserts the payment captured and
- *     flips the hold to confirmed ("securing your spot").
+ *  1. POST /bookings holds the court for this range: a `pending` booking
+ *     with a 15-minute hold. Its price_cents is the authoritative total.
+ *  2. Pay through useBookingPayment (intent, sheet or simulated checkout,
+ *     confirm with the completed intent id; a free booking confirms directly).
+ *  3. Clutch's confirmed booking is the success.
  *
- * The Figma-omitted states are handled here: the slot taken between select
- * and hold (409 SLOT_UNAVAILABLE -> back to time), the hold expiring before
- * payment (countdown + 409 HOLD_EXPIRED), the charge still clearing
- * (402 PAYMENT_REQUIRED -> re-check), and a declined/failed payment (mint a
- * FRESH PaymentIntent on the same hold via reissue and retry in place, never
- * a second charge; `alreadyPaid` settles to confirm instead).
+ * Hold and payment are separate. A failed intent request or a closed sheet
+ * KEEPS the hold so the member can try again until it expires; "Release
+ * court" cancels it explicitly. A payment Clutch has not seen settle
+ * (payment_not_verified / payment_processing) is re-checked, never re-paid.
+ * A hold that ended (booking_changed, booking_not_pending, expiry) sends the
+ * member back to times with a fresh grid.
  */
 export function CheckoutStep({
-  type,
+  sport,
+  court,
   date,
-  slots,
-  invites,
-  beginHoldAttempt,
-  onHoldCreated,
-  onPaymentLock,
+  range,
+  holdSession,
   onConfirmed,
   onPickAnotherTime,
+  onLeaveToBooking,
 }: CheckoutStepProps) {
-  const paymentsConfigured = usePaymentsConfigured();
-  const presentPayment = usePaymentSheet();
+  const queryClient = useQueryClient();
+  const createKey = useMutationKey();
+  const [held, setHeld] = useState<Booking | null>(null);
 
-  const quote = useQuery({
-    queryKey: ['booking-quote', type.code, date, slots],
-    queryFn: () => api.quoteReservation({ typeCode: type.code, date, slots }),
-    enabled: paymentsConfigured,
-  });
+  const input = {
+    court_id: court.court_id,
+    date,
+    start_time: range.start,
+    end_time: range.end,
+  };
 
   const create = useMutation({
-    // The hold is reported from inside mutationFn, not onSuccess: the request
-    // outlives this step if the member backs out mid-flight, and the wizard
-    // must learn about the hold to release it either way. The attempt token
-    // lets the wizard tell a live hold from an orphan to cancel.
-    mutationFn: async (input: Parameters<typeof api.createReservation>[0]) => {
-      const attempt = beginHoldAttempt();
-      const result = await api.createReservation(input);
-      onHoldCreated(result.reservation.id, attempt);
-      return result;
+    // The hold is reported from inside mutationFn: the request can outlive
+    // this step, and the ledger must learn of the hold to release it.
+    mutationFn: async (body: typeof input) => {
+      const attempt = holdSession.beginAttempt();
+      const booking = await createKey.run(body, (key) =>
+        clutch.bookings.create(body, { idempotencyKey: key }),
+      );
+      holdSession.holdCreated(booking.id, attempt);
+      return booking;
     },
-    onSuccess: (result) => setHeld(result),
+    onSuccess: (booking) => {
+      setHeld(booking);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.availability(date) });
+    },
   });
 
-  const confirm = useMutation({ mutationFn: api.confirmReservation });
+  const payment = useBookingPayment(held?.id ?? null, {
+    onConfirmed,
+    onLockChange: (locked) => holdSession.setPaymentLocked(locked),
+  });
 
-  /** The live hold. Reissue can swap its payable secret + TTL in place. */
-  const [held, setHeld] = useState<CreateReservationResult | null>(null);
-  const [payError, setPayError] = useState<string | null>(null);
-  const [paying, setPaying] = useState(false);
-  const [confirming, setConfirming] = useState(false);
-  const [recovering, setRecovering] = useState(false);
-  const [processingHold, setProcessingHold] = useState(false);
-  const [holdExpired, setHoldExpired] = useState(false);
-  const [confirmError, setConfirmError] = useState(false);
-  // Set when a reissue could not prove the previous charge did NOT capture
-  // (network / 5xx, or an unexpected response). The payment lock STAYS ON and
-  // the member re-runs the reissue; see recoverFromDecline.
-  const [recoverError, setRecoverError] = useState<string | null>(null);
-
-  // Hold the slot as soon as the server quote lands (the Figma checkout is
-  // entered with the court already assigned). Fired once.
+  // Hold the court as soon as checkout opens, once per mount (the wizard
+  // remounts this step for a different court or range).
   const startedRef = useRef(false);
   const createMutate = create.mutate;
   useEffect(() => {
-    if (!paymentsConfigured || !quote.isSuccess || startedRef.current) return;
+    if (startedRef.current) return;
     startedRef.current = true;
-    createMutate({ typeCode: type.code, date, slots, invitees: inviteesPayload(invites) });
-  }, [paymentsConfigured, quote.isSuccess, createMutate, type.code, date, slots, invites]);
+    createMutate(input);
+  }, [createMutate, input]);
 
-  const holdSecondsLeft = useCountdown(held?.holdExpiresAt ?? null);
-  const countdownLapsed = holdSecondsLeft !== null && holdSecondsLeft <= 0;
-  const showHoldExpired =
-    holdExpired ||
-    (countdownLapsed &&
-      !paying &&
-      !confirming &&
-      !confirmError &&
-      !processingHold &&
-      !recovering &&
-      !recoverError);
+  const secondsLeft = useCountdown(held?.hold_expires_at ?? null);
+  const settling = payment.stage !== 'idle' && payment.stage !== 'submitted';
+  const holdLapsed = secondsLeft !== null && secondsLeft <= 0 && !settling;
 
-  async function handlePaid() {
-    if (!held) return;
-    setConfirmError(false);
-    setConfirming(true);
-    try {
-      const reservation = await confirm.mutateAsync(held.reservation.id);
-      // Stay locked; the parent settles the hold and navigates.
-      onConfirmed(reservation);
-    } catch (err) {
-      setConfirming(false);
-      if (isPaymentClearing(err)) {
-        // The charge reached Stripe but has not cleared: re-check, do not
-        // retry a payment that could double-charge.
-        setProcessingHold(true);
-        return;
-      }
-      if (isTerminalHoldError(err)) {
-        setHoldExpired(true);
-        return;
-      }
-      // Money captured but confirm failed: keep the lock and let them retry.
-      setConfirmError(true);
-    }
-  }
+  const subtitle = 'Confirm and pay to book your court';
 
-  /**
-   * Recover a hold after a failed PaymentSheet result by reissuing its
-   * PaymentIntent. The native sheet cannot tell a definitive decline from an
-   * ambiguous failure (a network drop AFTER the charge confirmed), so the
-   * capture state is unknown until the backend reissue resolves it.
-   *
-   * Money-safety invariant (see classifyReissue* + hold-session.ts): the
-   * payment lock is cleared ONLY on a proven-unpaid outcome — a fresh secret
-   * minted after the old intent was retired at Stripe. A captured charge, a
-   * gone hold, and every indeterminate failure all KEEP the lock on, because
-   * a client cancel of a possibly-paid hold settles at the cancellation
-   * percent (0% within 2h of start) and loses the money.
-   */
-  async function recoverFromDecline(message: string | null) {
-    if (!held) return;
-    setRecovering(true);
-    const disposition = await api
-      .reissuePaymentIntent(held.reservation.id)
-      .then(classifyReissueResult, classifyReissueError);
-    setRecovering(false);
+  // ── Hold could not be created ──
 
-    switch (disposition.kind) {
-      case 'paid':
-        // The charge actually captured despite the failure signal: keep the
-        // lock and settle the hold to a confirmed booking.
-        setRecoverError(null);
-        onPaymentLock(true);
-        await handlePaid();
-        return;
-      case 'retry-in-place':
-        // Fresh PaymentIntent on the SAME hold: the old intent was PROVABLY
-        // retired at Stripe, so nothing captured. Safe to clear the lock and
-        // let the member retry in place on the fresh secret.
-        setRecoverError(null);
-        setHeld((prev) =>
-          prev
-            ? {
-                ...prev,
-                clientSecret: disposition.clientSecret,
-                holdExpiresAt: disposition.expiresAt,
-              }
-            : prev,
-        );
-        onPaymentLock(false);
-        setPayError(message ?? 'Your payment could not be completed. Try again.');
-        return;
-      case 'expired':
-        // The hold is gone server-side; the paid-but-expired sweeper owns any
-        // captured charge. KEEP the lock so showHoldExpired -> onPickAnotherTime
-        // releases WITHOUT cancelling (a client cancel would settle at the
-        // policy percent).
-        setRecoverError(null);
-        setHoldExpired(true);
-        return;
-      case 'recover':
-        // Indeterminate: the original charge state is unknown. The lock STAYS
-        // ON and the member re-runs the reissue, which settles a captured
-        // charge or mints a fresh secret once the service is reachable.
-        setRecoverError(
-          'We could not reach the payment service to finish checking your payment. Check your connection and try again.',
-        );
-        return;
-    }
-  }
-
-  async function pay() {
-    if (!held?.clientSecret || paying || recovering) return;
-    setPayError(null);
-    setPaying(true);
-    // From here the charge may capture at Stripe: the wizard must not let
-    // Back/Close cancel the hold until the payment is known to have failed.
-    onPaymentLock(true);
-    let result;
-    try {
-      result = await presentPayment({ clientSecret: held.clientSecret });
-    } catch {
-      result = { status: 'failed', message: 'Payment failed. Please try again.' } as const;
-    }
-    setPaying(false);
-
-    if (result.status === 'unconfigured') {
-      onPaymentLock(false);
-      setPayError('Payments are not configured in this environment.');
-      return;
-    }
-    if (result.status === 'canceled') {
-      // The member dismissed the sheet before paying: nothing captured, the
-      // hold is still live, so backing out may release it again.
-      onPaymentLock(false);
-      return;
-    }
-    if (result.status === 'failed') {
-      await recoverFromDecline(result.message ?? null);
-      return;
-    }
-    await handlePaid();
-  }
-
-  const noun = resourceNoun(type.name);
-  const subtitle = 'Confirm & pay to reserve your spot';
-
-  // ── Frame-level states ──
-
-  if (!paymentsConfigured) {
+  if (create.isError) {
+    const failure = describeBookingFailure(create.error);
     return (
       <StepShell title="Checkout" subtitle={subtitle}>
-        <EmptyStateView
-          title="Payments are not configured"
-          description="Set EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY to enable checkout in this build."
+        <FailureBox
+          failure={failure}
+          onPickTime={() => onPickAnotherTime(failure.message)}
+          onRetry={() => create.mutate(input)}
+          retrying={create.isPending}
         />
       </StepShell>
     );
   }
 
-  const failure = describeBookingFailure(quote.error ?? create.error);
-  if (failure) {
-    if (failure.kind === 'membership') {
-      return (
-        <StepShell title="Checkout" subtitle={subtitle}>
-          <MembershipInactiveState />
-        </StepShell>
-      );
-    }
-    if (failure.kind === 'back-to-time') {
-      return (
-        <StepShell title="Checkout" subtitle={subtitle}>
-          <NoticeBox message={failure.message}>
-            <PrimaryButton label="Pick another time" onPress={() => onPickAnotherTime(null)} />
-          </NoticeBox>
-        </StepShell>
-      );
-    }
+  if (!held) {
     return (
       <StepShell title="Checkout" subtitle={subtitle}>
-        <NoticeBox message={failure.message}>
-          <PrimaryButton
-            label="Try again"
-            variant="secondary"
-            onPress={() => {
-              if (quote.isError) {
-                void quote.refetch();
-              } else {
-                startedRef.current = true;
-                create.mutate({
-                  typeCode: type.code,
-                  date,
-                  slots,
-                  invitees: inviteesPayload(invites),
-                });
-              }
-            }}
-          />
-        </NoticeBox>
-      </StepShell>
-    );
-  }
-
-  if (showHoldExpired) {
-    return (
-      <StepShell title="Checkout" subtitle={subtitle}>
-        <NoticeBox
-          message={`Your ${noun} hold expired before the payment completed. If you were charged, the amount is refunded automatically.`}
-        >
-          <PrimaryButton label="Choose a new time" onPress={() => onPickAnotherTime(null)} />
-        </NoticeBox>
-      </StepShell>
-    );
-  }
-
-  if (processingHold) {
-    return (
-      <StepShell title="Checkout" subtitle={subtitle}>
-        <NoticeBox
-          title="Your payment is processing"
-          message="Your booking will be confirmed as soon as the payment clears. This can take a moment for some payment methods."
-        >
-          <PrimaryButton
-            label="Check again"
-            variant="secondary"
-            loading={confirm.isPending}
-            onPress={() => void handlePaid()}
-          />
-        </NoticeBox>
-      </StepShell>
-    );
-  }
-
-  if (recoverError) {
-    return (
-      <StepShell title="Checkout" subtitle={subtitle}>
-        <NoticeBox title="We couldn't finish your payment" message={recoverError}>
-          <PrimaryButton
-            label="Try again"
-            variant="secondary"
-            loading={recovering}
-            onPress={() => void recoverFromDecline(null)}
-          />
-        </NoticeBox>
-      </StepShell>
-    );
-  }
-
-  if (quote.isPending || create.isPending || (quote.isSuccess && !held)) {
-    return (
-      <StepShell title="Checkout" subtitle={subtitle}>
-        <View style={styles.loading} accessibilityLabel="Preparing your booking">
+        <View style={styles.loading} accessibilityLabel="Holding your court">
           <Skeleton height={132} borderRadius={radius.lg} />
           <Skeleton height={96} borderRadius={radius.lg} />
           <Skeleton height={46} borderRadius={radius.pill} />
@@ -382,132 +145,185 @@ export function CheckoutStep({
     );
   }
 
-  if (!held || !held.clientSecret) {
+  // ── The hold ended before the booking was confirmed ──
+
+  if (holdLapsed) {
     return (
       <StepShell title="Checkout" subtitle={subtitle}>
-        <NoticeBox message="We could not start your payment. The held time was released.">
-          <PrimaryButton
-            label="Back to time selection"
-            variant="secondary"
-            onPress={() => onPickAnotherTime(null)}
-          />
-        </NoticeBox>
+        <Notice
+          title="Your hold ended"
+          message="The court is no longer held for you. If a payment went through, the club returns it to your card."
+        >
+          <PrimaryButton label="Choose a new time" onPress={() => onPickAnotherTime(null)} />
+        </Notice>
       </StepShell>
     );
   }
 
-  // ── The payable checkout ──
+  const failure = payment.failure;
+  if (failure && (failure.action === 'pick-time' || failure.action === 'membership' || failure.action === 'waiver')) {
+    return (
+      <StepShell title="Checkout" subtitle={subtitle}>
+        <FailureBox failure={failure} onPickTime={() => onPickAnotherTime(failure.message)} />
+      </StepShell>
+    );
+  }
 
-  const reservation = held.reservation;
-  const summary = selectionSummary(slots, type.slotDurationMinutes, type.hourlyRateCents);
-  const hourlyRateCents = quote.data?.hourlyRateCents ?? type.hourlyRateCents;
-  const durationMinutes = quote.data?.durationMinutes ?? summary?.durationMinutes ?? 0;
+  if (payment.stage === 'unconfirmed') {
+    return (
+      <StepShell title="Checkout" subtitle={subtitle}>
+        <Notice
+          title={failure?.title ?? 'Your payment is clearing'}
+          message={
+            failure?.message ??
+            'The club has not seen your payment settle yet. Check again in a moment; you will not be charged twice.'
+          }
+        >
+          <PrimaryButton
+            label="Check again"
+            variant="secondary"
+            onPress={() => void payment.checkAgain()}
+          />
+          <PrimaryButton
+            label="Leave and check later"
+            variant="ghost"
+            onPress={() => onLeaveToBooking(held)}
+          />
+        </Notice>
+      </StepShell>
+    );
+  }
+
+  // ── The payable hold ──
+
+  const free = held.price_cents <= 0;
+  const payLabel = free ? 'Confirm booking' : `Confirm and pay ${formatMoney(held.price_cents, held.currency)}`;
+  const busy = payment.stage === 'preparing' || payment.stage === 'paying' || payment.stage === 'confirming';
 
   return (
     <StepShell
       title="Checkout"
       subtitle={subtitle}
       footer={
-        <PrimaryButton
-          label={`Confirm & pay ${formatAmountWithCents(held.totalCents)}`}
-          loading={paying || confirming || recovering}
-          onPress={() => void pay()}
-        />
+        <View style={styles.footer}>
+          <PrimaryButton
+            label={payLabel}
+            loading={busy}
+            onPress={() => void payment.pay({ amountCents: held.price_cents, settle: 'confirm' })}
+          />
+          {!busy ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Release court"
+              onPress={() => {
+                holdSession.release();
+                onPickAnotherTime(null);
+              }}
+              style={styles.release}
+            >
+              <Text style={styles.releaseLabel}>Release court</Text>
+            </Pressable>
+          ) : null}
+        </View>
       }
     >
-      <ReservationSummaryCard
-        typeCode={reservation.typeCode}
-        typeName={reservation.typeName}
-        resourceName={reservation.resource.name}
+      <BookingSummaryCard
+        sport={sport}
+        courtName={court.court_name}
         rows={[
-          { label: 'Date', value: formatDateLong(reservation.date) },
-          {
-            label: 'Time',
-            value: formatTimeRangeCompact(reservation.startTime, reservation.endTime),
-          },
-          { label: 'Duration', value: formatDuration(reservation.durationMinutes) },
+          { label: 'Date', value: formatDateLong(held.date) },
+          { label: 'Time', value: formatTimeRangeCompact(held.start_time, held.end_time) },
+          { label: 'Duration', value: formatDuration(range.minutes) },
         ]}
       />
 
-      <OrderSummary
-        feeLabel={resourceFeeLabel(type.name)}
-        hourlyRateCents={hourlyRateCents}
-        durationMinutes={durationMinutes}
-        totalCents={held.totalCents}
-      />
+      <View style={styles.orderSummary}>
+        <Text style={styles.orderTitle}>Order summary</Text>
+        {held.original_price_cents && held.discount_amount_cents ? (
+          <>
+            <Row label="Court fee" value={formatMoney(held.original_price_cents, held.currency)} />
+            <Row label="Discount" value={`-${formatMoney(held.discount_amount_cents, held.currency)}`} />
+          </>
+        ) : null}
+        <View style={styles.orderDivider} />
+        <View style={styles.orderRow}>
+          <Text style={styles.orderTotalLabel}>Total due today</Text>
+          <Text style={styles.orderTotal}>{formatMoney(held.price_cents, held.currency)}</Text>
+        </View>
+      </View>
 
-      {holdSecondsLeft !== null ? (
-        <View
-          style={[styles.holdHint, holdSecondsLeft <= HOLD_WARNING_SECONDS ? styles.holdHintUrgent : null]}
-          accessibilityLabel={holdAnnouncement(reservation.resource.name, holdSecondsLeft)}
-        >
+      {secondsLeft !== null ? (
+        <View style={styles.holdHint} accessibilityLabel={holdAnnouncement(court.court_name, secondsLeft)}>
           <Ionicons
             name="time-outline"
             size={16}
-            color={holdSecondsLeft <= HOLD_WARNING_SECONDS ? colors.dangerStrong : colors.textMuted}
+            color={secondsLeft <= HOLD_WARNING_SECONDS ? colors.dangerStrong : colors.textMuted}
           />
           <Text style={styles.holdHintText}>
-            {reservation.resource.name} is held for you for{' '}
-            <Text style={styles.holdHintStrong}>{formatCountdown(holdSecondsLeft)}</Text>
+            {court.court_name} is held for you for{' '}
+            <Text style={styles.holdHintStrong}>{formatCountdown(secondsLeft)}</Text>
           </Text>
         </View>
       ) : null}
 
-      {payError ? (
-        <Text accessibilityRole="alert" style={styles.payError}>
-          {payError}
+      {payment.canceled ? (
+        <Text style={styles.info} accessibilityRole="alert">
+          Payment not completed. The court is still held for you; pay when you are ready, or release it.
         </Text>
       ) : null}
 
-      {confirmError ? (
-        <NoticeBox message="Your payment went through, but we could not confirm your booking. Retry; you will not be charged twice.">
-          <PrimaryButton
-            label="Try again"
-            variant="secondary"
-            loading={confirm.isPending}
-            onPress={() => void handlePaid()}
-          />
-        </NoticeBox>
+      {failure ? (
+        <Text accessibilityRole="alert" style={styles.payError}>
+          {failure.title}. {failure.message}
+        </Text>
       ) : null}
 
-      <ProcessingOverlay visible={confirming} resourceName={reservation.resource.name} noun={noun} />
+      <ProcessingOverlay visible={payment.stage === 'confirming'} courtName={court.court_name} />
     </StepShell>
   );
 }
 
-function OrderSummary({
-  feeLabel,
-  hourlyRateCents,
-  durationMinutes,
-  totalCents,
-}: {
-  feeLabel: string;
-  hourlyRateCents: number;
-  durationMinutes: number;
-  totalCents: number;
-}) {
-  const hours = durationMinutes / 60;
-  const hoursLabel = hours === 1 ? '1 hour' : `${hours} hours`;
+function Row({ label, value }: { label: string; value: string }) {
   return (
-    <View style={styles.orderSummary}>
-      <Text style={styles.orderTitle}>Order summary</Text>
-      <View style={styles.orderRow}>
-        <Text style={styles.orderLabel}>{feeLabel}</Text>
-        <Text style={styles.orderRate}>
-          {formatAmount(hourlyRateCents)} / hour{'\n'}
-          <Text style={styles.orderRateSub}>x {hoursLabel}</Text>
-        </Text>
-      </View>
-      <View style={styles.orderDivider} />
-      <View style={styles.orderRow}>
-        <Text style={styles.orderTotalLabel}>Total due today</Text>
-        <Text style={styles.orderTotal}>{formatAmountWithCents(totalCents)}</Text>
-      </View>
+    <View style={styles.orderRow}>
+      <Text style={styles.orderLabel}>{label}</Text>
+      <Text style={styles.orderValue}>{value}</Text>
     </View>
   );
 }
 
-function NoticeBox({
+/** A refusal with the recovery its action calls for. */
+export function FailureBox({
+  failure,
+  onPickTime,
+  onRetry,
+  retrying,
+}: {
+  failure: BookingFailure;
+  onPickTime?: () => void;
+  onRetry?: () => void;
+  retrying?: boolean;
+}) {
+  if (failure.action === 'membership') {
+    return <MembershipInactiveState title={failure.title} description={failure.message} />;
+  }
+  return (
+    <Notice title={failure.title} message={failure.message}>
+      {failure.action === 'pick-time' && onPickTime ? (
+        <PrimaryButton label="Pick another time" onPress={onPickTime} />
+      ) : null}
+      {(failure.action === 'retry' || failure.action === 'retry-payment') && onRetry ? (
+        <PrimaryButton label="Try again" variant="secondary" loading={retrying} onPress={onRetry} />
+      ) : null}
+      {(failure.action === 'none' || failure.action === 'waiver' || failure.action === 'refresh') &&
+      onPickTime ? (
+        <PrimaryButton label="Back to times" variant="secondary" onPress={onPickTime} />
+      ) : null}
+    </Notice>
+  );
+}
+
+export function Notice({
   title,
   message,
   children,
@@ -531,17 +347,29 @@ function formatCountdown(seconds: number): string {
   return `${minutes}:${String(rest).padStart(2, '0')}`;
 }
 
-function holdAnnouncement(resourceName: string, secondsLeft: number): string {
-  if (secondsLeft <= 0) return `${resourceName} hold expired`;
-  if (secondsLeft <= 60) return `${resourceName} is held for less than a minute. Finish paying to keep it.`;
+function holdAnnouncement(courtName: string, secondsLeft: number): string {
+  if (secondsLeft <= 0) return `${courtName} hold ended`;
+  if (secondsLeft <= 60) return `${courtName} is held for less than a minute. Finish paying to keep it.`;
   if (secondsLeft <= HOLD_WARNING_SECONDS)
-    return `${resourceName} is held for less than two minutes. Finish paying to keep it.`;
-  return `${resourceName} is held for you while you complete payment.`;
+    return `${courtName} is held for less than two minutes. Finish paying to keep it.`;
+  return `${courtName} is held for you while you pay.`;
 }
 
 const styles = StyleSheet.create({
   loading: {
     gap: spacing.md,
+  },
+  footer: {
+    gap: spacing.xs,
+  },
+  release: {
+    alignItems: 'center',
+    paddingVertical: spacing.sm,
+  },
+  releaseLabel: {
+    color: colors.textLink,
+    fontFamily: fonts.bodySemibold,
+    fontSize: 14,
   },
   orderSummary: {
     backgroundColor: colors.bgElevated,
@@ -559,7 +387,7 @@ const styles = StyleSheet.create({
   orderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     gap: spacing.md,
   },
   orderLabel: {
@@ -567,16 +395,10 @@ const styles = StyleSheet.create({
     fontFamily: fonts.body,
     fontSize: 14,
   },
-  orderRate: {
+  orderValue: {
     color: colors.text,
     fontFamily: fonts.bodySemibold,
     fontSize: 14,
-    textAlign: 'right',
-  },
-  orderRateSub: {
-    color: colors.textMuted,
-    fontFamily: fonts.body,
-    fontSize: 12,
   },
   orderDivider: {
     height: 1,
@@ -598,7 +420,6 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
     paddingVertical: spacing.xs,
   },
-  holdHintUrgent: {},
   holdHintText: {
     flex: 1,
     color: colors.textMuted,
@@ -608,6 +429,11 @@ const styles = StyleSheet.create({
   holdHintStrong: {
     color: colors.text,
     fontFamily: fonts.bodySemibold,
+  },
+  info: {
+    color: colors.textMuted,
+    fontFamily: fonts.body,
+    fontSize: 13,
   },
   payError: {
     color: colors.danger,

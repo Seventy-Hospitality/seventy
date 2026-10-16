@@ -3,24 +3,20 @@ import { colors, fonts, spacing } from '../../theme/tokens';
 
 interface ProcessingOverlayProps {
   visible: boolean;
-  /** The assigned court, when known ("We're securing your spot on Court 2"). */
-  resourceName?: string;
-  noun: string;
+  /** The court, when known ("We're securing your spot on Court 2"). */
+  courtName?: string | null;
   title?: string;
   body?: string;
 }
 
 /**
- * Full-screen "securing your spot" takeover (Figma loading-state 7:2845):
- * shown while the payment confirms and the hold flips to a confirmed
- * booking. A modal that swallows the hardware back button, so nothing can
- * reach the wizard chrome and cancel a hold whose payment just went
- * through while it settles.
+ * Full-screen "securing your spot" takeover, shown while Clutch confirms the
+ * payment and the hold becomes a confirmed booking. A modal that swallows the
+ * hardware back button, so nothing reaches the wizard chrome while it settles.
  */
 export function ProcessingOverlay({
   visible,
-  resourceName,
-  noun,
+  courtName,
   title,
   body,
 }: ProcessingOverlayProps) {
@@ -38,7 +34,7 @@ export function ProcessingOverlay({
         <Text style={styles.title}>{title ?? 'Securing your spot'}</Text>
         <Text style={styles.body}>
           {body ??
-            (resourceName ? `We're securing your spot on ${resourceName}` : `We're securing your ${noun}`)}
+            (courtName ? `We're securing your spot on ${courtName}` : "We're securing your court")}
         </Text>
         <Text style={styles.note}>Please keep this screen open</Text>
       </View>

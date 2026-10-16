@@ -1,105 +1,173 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import type { ResourceTypeSummary } from '../../lib/api';
+import { clutch, type BookingRules, type CourtAvailability } from '../../lib/clutch';
+import { availabilityQuery } from '../../lib/queries';
 import { EmptyStateView, PrimaryButton, Skeleton } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
 import {
   buildDateStrip,
+  formatDuration,
+  formatMoney,
   formatStripDay,
   pruneSelection,
-  resourceNoun,
+  selectionRange,
+  sportLabel,
   todayDateKey,
   toggleSlot,
+  type TimeRange,
 } from './booking';
-import { availabilityQuery } from './booking-data';
+import {
+  durationProblem,
+  gridSlotMinutes,
+  pickCourt,
+  timesFor,
+  type OwnRange,
+} from './court-picker';
 import { SlotPill } from './SlotPill';
 import { StepShell } from './StepShell';
 
-/** Days shown before "More dates" expands the strip to the full horizon. */
+/** Days shown before "More dates" expands the rail to the full horizon. */
 const INITIAL_STRIP_DAYS = 7;
 
+export interface TimePick {
+  court: CourtAvailability;
+  date: string;
+  range: TimeRange;
+}
+
 export interface SelectTimeStepProps {
-  type: ResourceTypeSummary;
-  /** The venue IANA zone; the strip's "today" anchor. */
+  /** The court_type being booked. */
+  sport: string;
+  /** The club's IANA zone: the rail's "today". */
   timezone: string;
+  rules: BookingRules;
   date: string;
   onDateChange: (date: string) => void;
+  /** Selected slot starts ("HH:MM"), contiguous. */
   slots: string[];
   onSlotsChange: (slots: string[]) => void;
-  /** Alert shown after a failure bounced the user back to this step. */
+  /** Reschedule: the booking being moved, whose own slots count as free on its date. */
+  own?: (OwnRange & { date: string }) | null;
+  /** Alert shown after a failure bounced the member back here. */
   notice: string | null;
   onDismissNotice: () => void;
-  onContinue: () => void;
-  /** Step title; defaults to the booking "Book a court" heading. */
+  onContinue: (pick: TimePick) => void;
   title?: string;
-  /** Footer label; defaults to "Continue". */
   continueLabel?: string;
-  /**
-   * Extra gate on Continue on top of "needs a slot" (M4 edit's dirty check:
-   * Continue stays disabled until the selection actually changes).
-   */
+  /** Extra gate on Continue (reschedule: the range must actually change). */
   continueDisabled?: boolean;
-  /**
-   * M4 edit/reschedule: exclude this reservation's own claim from availability
-   * so its current slots read as bookable to itself (backend self-exclusion).
-   */
-  excludeReservationId?: string;
 }
 
 /**
- * Wizard step 1 (Figma select-time 286:8257 / 325:14701): a horizontal date
- * strip with "More dates", then the 30-minute slot list showing only
- * bookable times (taken times are simply absent). Multi-select keeps the run
- * contiguous; Continue needs at least one slot. Mirrors member-web's
- * SelectTimeStep, native.
+ * Choose a date and a time range for a sport. The date rail runs from the
+ * club's today to booking_rules.advance_booking_days ahead. The time list is
+ * the day's availability grid folded by sport: a start time shows when at
+ * least one court of the sport is free, with the grid's price. The member
+ * picks a contiguous range; the app names the one court free for all of it
+ * (pickCourt), and Clutch quotes the total for that court and range.
  */
 export function SelectTimeStep({
-  type,
+  sport,
   timezone,
+  rules,
   date,
   onDateChange,
   slots,
   onSlotsChange,
+  own = null,
   notice,
   onDismissNotice,
   onContinue,
   title,
   continueLabel = 'Continue',
   continueDisabled = false,
-  excludeReservationId,
 }: SelectTimeStepProps) {
   const strip = useMemo(
-    () => buildDateStrip(todayDateKey(timezone), type.maxAdvanceDays),
-    [timezone, type.maxAdvanceDays],
+    () => buildDateStrip(todayDateKey(timezone), rules.advance_booking_days),
+    [timezone, rules.advance_booking_days],
   );
   const [expanded, setExpanded] = useState(() => strip.indexOf(date) >= INITIAL_STRIP_DAYS);
   const visibleStrip = expanded ? strip : strip.slice(0, INITIAL_STRIP_DAYS);
 
-  const availability = useQuery(availabilityQuery(type.code, date, excludeReservationId));
-  const day = availability.data?.[0];
-  const available = useMemo(() => day?.slots.map((slot) => slot.start) ?? [], [day]);
+  const grid = useQuery(availabilityQuery(date));
+  const ownToday = own && own.date === date ? own : null;
+  const options = useMemo(
+    () => (grid.data ? timesFor(grid.data, sport, { own: ownToday }) : []),
+    [grid.data, sport, ownToday],
+  );
+  const offered = useMemo(() => options.map((option) => option.start), [options]);
+  const slotMinutes =
+    rules.slot_duration_minutes || (grid.data ? gridSlotMinutes(grid.data) : null) || 60;
 
-  // An availability refetch can remove a selected slot (someone else booked
-  // it); prune so the selection never holds a time we cannot book.
+  // A refetch can take a selected start away (someone else booked it): prune
+  // so the selection never holds a time that is not offered.
   useEffect(() => {
-    if (!availability.isSuccess) return;
-    const availableSet = new Set(available);
-    if (slots.every((slot) => availableSet.has(slot))) return;
-    onSlotsChange(pruneSelection(slots, available, type.slotDurationMinutes));
-  }, [availability.isSuccess, available, slots, onSlotsChange, type.slotDurationMinutes]);
+    if (!grid.isSuccess) return;
+    const offeredSet = new Set(offered);
+    if (slots.every((slot) => offeredSet.has(slot))) return;
+    onSlotsChange(pruneSelection(slots, offered, slotMinutes));
+  }, [grid.isSuccess, offered, slots, onSlotsChange, slotMinutes]);
 
-  const canContinue = slots.length > 0 && !continueDisabled;
+  const range = selectionRange(slots, slotMinutes);
+  const court =
+    range && grid.data ? pickCourt(grid.data, sport, range.start, range.end, { own: ownToday }) : null;
+  const problem = range ? durationProblem(range.minutes, rules) : null;
+  const ready = !!range && !!court && !problem;
+
+  const quote = useQuery({
+    queryKey: ['reserve', 'quote', court?.court_id ?? null, date, range?.start ?? null, range?.end ?? null],
+    queryFn: () =>
+      clutch.bookings.quote({
+        court_id: court!.court_id,
+        date,
+        start_time: range!.start,
+        end_time: range!.end,
+      }),
+    enabled: ready,
+    retry: false,
+    staleTime: 15_000,
+  });
+
+  const hint = !range
+    ? null
+    : problem === 'too_short'
+      ? `Book at least ${formatDuration(rules.min_duration_minutes)}.`
+      : problem === 'too_long'
+        ? `Book at most ${formatDuration(rules.max_duration_minutes)}.`
+        : !court
+          ? 'No single court is free for that whole time. Shorten it or pick another start.'
+          : null;
+
+  const canContinue = ready && !continueDisabled;
 
   return (
     <StepShell
-      title={title ?? `Book a ${resourceNoun(type.name)}`}
+      title={title ?? `Book ${sportLabel(sport).toLowerCase()}`}
       footer={
-        <PrimaryButton
-          label={continueLabel}
-          onPress={canContinue ? onContinue : undefined}
-          variant={canContinue ? 'primary' : 'ghost'}
-        />
+        <View style={styles.footer}>
+          {ready && court && range ? (
+            <View style={styles.summary} accessibilityLiveRegion="polite">
+              <Text style={styles.summaryCourt} numberOfLines={1}>
+                {court.court_name} · {formatDuration(range.minutes)}
+              </Text>
+              <Text style={styles.summaryTotal}>
+                {quote.data
+                  ? `Total ${formatMoney(quote.data.total_cents, quote.data.currency)}`
+                  : quote.isPending
+                    ? 'Pricing...'
+                    : 'Total shown at checkout'}
+              </Text>
+            </View>
+          ) : null}
+          <PrimaryButton
+            label={continueLabel}
+            onPress={
+              canContinue && court && range ? () => onContinue({ court, date, range }) : undefined
+            }
+            variant={canContinue ? 'primary' : 'ghost'}
+          />
+        </View>
       }
     >
       {notice ? (
@@ -130,40 +198,41 @@ export function SelectTimeStep({
       />
 
       <View style={styles.sectionHead}>
-        <Text style={styles.sectionLabel}>Select slots</Text>
+        <Text style={styles.sectionLabel}>Select times</Text>
       </View>
 
-      {availability.isPending ? (
+      {hint ? (
+        <Text style={styles.hint} accessibilityRole="alert">
+          {hint}
+        </Text>
+      ) : null}
+
+      {grid.isPending ? (
         <View style={styles.slotList} accessibilityLabel="Loading available times">
           {[0, 1, 2, 3, 4].map((i) => (
-            <Skeleton key={i} height={52} borderRadius={radius.md} />
+            <Skeleton key={i} height={56} borderRadius={radius.md} />
           ))}
         </View>
-      ) : availability.isError ? (
+      ) : grid.isError ? (
         <View style={styles.errorBox} accessibilityRole="alert">
           <Text style={styles.errorText}>We could not load the available times.</Text>
-          <PrimaryButton
-            label="Try again"
-            variant="secondary"
-            onPress={() => void availability.refetch()}
-          />
+          <PrimaryButton label="Try again" variant="secondary" onPress={() => void grid.refetch()} />
         </View>
-      ) : available.length === 0 ? (
+      ) : options.length === 0 ? (
         <EmptyStateView
           title="No available times"
-          description="This day is fully booked. Try another date."
+          description={`Every ${sportLabel(sport).toLowerCase()} court is taken this day. Try another date.`}
         />
       ) : (
         <View style={styles.slotList} accessibilityRole="list">
-          {available.map((slot) => (
+          {options.map((option) => (
             <SlotPill
-              key={slot}
-              slot={slot}
-              slotDurationMinutes={type.slotDurationMinutes}
-              selected={slots.includes(slot)}
+              key={option.start}
+              option={option}
+              selected={slots.includes(option.start)}
               onToggle={() => {
                 onDismissNotice();
-                onSlotsChange(toggleSlot(slots, slot, type.slotDurationMinutes));
+                onSlotsChange(toggleSlot(slots, option.start, slotMinutes));
               }}
             />
           ))}
@@ -209,9 +278,7 @@ function DateStrip({
             <Text style={[styles.dateWeekday, selected ? styles.dateTextSelected : null]}>
               {parts.weekday}
             </Text>
-            <Text style={[styles.dateDay, selected ? styles.dateTextSelected : null]}>
-              {parts.day}
-            </Text>
+            <Text style={[styles.dateDay, selected ? styles.dateTextSelected : null]}>{parts.day}</Text>
           </Pressable>
         );
       })}
@@ -220,6 +287,26 @@ function DateStrip({
 }
 
 const styles = StyleSheet.create({
+  footer: {
+    gap: spacing.sm,
+  },
+  summary: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  summaryCourt: {
+    flex: 1,
+    color: colors.textMuted,
+    fontFamily: fonts.body,
+    fontSize: 13,
+  },
+  summaryTotal: {
+    color: colors.text,
+    fontFamily: fonts.bodySemibold,
+    fontSize: 14,
+  },
   sectionHead: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -235,6 +322,11 @@ const styles = StyleSheet.create({
   sectionLink: {
     color: colors.accent,
     fontFamily: fonts.bodySemibold,
+    fontSize: 13,
+  },
+  hint: {
+    color: colors.danger,
+    fontFamily: fonts.body,
     fontSize: 13,
   },
   dateStrip: {

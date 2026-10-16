@@ -1,63 +1,22 @@
 /**
- * Public surface of the booking feature (M3). M2 (home) and M4
- * (reservations) import the reusable reservation card/slot components, the
- * amenity icon, the shared formatters, and the query definitions from here
- * so the whole app renders reservations one way and shares query keys for
- * cache invalidation.
+ * Public surface of the booking wizard (reserve). The booking screens
+ * (features/bookings) and other features reuse its card, formatters, pure
+ * view-models over the availability grid, and the one payment path.
  */
 
-// ── Screens / routes ──
 export { ReserveScreen } from './ReserveScreen';
 export { BookingWizardScreen } from './BookingWizardScreen';
 
-// ── Reusable reservation components (M2 home cards, M4 detail) ──
 export {
-  ReservationSummaryCard,
-  type ReservationSummaryCardProps,
-  type ReservationSummaryRow,
-} from './ReservationSummaryCard';
-export { SlotPill } from './SlotPill';
-export { ResourceTypeIcon, ResourceTypeTile, resourceTypeGlyph } from './ResourceTypeIcon';
+  BookingSummaryCard,
+  type BookingSummaryCardProps,
+  type BookingSummaryRow,
+} from './BookingSummaryCard';
+export { SportIcon, SportTile, sportGlyph } from './SportIcon';
 
-// ── Shared formatters + slot/date math (M2/M4 render the same shapes) ──
 export * from './booking';
-export type { SelectionSummary } from './booking';
-
-// ── Invite-selection helpers + types ──
-export {
-  EMPTY_INVITE_SELECTION,
-  inviteCount,
-  inviteesPayload,
-  memberDisplayName,
-  memberNumberLabel,
-  type InviteSelection,
-  type InviteClub,
-} from './invites';
-
-// ── Query definitions (shared keys) + entitlement + venue tz ──
-export {
-  resourceTypesQuery,
-  availabilityQuery,
-  myClubsQuery,
-  memberSearchQuery,
-  venueQuery,
-  membershipQuery,
-  isEntitledMembershipStatus,
-  useVenueTimezone,
-  type MembershipView,
-} from './booking-data';
-
-// ── Reservation TYPES re-exported for M2/M4 convenience ──
-export type {
-  Reservation,
-  ReservationParticipant,
-  ReservationParticipantStatus,
-  ReservationStatus,
-  ReservationViewer,
-  ReservationQuote,
-  CreateReservationResult,
-  ResourceTypeSummary,
-  AvailabilityDay,
-  AvailabilitySlot,
-  MemberSearchResult,
-} from '../../lib/api';
+export * from './court-picker';
+export { describeBookingFailure, type BookingFailure, type FailureAction } from './booking-failures';
+export { bookingRulesOf, useClubTimezone, usableTimezone, FALLBACK_BOOKING_RULES } from './club-rules';
+export { useBookingPayment, type PaymentStage, type PayRequest } from './useBookingPayment';
+export { InvitePlayersStep } from './InvitePlayersStep';

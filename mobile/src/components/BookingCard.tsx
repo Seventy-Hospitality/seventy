@@ -1,18 +1,46 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import type { UpcomingBooking } from '../lib/api';
-import { formatDateLabel } from '../lib/format';
+import { useRouter } from 'expo-router';
+import type { BookingWithCourt } from '../lib/clutch';
+import {
+  bookingStatusLabel,
+  formatDateHeading,
+  formatMoney,
+  formatTimeRangeCompact,
+  sportLabel,
+} from '../features/reserve/booking';
 import { colors, fonts, radius, spacing } from '../theme/tokens';
+import { Badge, bookingStatusVariant } from './Badge';
+
+/** The fields of a Clutch booking row (GET /me/bookings) the card renders. */
+export type BookingCardBooking = Pick<
+  BookingWithCourt,
+  'id' | 'date' | 'start_time' | 'end_time' | 'status' | 'court_name' | 'court_type' | 'currency'
+> &
+  Partial<Pick<BookingWithCourt, 'my_due_cents'>>;
 
 interface BookingCardProps {
-  booking: UpcomingBooking;
+  booking: BookingCardBooking;
   variant?: 'standard' | 'highlight';
+  /** Defaults to opening the booking (/bookings/[id]). */
   onPress?: () => void;
 }
 
+/**
+ * A booking in a list (home, groups): date and time on the club's clock, the
+ * sport and court, its status, and what the viewer still owes when Clutch
+ * says they owe something.
+ */
 export function BookingCard({ booking, onPress, variant = 'standard' }: BookingCardProps) {
+  const router = useRouter();
+  const open = onPress ?? (() => router.push(`/bookings/${booking.id}`));
+  const sport = booking.court_type ? sportLabel(booking.court_type) : 'Court';
+  const when = `${formatDateHeading(booking.date)} | ${formatTimeRangeCompact(booking.start_time, booking.end_time)}`;
+  const due = booking.my_due_cents ?? 0;
   return (
     <Pressable
-      onPress={onPress}
+      onPress={open}
+      accessibilityRole="button"
+      accessibilityLabel={`${sport}, ${booking.court_name ?? 'court'}, ${when}, ${bookingStatusLabel(booking.status)}`}
       style={({ pressed }) => [
         styles.card,
         variant === 'highlight' ? styles.highlightCard : null,
@@ -20,15 +48,14 @@ export function BookingCard({ booking, onPress, variant = 'standard' }: BookingC
       ]}
     >
       <View style={styles.row}>
-        <Text style={styles.title}>
-          {formatDateLabel(booking.date)} | {booking.startTime} - {booking.endTime}
-        </Text>
-        <Text style={styles.badge}>{booking.facilityType === 'court' ? 'Court' : 'Shower'}</Text>
+        <Text style={styles.title}>{when}</Text>
+        <Badge label={bookingStatusLabel(booking.status)} variant={bookingStatusVariant(booking.status)} />
       </View>
-      <Text style={styles.meta}>{booking.facilityName}</Text>
       <Text style={styles.meta}>
-        {booking.endTime === booking.startTime ? 'Reserved slot' : 'Upcoming reservation'}
+        {sport}
+        {booking.court_name ? ` · ${booking.court_name}` : ''}
       </Text>
+      {due > 0 ? <Text style={styles.due}>You owe {formatMoney(due, booking.currency)}</Text> : null}
     </Pressable>
   );
 }
@@ -60,16 +87,14 @@ const styles = StyleSheet.create({
     fontFamily: fonts.bodyBold,
     fontSize: 15,
   },
-  badge: {
-    color: colors.accent,
-    fontFamily: fonts.bodyBold,
-    fontSize: 11,
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-  },
   meta: {
     color: colors.textMuted,
     fontFamily: fonts.body,
+    fontSize: 12,
+  },
+  due: {
+    color: colors.accent,
+    fontFamily: fonts.bodySemibold,
     fontSize: 12,
   },
 });

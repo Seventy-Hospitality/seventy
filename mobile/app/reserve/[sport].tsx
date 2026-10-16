@@ -1,15 +1,15 @@
 import { Redirect, Stack, useLocalSearchParams } from 'expo-router';
 import { ActivityIndicator, View } from 'react-native';
-import { useSession } from '../../../src/lib/session';
-import { InviteMoreScreen } from '../../../src/features/reservations/InviteMoreScreen';
-import { colors } from '../../../src/theme/tokens';
+import { useSession } from '../../src/lib/session';
+import { BookingWizardScreen } from '../../src/features/reserve/BookingWizardScreen';
+import { colors } from '../../src/theme/tokens';
 
 /**
- * "Invite more players" route (full-screen, outside the tab shell). The
- * canInvite permission gate lives inside the screen.
+ * The booking wizard for one sport (the court_type in the path). Full screen,
+ * outside the tab shell. Anonymous callers (a cold deep link) go to sign-in.
  */
-export default function InviteMoreRoute() {
-  const { id = '' } = useLocalSearchParams<{ id: string }>();
+export default function ReserveWizardRoute() {
+  const { sport = '' } = useLocalSearchParams<{ sport: string }>();
   const { status } = useSession();
 
   if (status === 'loading') {
@@ -27,7 +27,7 @@ export default function InviteMoreRoute() {
   return (
     <>
       <Stack.Screen options={{ headerShown: false, animation: 'slide_from_bottom' }} />
-      <InviteMoreScreen reservationId={id} />
+      <BookingWizardScreen sport={sport} />
     </>
   );
 }

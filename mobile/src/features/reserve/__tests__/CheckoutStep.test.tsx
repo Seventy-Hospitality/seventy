@@ -1,213 +1,209 @@
 import type { ReactNode } from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { api, ApiError } from '../../../lib/api';
-import type {
-  CreateReservationResult,
-  Reservation,
-  ReservationQuote,
-  ResourceTypeSummary,
-} from '../../../lib/api';
-import type { PresentPaymentResult } from '../../../lib/stripe';
+import { clutch, asCourtId, type BookingPaymentIntent } from '../../../lib/clutch';
+import type { MockClutch } from '../../../lib/clutch/testing';
+import { clutchError, networkError } from '../../../lib/clutch/testing';
+import { makeBooking, makeCourtAvailability } from '../../../lib/clutch/fixtures';
+import type { SheetResult } from '../../../lib/stripe';
 import { CheckoutStep } from '../CheckoutStep';
-import { EMPTY_INVITE_SELECTION } from '../invites';
+import { createHoldSession } from '../hold-session';
 
-// Native payment surface: configured, with a controllable PaymentSheet result.
-// (mock-prefixed so jest.mock's hoisted factory may reference them.)
-let mockSheetResult: PresentPaymentResult;
-const mockPresentPayment = jest.fn(async (): Promise<PresentPaymentResult> => mockSheetResult);
+jest.mock('../../../lib/clutch', () => {
+  const actual = jest.requireActual('../../../lib/clutch');
+  const { createMockClutch } = jest.requireActual('../../../lib/clutch/testing');
+  return { ...actual, clutch: createMockClutch() };
+});
+
+const mockPresent = jest.fn<Promise<SheetResult>, unknown[]>();
 jest.mock('../../../lib/stripe', () => ({
   usePaymentsConfigured: () => true,
-  usePaymentSheet: () => mockPresentPayment,
+  usePresentConnectedSheet: () => mockPresent,
 }));
 
-// Freeze the hold countdown so it never auto-expires mid-test (no timers).
+// Freeze the hold countdown so it never lapses mid-test.
 jest.mock('../useCountdown', () => ({ useCountdown: () => 600 }));
 
-const TYPE: ResourceTypeSummary = {
-  code: 'badminton_court',
-  name: 'Badminton Court',
-  slotDurationMinutes: 30,
-  opStartMinutes: 6 * 60,
-  opEndMinutes: 22 * 60,
-  hourlyRateCents: 3000,
-  maxAdvanceDays: 14,
-  minTier: 'member',
-  locked: false,
-  resourceCount: 4,
-  icon: 'tennisball-outline',
+const mockClutch = clutch as unknown as MockClutch;
+const COURT = makeCourtAvailability(asCourtId('c0000000-0000-4000-8000-000000000001'), { court_name: 'Court 2' });
+const HELD = makeBooking({ price_cents: 3000, hold_expires_at: '2099-01-01T00:15:00.000Z' });
+const STRIPE_INTENT: BookingPaymentIntent = {
+  clientSecret: 'pi_1_secret_x',
+  paymentIntentId: 'pi_1',
+  simulated: false,
+  stripeAccount: 'acct_club',
 };
 
-const QUOTE: ReservationQuote = {
-  typeCode: 'badminton_court',
-  date: '2026-08-20',
-  slots: ['20:00', '20:30'],
-  durationMinutes: 60,
-  hourlyRateCents: 3000,
-  totalCents: 6000,
-};
-
-const RESERVATION: Reservation = {
-  id: 'res_1',
-  reference: 'BAD-001',
-  typeCode: 'badminton_court',
-  typeName: 'Badminton Court',
-  resource: { id: 'court_2', name: 'Court 2' },
-  date: '2026-08-20',
-  startTime: '20:00',
-  endTime: '21:00',
-  startsAt: '2026-08-20T20:00:00.000Z',
-  endsAt: '2026-08-20T21:00:00.000Z',
-  durationMinutes: 60,
-  status: 'pending_payment',
-  hourlyRateCents: 3000,
-  amountPaidCents: 0,
-  clubId: null,
-  seriesId: null,
-  weekly: false,
-  createdByAdmin: false,
-  participants: [],
-  pendingChange: null,
-};
-
-const HELD: CreateReservationResult = {
-  reservation: RESERVATION,
-  totalCents: 6000,
-  clientSecret: 'pi_original_secret',
-  holdExpiresAt: '2026-08-20T19:12:00.000Z',
-};
-
-function renderCheckout(onPaymentLock: (locked: boolean) => void) {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
+function renderCheckout() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  const cancel = jest.fn();
+  const holdSession = createHoldSession({ cancel });
+  const onConfirmed = jest.fn();
+  const onPickAnotherTime = jest.fn();
+  const onLeaveToBooking = jest.fn();
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
-  return render(
+  render(
     <CheckoutStep
-      type={TYPE}
-      date="2026-08-20"
-      slots={['20:00', '20:30']}
-      invites={EMPTY_INVITE_SELECTION}
-      beginHoldAttempt={() => 1}
-      onHoldCreated={jest.fn()}
-      onPaymentLock={onPaymentLock}
-      onConfirmed={jest.fn()}
-      onPickAnotherTime={jest.fn()}
+      sport="badminton"
+      court={COURT}
+      date="2026-10-20"
+      range={{ start: '18:00', end: '19:00', minutes: 60 }}
+      holdSession={holdSession}
+      onConfirmed={onConfirmed}
+      onPickAnotherTime={onPickAnotherTime}
+      onLeaveToBooking={onLeaveToBooking}
     />,
     { wrapper },
   );
+  return { holdSession, cancel, onConfirmed, onPickAnotherTime, onLeaveToBooking };
 }
 
 beforeEach(() => {
-  jest.restoreAllMocks();
-  mockPresentPayment.mockClear();
-  jest.spyOn(api, 'quoteReservation').mockResolvedValue(QUOTE);
-  jest.spyOn(api, 'createReservation').mockResolvedValue(HELD);
+  jest.clearAllMocks();
+  mockClutch.bookings.create.mockResolvedValue(HELD);
 });
 
-async function reachPayableCheckout() {
-  const button = await screen.findByLabelText(/Confirm & pay/);
-  return button;
-}
-
-describe('CheckoutStep money-lock wiring (reissue after a failed PaymentSheet)', () => {
-  it('NEVER clears the lock on an indeterminate reissue failure (network / 5xx)', async () => {
-    // The failed-then-network-drop sequence from the finding: a captured
-    // charge may be in flight, so the lock must stay on.
-    mockSheetResult = { status: 'failed', message: 'Card was declined.' };
-    const reissue = jest
-      .spyOn(api, 'reissuePaymentIntent')
-      .mockRejectedValue(new TypeError('Network request failed'));
-    const onPaymentLock = jest.fn();
-
-    renderCheckout(onPaymentLock);
-    fireEvent.press(await reachPayableCheckout());
-
-    // The recover takeover is shown and the lock was never released.
-    await screen.findByText("We couldn't finish your payment");
-    expect(reissue).toHaveBeenCalledWith('res_1');
-    expect(onPaymentLock).toHaveBeenCalledWith(true);
-    expect(onPaymentLock).not.toHaveBeenCalledWith(false);
-  });
-
-  it('keeps the lock on a terminal (gone) hold and routes to hold-expired', async () => {
-    mockSheetResult = { status: 'failed', message: 'Card was declined.' };
-    jest
-      .spyOn(api, 'reissuePaymentIntent')
-      .mockRejectedValue(new ApiError('HOLD_EXPIRED', 'hold expired', 409));
-    const onPaymentLock = jest.fn();
-
-    renderCheckout(onPaymentLock);
-    fireEvent.press(await reachPayableCheckout());
-
-    await screen.findByText(/hold expired before the payment completed/i);
-    expect(onPaymentLock).toHaveBeenCalledWith(true);
-    expect(onPaymentLock).not.toHaveBeenCalledWith(false);
-  });
-
-  it('clears the lock ONLY when a fresh secret is minted (proven-unpaid retry)', async () => {
-    mockSheetResult = { status: 'failed', message: 'Card was declined.' };
-    jest.spyOn(api, 'reissuePaymentIntent').mockResolvedValue({
-      reservation: RESERVATION,
-      purpose: 'hold',
-      amountCents: 6000,
-      clientSecret: 'pi_fresh_secret',
-      expiresAt: '2026-08-20T19:24:00.000Z',
-      alreadyPaid: false,
-    });
-    const onPaymentLock = jest.fn();
-
-    renderCheckout(onPaymentLock);
-    fireEvent.press(await reachPayableCheckout());
-
-    await waitFor(() => expect(onPaymentLock).toHaveBeenCalledWith(false));
-    expect(onPaymentLock).toHaveBeenCalledWith(true);
-    // Back on the payable checkout with a retry prompt (not the recover takeover).
-    expect(screen.queryByText("We couldn't finish your payment")).toBeNull();
-    await screen.findByLabelText(/Confirm & pay/);
-  });
-
-  it('settles a captured charge without unlocking (alreadyPaid)', async () => {
-    mockSheetResult = { status: 'failed', message: 'Card was declined.' };
-    jest.spyOn(api, 'reissuePaymentIntent').mockResolvedValue({
-      reservation: RESERVATION,
-      purpose: 'hold',
-      amountCents: 6000,
-      clientSecret: null,
-      expiresAt: null,
-      alreadyPaid: true,
-    });
-    const confirmSpy = jest.spyOn(api, 'confirmReservation').mockResolvedValue(RESERVATION);
-    const onPaymentLock = jest.fn();
-    const onConfirmed = jest.fn();
-
-    const client = new QueryClient({
-      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-    });
-    render(
-      <QueryClientProvider client={client}>
-        <CheckoutStep
-          type={TYPE}
-          date="2026-08-20"
-          slots={['20:00', '20:30']}
-          invites={EMPTY_INVITE_SELECTION}
-          beginHoldAttempt={() => 1}
-          onHoldCreated={jest.fn()}
-          onPaymentLock={onPaymentLock}
-          onConfirmed={onConfirmed}
-          onPickAnotherTime={jest.fn()}
-        />
-      </QueryClientProvider>,
+describe('CheckoutStep', () => {
+  it('holds the court for the picked court and range, and shows the hold price', async () => {
+    const { holdSession } = renderCheckout();
+    expect(await screen.findByText('Confirm and pay $30.00')).toBeTruthy();
+    expect(mockClutch.bookings.create).toHaveBeenCalledWith(
+      { court_id: COURT.court_id, date: '2026-10-20', start_time: '18:00', end_time: '19:00' },
+      { idempotencyKey: expect.any(String) },
     );
+    expect(holdSession.heldId).toBe(HELD.id);
+  });
 
-    fireEvent.press(await screen.findByLabelText(/Confirm & pay/));
+  it('pays on the stripe sheet and confirms with the completed intent id', async () => {
+    mockClutch.bookings.paymentIntent.mockResolvedValue(STRIPE_INTENT);
+    mockPresent.mockResolvedValue({ status: 'completed', intentId: 'pi_1' });
+    const confirmed = makeBooking({ status: 'confirmed', paid_cents: 3000 });
+    mockClutch.bookings.confirm.mockResolvedValue(confirmed);
+    const { onConfirmed } = renderCheckout();
 
-    await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
-    expect(confirmSpy.mock.calls[0][0]).toBe('res_1');
+    fireEvent.press(await screen.findByText('Confirm and pay $30.00'));
+    await waitFor(() => expect(onConfirmed).toHaveBeenCalledWith(confirmed));
+    expect(mockPresent).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: 'stripe', clientSecret: 'pi_1_secret_x', stripeAccount: 'acct_club' }),
+      expect.anything(),
+    );
+    expect(mockClutch.bookings.confirm).toHaveBeenCalledWith(HELD.id, 'pi_1', {
+      idempotencyKey: expect.any(String),
+    });
+  });
+
+  it('pays a simulated checkout without a sheet, then confirms', async () => {
+    mockClutch.bookings.paymentIntent.mockResolvedValue({ ...STRIPE_INTENT, simulated: true, paymentIntentId: 'sim_pi_1' });
+    mockClutch.bookings.paySimulated.mockResolvedValue({ status: 'succeeded' });
+    mockClutch.bookings.confirm.mockResolvedValue(makeBooking({ status: 'confirmed' }));
+    const { onConfirmed } = renderCheckout();
+
+    fireEvent.press(await screen.findByText('Confirm and pay $30.00'));
     await waitFor(() => expect(onConfirmed).toHaveBeenCalled());
-    // The lock is held through settle; it is never released on this path.
-    expect(onPaymentLock).not.toHaveBeenCalledWith(false);
+    expect(mockPresent).not.toHaveBeenCalled();
+    expect(mockClutch.bookings.paySimulated).toHaveBeenCalledWith(HELD.id, 'sim_pi_1', expect.anything());
+    expect(mockClutch.bookings.confirm).toHaveBeenCalledWith(HELD.id, 'sim_pi_1', expect.anything());
+  });
+
+  it('confirms a free booking with no intent', async () => {
+    mockClutch.bookings.create.mockResolvedValue(makeBooking({ price_cents: 0 }));
+    mockClutch.bookings.confirm.mockResolvedValue(makeBooking({ status: 'confirmed', price_cents: 0 }));
+    const { onConfirmed } = renderCheckout();
+
+    fireEvent.press(await screen.findByText('Confirm booking'));
+    await waitFor(() => expect(onConfirmed).toHaveBeenCalled());
+    expect(mockClutch.bookings.paymentIntent).not.toHaveBeenCalled();
+    expect(mockClutch.bookings.confirm).toHaveBeenCalledWith(HELD.id, null, expect.anything());
+  });
+
+  it('keeps the hold when the sheet is closed, and releases it only on request', async () => {
+    mockClutch.bookings.paymentIntent.mockResolvedValue(STRIPE_INTENT);
+    mockPresent.mockResolvedValue({ status: 'canceled' });
+    const { cancel, onPickAnotherTime } = renderCheckout();
+
+    fireEvent.press(await screen.findByText('Confirm and pay $30.00'));
+    expect(await screen.findByText(/The court is still held for you/)).toBeTruthy();
+    expect(cancel).not.toHaveBeenCalled();
+    expect(mockClutch.bookings.confirm).not.toHaveBeenCalled();
+
+    fireEvent.press(screen.getByLabelText('Release court'));
+    expect(cancel).toHaveBeenCalledWith(HELD.id);
+    expect(onPickAnotherTime).toHaveBeenCalledWith(null);
+  });
+
+  it('keeps the hold when the intent cannot be created, and retries', async () => {
+    mockClutch.bookings.paymentIntent.mockRejectedValueOnce(networkError()).mockResolvedValueOnce(STRIPE_INTENT);
+    mockPresent.mockResolvedValue({ status: 'completed', intentId: 'pi_1' });
+    mockClutch.bookings.confirm.mockResolvedValue(makeBooking({ status: 'confirmed' }));
+    const { cancel, onConfirmed } = renderCheckout();
+
+    fireEvent.press(await screen.findByText('Confirm and pay $30.00'));
+    expect(await screen.findByText(/No connection/)).toBeTruthy();
+    expect(cancel).not.toHaveBeenCalled();
+
+    fireEvent.press(screen.getByText('Confirm and pay $30.00'));
+    await waitFor(() => expect(onConfirmed).toHaveBeenCalled());
+    // A network failure decided nothing, so the retry replays the same key.
+    const [first, second] = mockClutch.bookings.paymentIntent.mock.calls;
+    expect(second[1]?.idempotencyKey).toBe(first[1]?.idempotencyKey);
+  });
+
+  it('re-checks a clearing payment with a new key and never pays twice', async () => {
+    mockClutch.bookings.paymentIntent.mockResolvedValue(STRIPE_INTENT);
+    mockPresent.mockResolvedValue({ status: 'completed', intentId: 'pi_1' });
+    mockClutch.bookings.confirm
+      .mockRejectedValueOnce(clutchError('payment_processing', 409))
+      .mockResolvedValueOnce(makeBooking({ status: 'confirmed' }));
+    const { onConfirmed, holdSession } = renderCheckout();
+
+    fireEvent.press(await screen.findByText('Confirm and pay $30.00'));
+    expect(await screen.findByText('Your payment is clearing')).toBeTruthy();
+    expect(holdSession.paymentLocked).toBe(true);
+
+    fireEvent.press(screen.getByText('Check again'));
+    await waitFor(() => expect(onConfirmed).toHaveBeenCalled());
+    expect(mockPresent).toHaveBeenCalledTimes(1);
+    expect(mockClutch.bookings.paymentIntent).toHaveBeenCalledTimes(1);
+    const [first, second] = mockClutch.bookings.confirm.mock.calls;
+    expect(second[1]).toBe('pi_1');
+    expect(second[2]?.idempotencyKey).not.toBe(first[2]?.idempotencyKey);
+  });
+
+  it('lets the member leave a clearing payment for the booking screen', async () => {
+    mockClutch.bookings.paymentIntent.mockResolvedValue(STRIPE_INTENT);
+    mockPresent.mockResolvedValue({ status: 'completed', intentId: 'pi_1' });
+    mockClutch.bookings.confirm.mockRejectedValue(clutchError('payment_not_verified', 402));
+    const { onLeaveToBooking } = renderCheckout();
+
+    fireEvent.press(await screen.findByText('Confirm and pay $30.00'));
+    fireEvent.press(await screen.findByText('Leave and check later'));
+    expect(onLeaveToBooking).toHaveBeenCalledWith(HELD);
+  });
+
+  it('sends the member back to times when the hold ended', async () => {
+    mockClutch.bookings.paymentIntent.mockResolvedValue(STRIPE_INTENT);
+    mockPresent.mockResolvedValue({ status: 'completed', intentId: 'pi_1' });
+    mockClutch.bookings.confirm.mockRejectedValue(clutchError('booking_changed', 409));
+    const { onPickAnotherTime } = renderCheckout();
+
+    fireEvent.press(await screen.findByText('Confirm and pay $30.00'));
+    fireEvent.press(await screen.findByText('Pick another time'));
+    expect(onPickAnotherTime).toHaveBeenCalledWith(expect.stringContaining('no longer held'));
+  });
+
+  it('explains a taken slot when the hold cannot be created', async () => {
+    mockClutch.bookings.create.mockRejectedValue(clutchError('slot_unavailable', 409));
+    const { onPickAnotherTime } = renderCheckout();
+    expect(await screen.findByText('That time was just taken')).toBeTruthy();
+    fireEvent.press(screen.getByText('Pick another time'));
+    expect(onPickAnotherTime).toHaveBeenCalled();
+  });
+
+  it('shows the membership state for a members-only refusal', async () => {
+    mockClutch.bookings.create.mockRejectedValue(clutchError('members_only', 403));
+    renderCheckout();
+    expect(await screen.findByText('Members only')).toBeTruthy();
   });
 });

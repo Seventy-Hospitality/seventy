@@ -12,8 +12,7 @@ interface StepShellProps {
 
 /**
  * One wizard step's layout: a title + optional subtitle, a scrollable body,
- * and a pinned footer for the primary action. Keeps the three steps
- * consistent.
+ * and a pinned footer for the primary action. Keeps the steps consistent.
  */
 export function StepShell({ title, subtitle, children, footer }: StepShellProps) {
   return (

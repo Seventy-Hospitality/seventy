@@ -9,8 +9,8 @@ export { EventSpotlightCard } from './EventSpotlightCard';
 export { Avatar } from './Avatar';
 export {
   Badge,
-  reservationStatusVariant,
-  participantStatusVariant,
+  bookingStatusVariant,
+  playerStatusVariant,
   type BadgeVariant,
 } from './Badge';
 export { Chip } from './Chip';

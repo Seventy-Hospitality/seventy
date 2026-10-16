@@ -1,16 +1,12 @@
 import { Redirect, Stack, useLocalSearchParams } from 'expo-router';
 import { ActivityIndicator, View } from 'react-native';
+import { asBookingId } from '../../../src/lib/clutch';
 import { useSession } from '../../../src/lib/session';
-import { ReservationDetailScreen } from '../../../src/features/reservations/ReservationDetailScreen';
+import { BookingDetailScreen } from '../../../src/features/bookings/BookingDetailScreen';
 import { colors } from '../../../src/theme/tokens';
 
-/**
- * Reservation detail route (Figma reservation-details 225:3330 / 225:3586 /
- * 159:13854). This is the target M3's booking confirmation and M2's home
- * cards link to. Anonymous callers (e.g. a cold deep-link) are redirected to
- * sign-in; the not-a-participant (404) state is handled inside the screen.
- */
-export default function ReservationDetailRoute() {
+/** One booking. Anonymous callers (a cold deep link) go to sign-in. */
+export default function BookingDetailRoute() {
   const { id = '' } = useLocalSearchParams<{ id: string }>();
   const { status } = useSession();
 
@@ -29,7 +25,7 @@ export default function ReservationDetailRoute() {
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
-      <ReservationDetailScreen reservationId={id} />
+      <BookingDetailScreen bookingId={asBookingId(id)} />
     </>
   );
 }

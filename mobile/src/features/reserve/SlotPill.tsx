@@ -1,28 +1,29 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
-import { formatSlotRange } from './booking';
+import { formatPrice, formatSlotRange } from './booking';
+import type { TimeOption } from './court-picker';
 
 interface SlotPillProps {
-  /** Wall-clock "HH:MM" start label. */
-  slot: string;
-  slotDurationMinutes: number;
+  option: TimeOption;
   selected: boolean;
   onToggle: () => void;
 }
 
 /**
- * One bookable 30-minute slot as an accessible toggle (Figma select-time
- * 286:8257). Only bookable slots are rendered, so there is no disabled
- * state. Exposed for M4's reschedule wizard to reuse the same cell.
+ * One offered start time as an accessible toggle, with the grid's per-slot
+ * price for browsing ("from" when free courts are priced differently). Only
+ * offered times render, so there is no disabled state.
  */
-export function SlotPill({ slot, slotDurationMinutes, selected, onToggle }: SlotPillProps) {
-  const label = formatSlotRange(slot, slotDurationMinutes);
+export function SlotPill({ option, selected, onToggle }: SlotPillProps) {
+  const range = formatSlotRange(option.start, option.end);
+  const price = `${option.pricesVary ? 'from ' : ''}${formatPrice(option.price.cents, option.price.currency)}`;
+  const courts = option.freeCourts === 1 ? '1 court' : `${option.freeCourts} courts`;
   return (
     <Pressable
       accessibilityRole="checkbox"
       accessibilityState={{ checked: selected }}
-      accessibilityLabel={label}
+      accessibilityLabel={`${range}, ${price}, ${courts} free`}
       onPress={onToggle}
       style={({ pressed }) => [
         styles.pill,
@@ -30,7 +31,13 @@ export function SlotPill({ slot, slotDurationMinutes, selected, onToggle }: Slot
         pressed ? styles.pillPressed : null,
       ]}
     >
-      <Text style={[styles.label, selected ? styles.labelSelected : null]}>{label}</Text>
+      <View style={styles.text}>
+        <Text style={styles.label}>{range}</Text>
+        <Text style={styles.meta}>
+          {price}
+          {option.price.peak ? ' · peak' : ''} · {courts} free
+        </Text>
+      </View>
       <View style={[styles.check, selected ? styles.checkSelected : null]}>
         {selected ? <Ionicons name="checkmark" size={15} color={colors.textOnAccent} /> : null}
       </View>
@@ -43,8 +50,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    minHeight: 52,
+    minHeight: 56,
     paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
     borderRadius: radius.md,
     backgroundColor: colors.bgElevated,
     borderWidth: 1,
@@ -57,13 +65,18 @@ const styles = StyleSheet.create({
   pillPressed: {
     opacity: 0.9,
   },
+  text: {
+    gap: 2,
+  },
   label: {
     color: colors.text,
     fontFamily: fonts.bodySemibold,
     fontSize: 15,
   },
-  labelSelected: {
-    color: colors.text,
+  meta: {
+    color: colors.textMuted,
+    fontFamily: fonts.body,
+    fontSize: 12,
   },
   check: {
     width: 22,

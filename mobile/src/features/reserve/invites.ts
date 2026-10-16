@@ -1,99 +1,64 @@
 /**
- * Pure invite-selection logic for the booking wizard's "Invite players"
- * step (package M3): individually picked members plus club chips that the
- * backend expands to the club's current roster at reservation create.
- * Ported 1:1 from member-web/src/lib/invites.ts.
+ * Who a member invites to a confirmed booking: fellow club members picked
+ * one by one (POST /bookings/{id}/players) and whole groups (POST
+ * /bookings/{id}/invite-group, a snapshot of the group's roster). Pure
+ * selection logic; sending lives in useSendInvites.
  */
-import type { MemberSearchResult, ReservationInvitees } from '../../lib/api';
-
-/** The club fields the chip needs (satisfied by ClubSummary / MyClub). */
-export interface InviteClub {
-  id: string;
-  name: string;
-  memberCount: number;
-}
+import type { GroupId, GroupSummary, PlayerSearchResult, UserId } from '../../lib/clutch';
 
 export interface InviteSelection {
-  /** Individually picked members, in pick order (chips render this order). */
-  members: MemberSearchResult[];
-  /** Club chips, in pick order. */
-  clubs: InviteClub[];
+  /** Picked members, in pick order (chips render this order). */
+  players: PlayerSearchResult[];
+  /** Picked groups, in pick order. */
+  groups: GroupSummary[];
 }
 
-export const EMPTY_INVITE_SELECTION: InviteSelection = { members: [], clubs: [] };
+export const EMPTY_INVITE_SELECTION: InviteSelection = { players: [], groups: [] };
 
-export function isMemberSelected(selection: InviteSelection, memberId: string): boolean {
-  return selection.members.some((member) => member.id === memberId);
+/** A player's name for chips and rows; "Player" when Clutch sends none. */
+export function playerName(player: { full_name?: string | null; username?: string | null }): string {
+  return player.full_name?.trim() || player.username?.trim() || 'Player';
 }
 
-export function isClubSelected(selection: InviteSelection, clubId: string): boolean {
-  return selection.clubs.some((club) => club.id === clubId);
+export function isPlayerSelected(selection: InviteSelection, userId: UserId): boolean {
+  return selection.players.some((player) => player.user_id === userId);
 }
 
-/** Adds the member, or removes them when already selected. */
-export function toggleInviteMember(
-  selection: InviteSelection,
-  member: MemberSearchResult,
-): InviteSelection {
-  if (isMemberSelected(selection, member.id)) {
-    return removeInviteMember(selection, member.id);
-  }
-  return { ...selection, members: [...selection.members, member] };
+export function isGroupSelected(selection: InviteSelection, groupId: GroupId): boolean {
+  return selection.groups.some((group) => group.id === groupId);
 }
 
-export function removeInviteMember(
-  selection: InviteSelection,
-  memberId: string,
-): InviteSelection {
-  return {
-    ...selection,
-    members: selection.members.filter((member) => member.id !== memberId),
-  };
+export function togglePlayer(selection: InviteSelection, player: PlayerSearchResult): InviteSelection {
+  if (isPlayerSelected(selection, player.user_id)) return removePlayer(selection, player.user_id);
+  return { ...selection, players: [...selection.players, player] };
 }
 
-/** "Add all" on a club row; a second add of the same club is a no-op. */
-export function addInviteClub(selection: InviteSelection, club: InviteClub): InviteSelection {
-  if (isClubSelected(selection, club.id)) return selection;
-  return { ...selection, clubs: [...selection.clubs, club] };
+export function removePlayer(selection: InviteSelection, userId: UserId): InviteSelection {
+  return { ...selection, players: selection.players.filter((player) => player.user_id !== userId) };
 }
 
-export function removeInviteClub(selection: InviteSelection, clubId: string): InviteSelection {
-  return { ...selection, clubs: selection.clubs.filter((club) => club.id !== clubId) };
+export function addGroup(selection: InviteSelection, group: GroupSummary): InviteSelection {
+  if (isGroupSelected(selection, group.id)) return selection;
+  return { ...selection, groups: [...selection.groups, group] };
+}
+
+export function removeGroup(selection: InviteSelection, groupId: GroupId): InviteSelection {
+  return { ...selection, groups: selection.groups.filter((group) => group.id !== groupId) };
 }
 
 export function inviteCount(selection: InviteSelection): number {
-  return selection.members.length + selection.clubs.length;
+  return selection.players.length + selection.groups.length;
 }
 
-/**
- * The create/addParticipants payload. Undefined when nothing is selected
- * so the request body omits `invitees` entirely.
- */
-export function inviteesPayload(selection: InviteSelection): ReservationInvitees | undefined {
-  const memberIds = selection.members.map((member) => member.id);
-  const clubIds = selection.clubs.map((club) => club.id);
-  if (memberIds.length === 0 && clubIds.length === 0) return undefined;
-  return {
-    ...(memberIds.length > 0 ? { memberIds } : {}),
-    ...(clubIds.length > 0 ? { clubIds } : {}),
-  };
+/** Chip label: "GROUP: Tuesday Doubles (6)". */
+export function groupChipLabel(group: GroupSummary): string {
+  return `GROUP: ${group.name} (${group.member_count})`;
 }
 
-/** Chip label per the Figma: "CLUB: baddies (6)". */
-export function clubChipLabel(club: InviteClub): string {
-  return `CLUB: ${club.name} (${club.memberCount})`;
-}
-
-/** Presentation name: the chosen displayName, else "First Last". */
-export function memberDisplayName(member: {
-  firstName: string;
-  lastName: string;
-  displayName?: string | null;
-}): string {
-  return member.displayName?.trim() || `${member.firstName} ${member.lastName}`.trim();
-}
-
-/** "#A12345" for the row subtitle. */
-export function memberNumberLabel(memberNumber: string): string {
-  return `#${memberNumber}`;
+/** Search results minus people who are already on the booking (and the caller). */
+export function invitablePlayers(
+  results: readonly PlayerSearchResult[],
+  exclude: ReadonlySet<string>,
+): PlayerSearchResult[] {
+  return results.filter((player) => !exclude.has(player.user_id));
 }

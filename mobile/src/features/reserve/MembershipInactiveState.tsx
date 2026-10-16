@@ -5,21 +5,26 @@ import { PrimaryButton } from '../../components';
 import { colors, fonts, spacing } from '../../theme/tokens';
 
 /**
- * Booking requires an active membership (the backend's active-member
- * policy). The onboarding gate guarantees one was purchased, so landing
- * here means it LAPSED; explain that instead of surfacing raw 403s.
+ * Shown when Clutch refuses a booking for membership reasons
+ * (not_club_member, members_only, tier_required). Only ever in answer to a
+ * refusal: the app does not pre-judge membership from /me, which cannot yet
+ * tell "no membership" from a failed read.
  */
-export function MembershipInactiveState() {
+export function MembershipInactiveState({
+  title = 'Membership needed',
+  description = 'This booking needs an active club membership. Check your membership in your account.',
+}: {
+  title?: string;
+  description?: string;
+}) {
   const router = useRouter();
   return (
     <View style={styles.container}>
       <View style={styles.glyph}>
         <Ionicons name="card-outline" size={24} color={colors.accent} />
       </View>
-      <Text style={styles.title}>Your membership is not active</Text>
-      <Text style={styles.description}>
-        Booking needs an active membership. Check your billing details to get back on court.
-      </Text>
+      <Text style={styles.title}>{title}</Text>
+      <Text style={styles.description}>{description}</Text>
       <View style={styles.action}>
         <PrimaryButton label="Go to account" onPress={() => router.replace('/(tabs)/account')} />
       </View>

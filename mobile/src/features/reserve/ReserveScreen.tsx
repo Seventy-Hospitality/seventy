@@ -1,63 +1,48 @@
 import { useRouter } from 'expo-router';
-import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import type { ResourceTypeSummary } from '../../lib/api';
-import { AppScreen, Badge, EmptyStateView, PrimaryButton, Skeleton } from '../../components';
+import { useClub } from '../../lib/club';
+import { AppScreen, EmptyStateView, PrimaryButton, Skeleton } from '../../components';
 import { colors, fonts, spacing } from '../../theme/tokens';
-import { availabilityCountLabel, formatAmount } from './booking';
-import { isEntitledMembershipStatus, membershipQuery, resourceTypesQuery } from './booking-data';
-import { MembershipInactiveState } from './MembershipInactiveState';
-import { ResourceTypeTile } from './ResourceTypeIcon';
+import { sportLabel } from './booking';
+import { courtCountFor, sportsFrom } from './court-picker';
+import { SportTile } from './SportIcon';
 
 /**
- * The Reserve tab (Figma browse-courts 7:2331): amenity types with their
- * resource count and hourly rate. A tier-gated amenity the member cannot
- * book renders locked with the PRO badge. Tapping a bookable type opens the
- * booking wizard for it. Mirrors member-web's ReservePage, native.
+ * The Reserve tab: the club's sports (distinct court types, in court order)
+ * with how many courts each has. Picking a sport opens the booking wizard for
+ * that court_type. Whether the member may book is Clutch's answer at hold
+ * time, not a guess made here.
  */
 export function ReserveScreen() {
-  const types = useQuery(resourceTypesQuery);
-  const membership = useQuery(membershipQuery);
-
-  const membershipStatus = membership.data?.status ?? null;
-  const lapsed = membership.isSuccess && !isEntitledMembershipStatus(membershipStatus);
-
-  const refreshing = types.isRefetching || membership.isRefetching;
-  const onRefresh = () => {
-    void types.refetch();
-    void membership.refetch();
-  };
+  const club = useClub();
+  const courts = club.data?.courts ?? [];
+  const sports = sportsFrom(courts);
 
   return (
-    <AppScreen refreshing={refreshing} onRefresh={onRefresh}>
+    <AppScreen refreshing={club.isRefetching} onRefresh={() => void club.refetch()}>
       <View style={styles.header}>
         <Text style={styles.title}>Reserve</Text>
-        <Text style={styles.subtitle}>Book courts and amenities in advance</Text>
+        <Text style={styles.subtitle}>Book a court in advance</Text>
       </View>
 
-      {lapsed ? (
-        <MembershipInactiveState />
-      ) : types.isPending || membership.isPending ? (
-        <View style={styles.list} accessibilityLabel="Loading amenities">
-          {[0, 1, 2, 3].map((i) => (
+      {club.isPending ? (
+        <View style={styles.list} accessibilityLabel="Loading sports">
+          {[0, 1, 2].map((i) => (
             <Skeleton key={i} height={78} borderRadius={16} />
           ))}
         </View>
-      ) : types.isError || membership.isError ? (
+      ) : club.isError ? (
         <View style={styles.errorBox} accessibilityRole="alert">
-          <Text style={styles.errorText}>We could not load the amenities.</Text>
-          <PrimaryButton label="Try again" variant="secondary" onPress={onRefresh} />
+          <Text style={styles.errorText}>We could not load the club's courts.</Text>
+          <PrimaryButton label="Try again" variant="secondary" onPress={() => void club.refetch()} />
         </View>
-      ) : types.data.length === 0 ? (
-        <EmptyStateView
-          title="Nothing to book yet"
-          description="The club has not opened any amenities for booking."
-        />
+      ) : sports.length === 0 ? (
+        <EmptyStateView title="Nothing to book yet" description="The club has not opened any courts for booking." />
       ) : (
         <View style={styles.list}>
-          {types.data.map((type) => (
-            <ResourceTypeRow key={type.code} type={type} />
+          {sports.map((sport) => (
+            <SportRow key={sport} sport={sport} courtCount={courtCountFor(courts, sport)} />
           ))}
         </View>
       )}
@@ -65,59 +50,26 @@ export function ReserveScreen() {
   );
 }
 
-function ResourceTypeRow({ type }: { type: ResourceTypeSummary }) {
+function SportRow({ sport, courtCount }: { sport: string; courtCount: number }) {
   const router = useRouter();
-
-  const inner = (
-    <>
-      <ResourceTypeTile code={type.code} />
-      <View style={styles.rowText}>
-        <View style={styles.rowTitleLine}>
-          <Text style={styles.rowTitle} numberOfLines={1}>
-            {type.name}
-          </Text>
-          {type.locked ? <Badge label="PRO" variant="pro" /> : null}
-        </View>
-        <Text style={styles.rowSubtitle} numberOfLines={1}>
-          {availabilityCountLabel(type.name, type.resourceCount)}
-        </Text>
-      </View>
-      <View style={styles.rowTrailing}>
-        <Text style={styles.rowRate}>{formatAmount(type.hourlyRateCents)}/hr</Text>
-        <Ionicons
-          name={type.locked ? 'lock-closed' : 'chevron-forward'}
-          size={18}
-          color={type.locked ? colors.textSubtle : colors.textMuted}
-        />
-      </View>
-    </>
-  );
-
-  if (type.locked) {
-    return (
-      <View
-        style={[styles.row, styles.rowLocked]}
-        accessibilityRole="text"
-        accessibilityLabel={`${type.name}, requires a PRO membership, ${formatAmount(
-          type.hourlyRateCents,
-        )} per hour`}
-      >
-        {inner}
-      </View>
-    );
-  }
-
+  const courtsLabel = courtCount === 1 ? '1 court' : `${courtCount} courts`;
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`Book ${type.name}, ${availabilityCountLabel(
-        type.name,
-        type.resourceCount,
-      )}, ${formatAmount(type.hourlyRateCents)} per hour`}
-      onPress={() => router.push(`/reserve/${encodeURIComponent(type.code)}`)}
+      accessibilityLabel={`Book ${sportLabel(sport)}, ${courtsLabel}`}
+      onPress={() => router.push(`/reserve/${encodeURIComponent(sport)}`)}
       style={({ pressed }) => [styles.row, pressed ? styles.rowPressed : null]}
     >
-      {inner}
+      <SportTile sport={sport} />
+      <View style={styles.rowText}>
+        <Text style={styles.rowTitle} numberOfLines={1}>
+          {sportLabel(sport)}
+        </Text>
+        <Text style={styles.rowSubtitle} numberOfLines={1}>
+          {courtsLabel}
+        </Text>
+      </View>
+      <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
     </Pressable>
   );
 }
@@ -152,20 +104,11 @@ const styles = StyleSheet.create({
   rowPressed: {
     opacity: 0.9,
   },
-  rowLocked: {
-    opacity: 0.7,
-  },
   rowText: {
     flex: 1,
     gap: 3,
   },
-  rowTitleLine: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
   rowTitle: {
-    flexShrink: 1,
     color: colors.text,
     fontFamily: fonts.bodySemibold,
     fontSize: 16,
@@ -174,16 +117,6 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontFamily: fonts.body,
     fontSize: 13,
-  },
-  rowTrailing: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
-  rowRate: {
-    color: colors.text,
-    fontFamily: fonts.bodySemibold,
-    fontSize: 14,
   },
   errorBox: {
     gap: spacing.md,

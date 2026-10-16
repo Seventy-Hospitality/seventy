@@ -1,65 +1,55 @@
 /**
- * The wizard-side ledger of the checkout hold (M3 booking). Ported 1:1 from
- * member-web/src/pages/reserve/hold-session.ts; it is framework-free so the
- * money rules are directly testable.
+ * The wizard's ledger of its court hold, kept framework-free so the rules are
+ * testable.
  *
- * POST /api/reservations holds a slot server-side (pending_payment, ~12
- * minute TTL). The create request deliberately outlives the checkout step:
- * the member can back out (or leave the wizard entirely) while a create is
- * in flight, and re-entering checkout fires a fresh create. Responses can
- * therefore land out of order, and the client must never cancel the live
- * hold on behalf of an orphaned one.
+ * POST /bookings holds a court: a `pending` booking with a 15-minute hold
+ * (hold_expires_at). The hold and the payment are tracked SEPARATELY: the hold
+ * is this ledger, the payment intent lives in the checkout. A create request
+ * can outlive the step that sent it (the member backs out mid-flight), so
+ * responses can land late, and the client must never cancel the live hold on
+ * behalf of an orphaned one.
  *
- * Money rule: once a payment has been submitted for the hold (the native
- * PaymentSheet is presented), the hold must never be client-cancelled.
- * Backend cancel of a paid pending_payment settles the charge and refunds
- * at the cancellation-policy percent (0% within 2 hours of the start time),
- * so a stray cancel turns a paid booking into a charged-and-unrefunded
- * nothing. Recovery of a paid hold belongs to the confirm retry (and, on
- * mobile, the payment-intent reissue) plus the backend's paid-but-expired
- * sweeper.
+ * Payment lock: from the moment a payment is submitted (sheet presented or a
+ * simulated checkout paid) until Clutch has answered, leaving the wizard must
+ * not cancel the hold. Clutch would return any money a cancelled hold holds,
+ * so this is not about losing money; it keeps a member who paid from undoing
+ * their own booking by closing the screen while it settles.
  *
  * The rules:
  * - every create names an attempt token from beginAttempt();
- * - a hold that lands is adopted only when its token is still the live
- *   attempt; otherwise the INCOMING hold is cancelled, never the live one;
- * - release() invalidates the live attempt and cancels the held
- *   reservation, unless a submitted payment may have captured;
- * - settle() forgets the hold without cancelling (it was confirmed,
- *   expired, or handed to backend recovery).
+ * - a hold that lands is adopted only while its token is the live attempt;
+ *   otherwise the INCOMING hold is cancelled, never the live one;
+ * - release() drops the live attempt and cancels the held booking, unless a
+ *   submitted payment is still settling;
+ * - settle() forgets the hold without cancelling (confirmed, expired, or
+ *   left for the member to finish from the booking screen).
  */
+import type { BookingId } from '../../lib/clutch';
 
 export interface HoldSession {
   /** Marks a new create attempt as the live one; returns its token. */
   beginAttempt(): number;
   /** Reports the hold a create attempt produced (possibly late). */
-  holdCreated(reservationId: string, attempt: number): void;
-  /**
-   * Back-out: drop the live attempt and cancel the held reservation.
-   * The cancel is skipped while a submitted payment may have captured
-   * (see the money rule above). Always clears the payment lock.
-   */
+  holdCreated(bookingId: BookingId, attempt: number): void;
+  /** Back out: drop the live attempt and cancel the hold (unless locked). */
   release(): void;
-  /**
-   * Forget the hold without cancelling and clear the payment lock: it was
-   * confirmed, already expired, or is being recovered server-side.
-   */
+  /** Forget the hold without cancelling; clears the lock. */
   settle(): void;
-  /** True from payment submit until the charge is known NOT captured. */
+  /** The hold currently adopted, if any. */
+  readonly heldId: BookingId | null;
   readonly paymentLocked: boolean;
   setPaymentLocked(locked: boolean): void;
 }
 
 export function createHoldSession(options: {
-  /** Fire-and-forget cancel of a reservation hold. */
-  cancel: (reservationId: string) => void;
-  /** Mirrors paymentLocked into the owner (e.g. React state). */
+  /** Fire-and-forget cancel of a hold. */
+  cancel: (bookingId: BookingId) => void;
   onLockChange?: (locked: boolean) => void;
 }): HoldSession {
   const { cancel, onLockChange } = options;
   let attempts = 0;
   let liveAttempt: number | null = null;
-  let heldId: string | null = null;
+  let heldId: BookingId | null = null;
   let paymentLocked = false;
 
   const setLock = (locked: boolean) => {
@@ -73,17 +63,13 @@ export function createHoldSession(options: {
       liveAttempt = ++attempts;
       return liveAttempt;
     },
-    holdCreated(reservationId, attempt) {
+    holdCreated(bookingId, attempt) {
       if (attempt !== liveAttempt) {
-        // An orphaned create (backed out, superseded, or the wizard is
-        // gone) resolved late: cancel ITS hold; the live hold is untouched.
-        cancel(reservationId);
+        cancel(bookingId);
         return;
       }
-      // Belt-and-braces: one attempt makes one create, but if a previous
-      // hold were somehow still recorded, free it before adopting this one.
-      if (heldId && heldId !== reservationId) cancel(heldId);
-      heldId = reservationId;
+      if (heldId && heldId !== bookingId) cancel(heldId);
+      heldId = bookingId;
     },
     release() {
       liveAttempt = null;
@@ -96,6 +82,9 @@ export function createHoldSession(options: {
       liveAttempt = null;
       heldId = null;
       setLock(false);
+    },
+    get heldId() {
+      return heldId;
     },
     get paymentLocked() {
       return paymentLocked;

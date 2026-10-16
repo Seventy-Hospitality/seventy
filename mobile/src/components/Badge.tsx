@@ -1,6 +1,6 @@
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import { colors, fonts, radius, spacing } from '../theme/tokens';
-import type { ReservationParticipantStatus, ReservationStatus } from '../lib/api';
+import type { BookingPlayerStatus, BookingStatus } from '../lib/clutch';
 
 export type BadgeVariant = 'neutral' | 'accent' | 'success' | 'danger' | 'warning' | 'pro';
 
@@ -31,28 +31,28 @@ export function Badge({ label, variant = 'neutral', style }: BadgeProps) {
   );
 }
 
-const RESERVATION_TONE: Record<ReservationStatus, BadgeVariant> = {
-  pending_payment: 'warning',
+const BOOKING_TONE: Record<BookingStatus, BadgeVariant> = {
+  pending: 'warning',
   confirmed: 'success',
   cancelled: 'danger',
-  expired: 'neutral',
+  completed: 'neutral',
+  no_show: 'neutral',
 };
 
-const PARTICIPANT_TONE: Record<ReservationParticipantStatus, BadgeVariant> = {
-  confirmed: 'success',
-  pending: 'warning',
+const PLAYER_TONE: Record<BookingPlayerStatus, BadgeVariant> = {
+  accepted: 'success',
+  invited: 'warning',
   declined: 'danger',
-  withdrawn: 'neutral',
 };
 
-/** Map a reservation status to a badge variant (shared by M2/M3/M4). */
-export function reservationStatusVariant(status: ReservationStatus): BadgeVariant {
-  return RESERVATION_TONE[status] ?? 'neutral';
+/** Map a Clutch booking status to a badge variant (bookings, home, groups). */
+export function bookingStatusVariant(status: BookingStatus): BadgeVariant {
+  return BOOKING_TONE[status] ?? 'neutral';
 }
 
-/** Map a participant status to a badge variant (shared by M2/M4). */
-export function participantStatusVariant(status: ReservationParticipantStatus): BadgeVariant {
-  return PARTICIPANT_TONE[status] ?? 'neutral';
+/** Map a booking player's status to a badge variant. */
+export function playerStatusVariant(status: BookingPlayerStatus): BadgeVariant {
+  return PLAYER_TONE[status] ?? 'neutral';
 }
 
 const styles = StyleSheet.create({
