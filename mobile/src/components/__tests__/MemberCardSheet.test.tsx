@@ -3,10 +3,11 @@ import { render, screen, waitFor } from '@testing-library/react-native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import type { MockClutch } from '../../lib/clutch/testing';
-import type { CheckinToken } from '../../lib/clutch';
+import { CheckinTokenSchema, type CheckinToken } from '../../lib/clutch';
 import { queryKeys } from '../../lib/queries';
 import { clutchError } from '../../lib/clutch/testing';
 import { checkinErrorMessage, checkinRefreshDelay, MemberCardSheet } from '../MemberCardSheet';
+import type { Capabilities } from '../../lib/clutch/capabilities';
 
 jest.mock('../../lib/clutch', () => {
   const actual = jest.requireActual('../../lib/clutch');
@@ -15,12 +16,13 @@ jest.mock('../../lib/clutch', () => {
 });
 const mockClutch = (jest.requireMock('../../lib/clutch') as { clutch: MockClutch }).clutch;
 
+/** Parsed through the contract schema, like every fixture. */
 function token(ttlSeconds: number): CheckinToken {
-  return {
+  return CheckinTokenSchema.parse({
     token: `ck.${ttlSeconds}`,
     expiresAt: new Date(Date.now() + ttlSeconds * 1000).toISOString(),
     ttlSeconds,
-  };
+  });
 }
 
 function makeClient() {
@@ -37,7 +39,10 @@ function wrapper(client: QueryClient) {
   );
 }
 
-beforeEach(() => jest.clearAllMocks());
+beforeEach(() => {
+  jest.clearAllMocks();
+  (mockClutch.capabilities as Capabilities).checkinToken = true;
+});
 
 describe('MemberCardSheet', () => {
   it("renders Clutch's signed check-in token as the QR with the member's name", async () => {
@@ -97,5 +102,15 @@ describe('checkinErrorMessage', () => {
   it('lets the member retry when check-in is unavailable or the read failed', () => {
     expect(checkinErrorMessage(clutchError('checkin_unavailable', 503)).retry).toBe(true);
     expect(checkinErrorMessage(new Error('x')).retry).toBe(true);
+  });
+});
+
+describe('MemberCardSheet without check-in tokens', () => {
+  it('says so instead of calling Clutch', async () => {
+    (mockClutch.capabilities as Capabilities).checkinToken = false;
+    const client = makeClient();
+    render(<MemberCardSheet open onClose={() => undefined} memberName="Alex Morgan" />, { wrapper: wrapper(client) });
+    expect(await screen.findByText(/not available in the app yet/)).toBeTruthy();
+    expect(mockClutch.me.checkinToken).not.toHaveBeenCalled();
   });
 });

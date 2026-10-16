@@ -1,28 +1,20 @@
 /**
  * Sign out everywhere in the app the same way: remove this install's push
  * registration first (best effort, while the request can still authenticate,
- * and capped so a slow network never traps the member), then end the
- * supabase-js session, which clears the query cache.
+ * capped so a slow network never traps the member), then end the supabase-js
+ * session, which clears the query cache.
+ *
+ * Any sign-out that does not go through this hook (SetPasswordScreen's "Sign
+ * out instead", account deletion) calls unregisterPushForSignOut() itself.
  */
 import { useCallback } from 'react';
-import { useMutationKey } from '../../lib/clutch';
 import { useSession } from '../../lib/session';
-import { unregisterThisDevice } from './usePushRegistration';
-
-const UNREGISTER_BUDGET_MS = 4_000;
+import { unregisterPushForSignOut } from './usePushRegistration';
 
 export function useSignOut(): () => Promise<void> {
   const { signOut } = useSession();
-  const key = useMutationKey();
   return useCallback(async () => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([
-      key.run('unregister-on-sign-out', (k) => unregisterThisDevice(k)),
-      new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, UNREGISTER_BUDGET_MS);
-      }),
-    ]);
-    clearTimeout(timer);
+    await unregisterPushForSignOut();
     await signOut();
-  }, [signOut, key]);
+  }, [signOut]);
 }

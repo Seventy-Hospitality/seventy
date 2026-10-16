@@ -5,25 +5,29 @@
  * verify-email step, and ID verification was dropped (owner decision). What
  * is left:
  *
+ *   name     -> the Clutch profile has no name (accounts made from an emailed
+ *               code or link): ask for it, PATCH /me/profile, re-read /me.
  *   join     -> GET /me lists no membership at this club. The gate calls
- *               POST /clubs/{club}/join (idempotent) and re-reads /me; it
- *               never infers membership from the join answer.
- *   inactive -> a membership exists but its standing is not active
- *               (suspended, expired, inactive). Only Clutch P3 lists these;
- *               the member has to talk to the club, so this is support UI.
- *   plan     -> a player with no tier subscription picks a tier.
- *   checkout -> a subscription attempt was started and never completed
- *               (P2: subscription_status 'incomplete'): resume paying.
- *   done     -> in the app. Staff roles never pick a tier.
+ *               POST /clubs/{club}/join (idempotent) and re-reads; it never
+ *               infers membership from the join answer.
+ *   plan     -> a member in good standing without a tier picks one.
+ *   checkout -> a subscription attempt waits on its first payment: resume it.
+ *   lapsed   -> was a member; the club standing (suspended, expired,
+ *               inactive) or the billing (canceled, past_due, unpaid, ...)
+ *               lapsed. Its own screen: renew, or talk to the club.
+ *   done     -> in the app.
  *
- * Pure so every branch is a unit test; the gate (OnboardingGate) and the
- * hook (useOnboardingResume) apply it.
+ * Membership is decided ONLY through entitlement(view) (membership-view.ts),
+ * never by reading rows here. Pure so every branch is a unit test; the gate
+ * (OnboardingGate) and the hook (useOnboardingResume) apply it.
  */
-import type {
-  ClubId,
-  ClubMembership,
-  Me,
-  MySubscription,
+import {
+  entitlement,
+  type ClubId,
+  type ClubMembership,
+  type GetMeResponse,
+  type MembershipView,
+  type Profile,
 } from '../../lib/clutch';
 
 /**
@@ -32,82 +36,63 @@ import type {
  */
 export const TERMS_VERSION = '2026-08';
 
-export type OnboardingStep = 'join' | 'inactive' | 'plan' | 'checkout' | 'done';
+export type Me = GetMeResponse['data'];
 
-/** Club roles that run the club: they never pick or pay for a tier. */
-const STAFF_ROLES = new Set(['coach', 'staff', 'admin', 'owner']);
-
-export function isStaffRole(role: string): boolean {
-  return STAFF_ROLES.has(role);
-}
+export type OnboardingStep = 'name' | 'join' | 'plan' | 'checkout' | 'lapsed' | 'done';
 
 /** The caller's membership at this club, if /me lists one. */
 export function membershipAt(me: Me, clubId: ClubId): ClubMembership | null {
   return me.memberships.find((m) => m.id === clubId) ?? null;
 }
 
-/**
- * The billing state of a subscription. P2 separates billing
- * (`subscription_status`, Stripe's words) from club standing (`status`); on
- * main only `status` exists and a tier row there means it was paid.
- */
-export type BillingState = 'live' | 'incomplete' | 'expired';
+/** Clutch sends '' for "no name"; whitespace is no name either. */
+export function hasProfileName(profile: Pick<Profile, 'full_name'>): boolean {
+  return profile.full_name.trim().length > 0;
+}
 
-export function billingState(sub: MySubscription): BillingState {
-  switch (sub.subscription_status ?? null) {
-    case 'incomplete':
-      return 'incomplete';
-    case 'incomplete_expired':
-      return 'expired';
-    default:
-      // active, trialing, past_due, unpaid, paused, canceled, or main's
-      // absent field: the purchase happened. A lapsed member is a renewal
-      // concern (Billing), not onboarding, and keeps the app shell.
-      return 'live';
-  }
+/** Whether resolving the step needs GET /me/membership. */
+export function needsMembershipView(me: Me, clubId: ClubId): boolean {
+  return hasProfileName(me.profile) && membershipAt(me, clubId) !== null;
 }
 
 export interface OnboardingInput {
   me: Me;
   clubId: ClubId;
   /**
-   * GET /me/membership's subscription. Only read once /me shows a membership;
-   * `undefined` means "not read yet" and is never passed to the resolver.
-   * `null` is uncertain until P3 (a failed sub-read looks the same), which is
-   * acceptable here: the plan step moves no money, and subscribe answers
-   * subscription_exists when one is live.
+   * GET /me/membership, read once /me shows a membership here
+   * (needsMembershipView). An empty answer means no membership (P3 fails the
+   * request instead of answering empty).
    */
-  subscription: MySubscription | null;
+  view: MembershipView | null;
 }
 
-export function resolveOnboardingStep({ me, clubId, subscription }: OnboardingInput): OnboardingStep {
-  const membership = membershipAt(me, clubId);
-  if (!membership) return 'join';
-  // P3 lists non-active memberships with their standing; main lists active only.
-  if (membership.status !== undefined && membership.status !== 'active') return 'inactive';
-  if (isStaffRole(membership.role)) return 'done';
-  if (!subscription) return 'plan';
-  switch (billingState(subscription)) {
-    case 'incomplete':
-      return 'checkout';
-    case 'expired':
-      return 'plan';
-    case 'live':
+export function resolveOnboardingStep({ me, clubId, view }: OnboardingInput): OnboardingStep {
+  if (!hasProfileName(me.profile)) return 'name';
+  if (!membershipAt(me, clubId) || !view) return 'join';
+  switch (entitlement(view)) {
+    case 'entitled':
       return 'done';
+    case 'no_membership':
+      return 'join';
+    case 'no_tier':
+      return 'plan';
+    case 'payment_pending':
+      return 'checkout';
+    case 'lapsed':
+      return 'lapsed';
   }
 }
 
-/** Whether resolving the step needs GET /me/membership (members who are not staff). */
-export function needsSubscription(me: Me, clubId: ClubId): boolean {
-  const membership = membershipAt(me, clubId);
-  return (
-    membership !== null &&
-    (membership.status === undefined || membership.status === 'active') &&
-    !isStaffRole(membership.role)
-  );
+/**
+ * A lapsed member may renew in the app only when billing (not the club) is
+ * what lapsed, and paying is available: a club standing that is not active
+ * is the club's call, and subscribing would be refused.
+ */
+export function canRenewInApp(view: MembershipView, nativePayments: boolean): boolean {
+  return nativePayments && view.kind === 'billing' && view.data.membership?.status === 'active';
 }
 
-/** The route of a step that has one; join and inactive render in place. */
+/** The route of a step that has one; name, join and lapsed render in place. */
 export function onboardingPathForStep(step: OnboardingStep): string | null {
   switch (step) {
     case 'plan':
@@ -116,8 +101,9 @@ export function onboardingPathForStep(step: OnboardingStep): string | null {
       return '/onboarding/checkout';
     case 'done':
       return '/(tabs)';
+    case 'name':
     case 'join':
-    case 'inactive':
+    case 'lapsed':
       return null;
   }
 }
@@ -125,34 +111,67 @@ export function onboardingPathForStep(step: OnboardingStep): string | null {
 /**
  * Which /onboarding/* routes a step may visit. Plan and checkout are
  * interchangeable while unpaid: checkout links back to change the tier, and
- * subscribe reuses an incomplete attempt for the same tier and cancels one
- * for another tier (P2).
+ * subscribe reuses a pending attempt for the same tier and replaces one for
+ * another tier (P2). A lapsed member renewing in the app uses the same two.
  */
-export function canVisitOnboardingPath(step: OnboardingStep, pathname: string): boolean {
+export function canVisitOnboardingPath(
+  step: OnboardingStep,
+  pathname: string,
+  opts: { renewInApp: boolean } = { renewInApp: false },
+): boolean {
+  const tierRoute = pathname === '/onboarding/plan' || pathname === '/onboarding/checkout';
   switch (step) {
     case 'plan':
     case 'checkout':
-      return pathname === '/onboarding/plan' || pathname === '/onboarding/checkout';
+      return tierRoute;
+    case 'lapsed':
+      return opts.renewInApp && tierRoute;
+    case 'name':
     case 'join':
-    case 'inactive':
     case 'done':
       return false;
   }
 }
 
-/**
- * What a checkout attempt came to, read off Clutch's subscription after
- * confirm. The sheet completing proves nothing; only this does.
- */
+/** What a checkout attempt came to. The sheet completing proves nothing; only Clutch does. */
 export type CheckoutOutcome = 'active' | 'processing' | 'failed';
 
-export function checkoutOutcome(subscription: MySubscription | null): CheckoutOutcome {
-  // No subscription after confirm: Clutch has not applied it yet (or the
-  // read failed, uncertain until P3). Never report success; offer a re-check.
-  if (!subscription) return 'processing';
-  const status = subscription.subscription_status ?? null;
-  // main has no billing field: a tier row there was written by a paid checkout.
-  if (status === null || status === 'active' || status === 'trialing') return 'active';
-  if (status === 'incomplete' || status === 'processing') return 'processing';
-  return 'failed';
+/** From POST /me/membership/confirm's answer. */
+export function confirmOutcome(confirm: {
+  activated: boolean;
+  payment_status: 'succeeded' | 'pending' | 'failed' | 'none';
+}): CheckoutOutcome {
+  if (confirm.activated) return 'active';
+  switch (confirm.payment_status) {
+    case 'failed':
+      return 'failed';
+    case 'pending':
+    case 'succeeded':
+    case 'none':
+      // Paid but not applied yet, or not paid yet: re-check, never claim success.
+      return 'processing';
+  }
+}
+
+/** From a re-read of GET /me/membership (when confirm itself could not answer). */
+export function viewOutcome(view: MembershipView): CheckoutOutcome {
+  switch (entitlement(view)) {
+    case 'entitled':
+      return 'active';
+    case 'payment_pending':
+    case 'no_tier':
+      // Not applied yet (or not paid): offer a re-check, never a second charge.
+      return 'processing';
+    case 'no_membership':
+    case 'lapsed':
+      return 'failed';
+  }
+}
+
+/** The word for why a membership lapsed (a standing or a billing status), for the lapsed screen. */
+export function lapsedReason(view: MembershipView): string | null {
+  const membership = view.data.membership;
+  if (membership && membership.status !== 'active') return membership.status;
+  if (view.kind === 'billing') return view.data.billing.subscription_status;
+  return view.data.subscription && view.data.subscription.status !== 'active' ? view.data.subscription.status : null;
 }

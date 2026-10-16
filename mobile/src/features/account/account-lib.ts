@@ -8,10 +8,12 @@ import {
   DeletionBlockersSchema,
   isClutchError,
   type DeletionBlockers,
-  type PaymentHistoryItem,
+  type MembershipView,
+  type MyMembershipBilling,
+  type Payment,
   type Profile,
-  type SavedPaymentMethod,
-  type MySubscription,
+  type SavedCard,
+  type TierId,
 } from '../../lib/clutch';
 import { formatCentsExact } from '../onboarding/tier-format';
 
@@ -26,10 +28,11 @@ export {
 
 /** The name to show: full name, else @username, else the email's local part. */
 export function profileDisplayName(profile: Pick<Profile, 'full_name' | 'username' | 'email'>): string {
-  const name = profile.full_name?.trim();
+  // Clutch sends '' for "no name" and for "no email".
+  const name = profile.full_name.trim();
   if (name) return name;
   if (profile.username) return `@${profile.username}`;
-  const local = profile.email?.split('@')[0];
+  const local = profile.email.split('@')[0];
   return local || 'Member';
 }
 
@@ -59,7 +62,7 @@ export function cardExpiryLabel(expMonth: number, expYear: number): string {
 }
 
 /** "Visa •••• 4242 · exp 09/27", or the bank account for ACH. */
-export function paymentMethodLabel(pm: SavedPaymentMethod): string {
+export function paymentMethodLabel(pm: SavedCard): string {
   if (pm.card_last4) {
     const brand = pm.card_brand ? `${pm.card_brand.charAt(0).toUpperCase()}${pm.card_brand.slice(1)} ` : '';
     const expiry =
@@ -74,10 +77,66 @@ export function paymentMethodLabel(pm: SavedPaymentMethod): string {
 
 // ── Membership ──
 
-/** The forward-looking line under the tier on the membership card. */
-export function subscriptionStatusLine(sub: MySubscription, timezone?: string): string {
-  const periodEnd = sub.current_period_end ? instantDateLabel(sub.current_period_end, timezone) : null;
-  switch (sub.subscription_status ?? null) {
+/**
+ * What the account screens show about the member's plan, from either shape
+ * of GET /me/membership. Display only: access is decided by entitlement().
+ */
+export interface PlanSummary {
+  tierId: TierId | null;
+  name: string;
+  /** Clutch's price per interval; null when Clutch sent no price (a tier without a subscription). */
+  price: { cents: number; currency: string; interval: string } | null;
+  statusLine: string;
+}
+
+export function planSummary(view: MembershipView, timezone?: string): PlanSummary | null {
+  if (view.kind === 'billing') {
+    const { tier } = view.data;
+    if (!tier) return null;
+    return {
+      tierId: tier.id,
+      name: tier.name,
+      price: { cents: tier.price_cents, currency: tier.currency, interval: tier.interval },
+      statusLine: billingStatusLine(view.data, timezone),
+    };
+  }
+  const { membership, subscription } = view.data;
+  if (subscription) {
+    return {
+      tierId: membership?.tier?.id ?? null,
+      name: subscription.tier_name,
+      price: { cents: subscription.price_cents, currency: subscription.currency, interval: subscription.interval },
+      statusLine: standingStatusLine(subscription.status, subscription.current_period_end, timezone),
+    };
+  }
+  if (membership?.tier) {
+    return {
+      tierId: membership.tier.id,
+      name: membership.tier.name,
+      price: null,
+      statusLine: standingStatusLine(membership.status, null, timezone),
+    };
+  }
+  return null;
+}
+
+const STANDING_LABELS: Record<string, string> = {
+  inactive: 'Membership inactive',
+  suspended: 'Membership suspended',
+  expired: 'Membership expired',
+};
+
+function standingStatusLine(status: string, periodEnd: string | null, timezone?: string): string {
+  if (status !== 'active') return STANDING_LABELS[status] ?? `Membership ${status.replace(/_/g, ' ')}`;
+  return periodEnd ? `Renews ${instantDateLabel(periodEnd, timezone)}` : 'Active';
+}
+
+/** The forward-looking line under the tier (P2 billing view). */
+export function billingStatusLine(data: MyMembershipBilling, timezone?: string): string {
+  const { billing, membership } = data;
+  if (membership && membership.status !== 'active') return standingStatusLine(membership.status, null, timezone);
+  const periodEnd = billing.current_period_end ? instantDateLabel(billing.current_period_end, timezone) : null;
+  switch (billing.subscription_status) {
     case 'past_due':
     case 'unpaid':
       return 'Payment past due';
@@ -89,41 +148,51 @@ export function subscriptionStatusLine(sub: MySubscription, timezone?: string): 
       return 'Paused';
     case 'canceled':
       return periodEnd ? `Ended ${periodEnd}` : 'Ended';
-    default:
+    case 'trialing':
+    case 'active':
+    case null:
       break;
   }
-  if (sub.cancel_at_period_end) return periodEnd ? `Ends ${periodEnd}` : 'Ends at the end of this period';
-  if (sub.pending_tier_name) {
-    const when = sub.pending_effective_at
-      ? instantDateLabel(sub.pending_effective_at, timezone)
-      : periodEnd;
-    return when ? `Switches to ${sub.pending_tier_name} on ${when}` : `Switches to ${sub.pending_tier_name}`;
+  if (billing.cancel_at_period_end) return periodEnd ? `Ends ${periodEnd}` : 'Ends at the end of this period';
+  if (billing.pending_tier) {
+    const at = billing.pending_tier_effective_at;
+    const when = at ? instantDateLabel(at, timezone) : periodEnd;
+    return when ? `Switches to ${billing.pending_tier.name} on ${when}` : `Switches to ${billing.pending_tier.name}`;
   }
-  if (sub.subscription_status === 'trialing') return periodEnd ? `Trial ends ${periodEnd}` : 'Trial';
+  if (billing.subscription_status === 'trialing') return periodEnd ? `Trial ends ${periodEnd}` : 'Trial';
   return periodEnd ? `Renews ${periodEnd}` : 'Active';
 }
 
-/** Whether Clutch would bill this subscription again (P2 billing state; main: yes). */
-function isLive(sub: MySubscription): boolean {
-  const status = sub.subscription_status ?? null;
-  return status === null || status === 'active' || status === 'trialing';
+/** Whether Stripe will bill this subscription again. */
+function isLive(data: MyMembershipBilling): boolean {
+  const status = data.billing.subscription_status;
+  return data.billing.has_subscription && (status === 'active' || status === 'trialing');
 }
 
 /** Offer "change tier" (Clutch's eligible list and its answer decide the rest). */
-export function canChangeTier(sub: MySubscription | null): boolean {
-  return sub !== null && isLive(sub) && !sub.cancel_at_period_end;
+export function canChangeTier(data: MyMembershipBilling): boolean {
+  return data.membership?.status === 'active' && isLive(data) && !data.billing.cancel_at_period_end;
 }
 
-/** Offer "cancel": anything not already over, so a member is never trapped. */
-export function canCancel(sub: MySubscription | null): boolean {
-  if (!sub) return false;
-  const status = sub.subscription_status ?? null;
-  return status !== 'canceled' && status !== 'incomplete_expired';
+/** Offer "cancel": anything not already over or ending, so a member is never trapped. */
+export function canCancel(data: MyMembershipBilling): boolean {
+  const status = data.billing.subscription_status;
+  return (
+    data.billing.has_subscription &&
+    status !== 'canceled' &&
+    status !== 'incomplete_expired' &&
+    !data.billing.cancel_at_period_end
+  );
 }
 
 /** Offer "resume": a cancellation is scheduled and the period has not ended. */
-export function canResume(sub: MySubscription | null): boolean {
-  return sub !== null && sub.cancel_at_period_end === true && isLive(sub);
+export function canResume(data: MyMembershipBilling): boolean {
+  return data.billing.cancel_at_period_end && isLive(data);
+}
+
+/** Offer "keep my tier": a downgrade is booked (POST change with the current tier cancels it). */
+export function canCancelDowngrade(data: MyMembershipBilling): boolean {
+  return data.billing.pending_tier !== null && data.tier !== null;
 }
 
 // ── Payment history ──
@@ -142,7 +211,7 @@ const PAYMENT_TYPE_LABELS: Record<string, string> = {
   custom: 'Payment',
 };
 
-export function paymentTitle(item: PaymentHistoryItem): string {
+export function paymentTitle(item: Payment): string {
   return item.description?.trim() || PAYMENT_TYPE_LABELS[item.payment_type] || 'Payment';
 }
 
@@ -159,13 +228,13 @@ export function paymentStatusLabel(status: string): string | null {
 }
 
 /** The charged amount as Clutch recorded it. */
-export function paymentAmountLabel(item: PaymentHistoryItem): string {
+export function paymentAmountLabel(item: Payment): string {
   return formatCentsExact(item.amount_cents, item.currency);
 }
 
 /** "Refunded $12.00" when Clutch recorded a refund against this payment. */
-export function refundLabel(item: PaymentHistoryItem): string | null {
-  const refunded = item.refunded_amount_cents ?? 0;
+export function refundLabel(item: Payment): string | null {
+  const refunded = item.refunded_amount_cents;
   return refunded > 0 ? `Refunded ${formatCentsExact(refunded, item.currency)}` : null;
 }
 
@@ -178,6 +247,40 @@ export function clutchErrorMessage(err: unknown, fallback: string): string {
   if (err.code === 'rate_limit_exceeded') return 'Too many attempts. Wait a minute and try again.';
   if (err.kind === 'api' && err.status < 500 && err.message) return err.message;
   return fallback;
+}
+
+/** A P2 membership or card refusal, in words the member can act on. */
+export function billingErrorMessage(err: unknown, fallback: string): string {
+  if (isClutchError(err)) {
+    switch (err.code) {
+      case 'already_on_tier':
+        return 'You are already on that membership.';
+      case 'tier_interval_mismatch':
+        return 'You can only switch to a membership billed on the same schedule as yours.';
+      case 'subscription_ending':
+        return 'Your membership is set to end. Resume it first, then switch.';
+      case 'not_cancelling':
+        return 'Your membership is not set to end, so there is nothing to resume.';
+      case 'no_active_subscription':
+        return 'You have no active membership subscription to change.';
+      case 'membership_not_active':
+        return 'Your club membership is on hold. Contact the club front desk.';
+      case 'membership_unconfirmed':
+        return 'The club has not confirmed your membership yet. Contact the club front desk.';
+      case 'already_subscribed':
+        return 'You already have a membership subscription.';
+      case 'setup_incomplete':
+        return 'Your card was not confirmed yet. Try again in a moment.';
+      case 'card_in_use_by_subscription':
+        return 'This card pays your membership. Add another card and make it the default first.';
+      case 'card_not_found':
+      case 'payment_method_not_found':
+        return 'That card is no longer on file.';
+      default:
+        break;
+    }
+  }
+  return clutchErrorMessage(err, fallback);
 }
 
 export function profileErrorMessage(err: unknown): string {
@@ -239,14 +342,11 @@ export function blockerSentences(blockers: DeletionBlockers): string[] {
 // ── Tier changes ──
 
 /**
- * Whether Clutch's subscription now shows the tier the member switched to.
+ * Whether Clutch's membership now shows the tier the member switched to.
  * Read after confirm; until it does, the switch is still settling (or waiting
  * on the payment), and the screen says so instead of claiming success.
  */
-export function tierChangeApplied(
-  sub: MySubscription | null,
-  target: { id: string; name: string },
-): boolean {
-  if (!sub) return false;
-  return sub.tier_id ? sub.tier_id === target.id : sub.tier_name === target.name;
+export function tierChangeApplied(view: MembershipView | null, targetId: TierId): boolean {
+  if (!view || view.kind !== 'billing') return false;
+  return view.data.tier?.id === targetId;
 }

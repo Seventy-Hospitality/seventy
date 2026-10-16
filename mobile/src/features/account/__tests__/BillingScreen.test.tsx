@@ -1,8 +1,13 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react-native';
 import type { MockClutch } from '../../../lib/clutch/testing';
-import { TEST_CLUB_ID } from '../../../lib/clutch/testing';
-import { makeClub, makeSubscription } from '../../../lib/clutch/fixtures';
-import type { PaymentHistoryItem } from '../../../lib/clutch';
+import { networkError } from '../../../lib/clutch/testing';
+import {
+  makeBillingMembership,
+  makeClub,
+  makePayment,
+  makeSavedCard,
+  makeStandingMembership,
+} from '../../../lib/clutch/fixtures';
 import { BillingScreen } from '../BillingScreen';
 import { renderWithProviders } from './render-account';
 
@@ -17,27 +22,15 @@ jest.mock('expo-router', () => ({
   useRouter: () => ({ push: jest.fn(), replace: jest.fn(), back: jest.fn(), canGoBack: () => true }),
 }));
 
-function payment(id: string, over: Partial<PaymentHistoryItem> = {}): PaymentHistoryItem {
-  return {
-    id,
-    club_id: TEST_CLUB_ID,
-    amount_cents: 3000,
-    currency: 'USD',
-    payment_type: 'booking',
-    payment_method: 'stripe',
-    status: 'succeeded',
-    reference_id: null,
-    description: null,
-    created_at: '2026-10-10T15:00:00.000Z',
-    refunded_amount_cents: 0,
-    ...over,
-  };
+function payment(id: string, over: Parameters<typeof makePayment>[0] = {}) {
+  return makePayment({ id, description: null, ...over });
 }
 
 beforeEach(() => {
   jest.clearAllMocks();
   mockClutch.club.verify.mockResolvedValue(makeClub());
-  mockClutch.membership.get.mockResolvedValue({ membership: { role: 'player' }, subscription: makeSubscription() });
+  mockClutch.membership.get.mockResolvedValue(makeStandingMembership());
+  mockClutch.me.payments.mockResolvedValue({ items: [], count: 0 });
   mockClutch.paymentMethods.list.mockResolvedValue([]);
 });
 
@@ -67,5 +60,31 @@ describe('BillingScreen', () => {
     mockClutch.me.payments.mockResolvedValue({ items: [], count: 0 });
     renderWithProviders(<BillingScreen />);
     expect(await screen.findByText('No payments yet')).toBeTruthy();
+  });
+
+  it('says a failed saved-cards read failed (with a retry), never "no card"', async () => {
+    mockClutch.paymentMethods.list.mockRejectedValueOnce(networkError()).mockResolvedValue([makeSavedCard()]);
+    renderWithProviders(<BillingScreen />);
+
+    expect(await screen.findByText('We could not load your payment method.')).toBeTruthy();
+    expect(screen.queryByText('No payment method on file')).toBeNull();
+    fireEvent.press(screen.getByLabelText('Try loading your payment method again'));
+    expect(await screen.findByText('Visa •••• 4242 · exp 12/30')).toBeTruthy();
+  });
+
+  it('shows the P2 billing line, including a booked downgrade', async () => {
+    const base = makeBillingMembership();
+    if (base.kind !== 'billing') throw new Error('fixture');
+    mockClutch.membership.get.mockResolvedValue(
+      makeBillingMembership({
+        billing: {
+          ...base.data.billing,
+          pending_tier: { ...base.data.tier!, name: 'Basic' },
+          pending_tier_effective_at: '2026-11-20T12:00:00.000Z',
+        },
+      }),
+    );
+    renderWithProviders(<BillingScreen />);
+    expect(await screen.findByText('Switches to Basic on Nov 20, 2026')).toBeTruthy();
   });
 });

@@ -7,7 +7,7 @@
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { clutch, hasCode, useMutationKey, type Me, type Profile } from '../../lib/clutch';
+import { clutch, hasCode, useMutationKey, type GetMeResponse, type Profile } from '../../lib/clutch';
 import { queryKeys } from '../../lib/queries';
 import { FormField, Input, PrimaryButton } from '../../components';
 import { colors, spacing } from '../../theme/tokens';
@@ -23,7 +23,7 @@ type ProfilePatch = { full_name?: string; username?: string };
 export function ProfileEditor({ profile, onDone }: ProfileEditorProps) {
   const queryClient = useQueryClient();
   const key = useMutationKey();
-  const [name, setName] = useState(profile.full_name ?? '');
+  const [name, setName] = useState(profile.full_name);
   const [username, setUsername] = useState(profile.username ?? '');
   const [nameError, setNameError] = useState<string | null>(null);
   const [usernameError, setUsernameError] = useState<string | null>(null);
@@ -32,7 +32,7 @@ export function ProfileEditor({ profile, onDone }: ProfileEditorProps) {
     mutationFn: (patch: ProfilePatch) =>
       key.run(patch, (k) => clutch.me.updateProfile(patch, { idempotencyKey: k })),
     onSuccess: (updated) => {
-      queryClient.setQueryData<Me>(queryKeys.me, (prev) => (prev ? { ...prev, profile: updated } : prev));
+      queryClient.setQueryData<GetMeResponse['data']>(queryKeys.me, (prev) => (prev ? { ...prev, profile: updated } : prev));
       void queryClient.invalidateQueries({ queryKey: queryKeys.me });
       void queryClient.invalidateQueries({ queryKey: queryKeys.home });
       onDone();
@@ -49,7 +49,7 @@ export function ProfileEditor({ profile, onDone }: ProfileEditorProps) {
     const nextName = name.trim();
     const nextUsername = normalizeUsername(username);
 
-    if (nextName !== (profile.full_name ?? '')) {
+    if (nextName !== profile.full_name.trim()) {
       if (!nextName) {
         setNameError('Enter your name.');
         return;

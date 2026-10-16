@@ -2,14 +2,14 @@
  * Avatar picker + upload for the account header. expo-image-picker (camera or
  * library), a pre-check that mirrors Clutch's own (uploadAvatar: JPG, PNG,
  * WebP or GIF, 5 MB) so the member gets an instant message, then
- * POST /me/avatar with an RN file part. Clutch's verdict (unsupported_image_type,
+ * POST /me/avatar with an RN file part (the client keys each send itself). Clutch's verdict (unsupported_image_type,
  * file_too_large) is still what counts; the profile is re-read afterwards.
  */
 import { useCallback } from 'react';
 import { Alert } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { clutch, useMutationKey, type Me, type UploadFile } from '../../lib/clutch';
+import { clutch, type GetMeResponse, type UploadFile } from '../../lib/clutch';
 import { queryKeys } from '../../lib/queries';
 import { useToast } from '../../components';
 import { avatarErrorMessage } from './account-lib';
@@ -48,14 +48,13 @@ export interface AvatarUploadController {
 export function useAvatarUpload(): AvatarUploadController {
   const queryClient = useQueryClient();
   const { toast } = useToast();
-  const key = useMutationKey();
 
   const upload = useMutation({
-    mutationFn: (file: UploadFile) =>
-      key.run(file, (k) => clutch.me.uploadAvatar(file, { idempotencyKey: k })),
+    // A multipart body differs on every send, so the client mints a fresh key per send.
+    mutationFn: (file: UploadFile) => clutch.me.uploadAvatar(file),
     onSuccess: (avatarUrl) => {
       // Show the new photo at once; the re-read below is the source of truth.
-      queryClient.setQueryData<Me>(queryKeys.me, (prev) =>
+      queryClient.setQueryData<GetMeResponse['data']>(queryKeys.me, (prev) =>
         prev ? { ...prev, profile: { ...prev.profile, avatar_url: avatarUrl } } : prev,
       );
       void queryClient.invalidateQueries({ queryKey: queryKeys.me });

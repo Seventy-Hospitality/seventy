@@ -1,6 +1,8 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react-native';
+import * as Notifications from 'expo-notifications';
 import type { MockClutch } from '../../../lib/clutch/testing';
 import { clutchError, TEST_CLUB_ID } from '../../../lib/clutch/testing';
+import { makeDeletionPreview } from '../../../lib/clutch/fixtures';
 import { DeleteAccountScreen } from '../DeleteAccountScreen';
 import { stepUpMethods } from '../step-up';
 import { renderWithProviders } from './render-account';
@@ -35,18 +37,10 @@ jest.mock('../../../lib/supabase', () => ({
   SupabaseNotConfiguredError: class extends Error {},
 }));
 
-const NO_BLOCKERS = { owned_clubs: [], managed_children: [] };
+const STALE = makeDeletionPreview().step_up;
 
-function stepUp(satisfied: boolean, over: Record<string, unknown> = {}) {
-  return {
-    satisfied,
-    reason: satisfied ? null : 'stale_sign_in',
-    authenticated_at: null,
-    fresh_until: null,
-    max_age_seconds: 300,
-    second_factor_required: false,
-    ...over,
-  };
+function stepUp(satisfied: boolean, over: Partial<typeof STALE> = {}) {
+  return { ...STALE, satisfied, reason: satisfied ? null : 'stale_sign_in', ...over };
 }
 
 beforeEach(() => {
@@ -56,7 +50,8 @@ beforeEach(() => {
   mockAuth.signInWithOtp.mockResolvedValue({ data: {}, error: null });
   mockAuth.verifyOtp.mockResolvedValue({ data: { user: { id: 'user-1' } }, error: null });
   mockClutch.me.deleteAccount.mockResolvedValue({ deleted: true });
-  mockClutch.me.accountDeletion.mockResolvedValue({ blockers: NO_BLOCKERS, step_up: stepUp(false) });
+  mockClutch.me.accountDeletion.mockResolvedValue(makeDeletionPreview());
+  mockClutch.me.unregisterDevice.mockResolvedValue({ removed: true });
 });
 
 async function confirmWithPassword() {
@@ -99,10 +94,11 @@ describe('DeleteAccountScreen', () => {
   });
 
   it('shows blockers up front, before asking anyone to sign in again', async () => {
-    mockClutch.me.accountDeletion.mockResolvedValue({
-      blockers: { owned_clubs: [{ club_id: TEST_CLUB_ID, club_name: 'Seventy' }], managed_children: [] },
-      step_up: stepUp(false),
-    });
+    mockClutch.me.accountDeletion.mockResolvedValue(
+      makeDeletionPreview({
+        blockers: { owned_clubs: [{ club_id: TEST_CLUB_ID, club_name: 'Seventy' }], managed_children: [] },
+      }),
+    );
     renderWithProviders(<DeleteAccountScreen />);
 
     expect(await screen.findByText(/You own Seventy/)).toBeTruthy();
@@ -111,7 +107,7 @@ describe('DeleteAccountScreen', () => {
   });
 
   it('deletes without a new sign-in when the session is fresh enough', async () => {
-    mockClutch.me.accountDeletion.mockResolvedValue({ blockers: NO_BLOCKERS, step_up: stepUp(true) });
+    mockClutch.me.accountDeletion.mockResolvedValue(makeDeletionPreview({ step_up: stepUp(true) }));
     renderWithProviders(<DeleteAccountScreen />);
 
     fireEvent.press(await screen.findByLabelText('I understand this permanently deletes my account'));
@@ -161,6 +157,61 @@ describe('DeleteAccountScreen', () => {
 
     await waitFor(() => expect(mockSignOut).toHaveBeenCalled());
     expect(mockClutch.me.deleteAccount).not.toHaveBeenCalled();
+  });
+});
+
+describe('DeleteAccountScreen push and second factor', () => {
+  it('stops push to this install before the delete, while the session still authenticates', async () => {
+    (Notifications.getPermissionsAsync as jest.Mock).mockResolvedValueOnce({ granted: true, canAskAgain: true });
+    renderWithProviders(<DeleteAccountScreen />);
+    await confirmWithPassword();
+
+    await waitFor(() => expect(mockSignOut).toHaveBeenCalled());
+    expect(mockClutch.me.unregisterDevice).toHaveBeenCalledWith('ExponentPushToken[test]', expect.anything());
+    expect(mockClutch.me.unregisterDevice.mock.invocationCallOrder[0]).toBeLessThan(
+      mockClutch.me.deleteAccount.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('offers no step-up that cannot pass for a second-factor account, and points to the website', async () => {
+    mockClutch.me.accountDeletion.mockResolvedValue(
+      makeDeletionPreview({ step_up: stepUp(false, { second_factor_required: true }) }),
+    );
+    mockAuth.getUserIdentities.mockResolvedValue({
+      data: { identities: [{ provider: 'email' }, { provider: 'google' }] },
+      error: null,
+    });
+    renderWithProviders(<DeleteAccountScreen />);
+
+    expect(await screen.findByText(/Club70 website/)).toBeTruthy();
+    expect(screen.queryByLabelText('Password')).toBeNull();
+    expect(screen.queryByLabelText('Email me a code')).toBeNull();
+    expect(screen.queryByLabelText('Delete with Google')).toBeNull();
+  });
+
+  it('drops the methods when a delete reveals a second factor', async () => {
+    mockClutch.me.deleteAccount.mockRejectedValue(
+      clutchError('step_up_required', 403, stepUp(false, { second_factor_required: true })),
+    );
+    renderWithProviders(<DeleteAccountScreen />);
+    await confirmWithPassword();
+
+    expect(await screen.findByText(/Club70 website/)).toBeTruthy();
+    await waitFor(() => expect(screen.queryByLabelText('Password')).toBeNull());
+  });
+
+  it('Check again clears the refused delete and shows what Clutch says now', async () => {
+    mockClutch.me.deleteAccount.mockRejectedValueOnce(
+      clutchError('account_deletion_blocked', 409, { owned_clubs: [], managed_children: [{ link_id: 'l1', name: 'Sam' }] }),
+    );
+    renderWithProviders(<DeleteAccountScreen />);
+    await confirmWithPassword();
+    expect(await screen.findByText(/only guardian of Sam/)).toBeTruthy();
+
+    fireEvent.press(screen.getByLabelText('Check again'));
+
+    expect(await screen.findByLabelText('I understand this permanently deletes my account')).toBeTruthy();
+    expect(screen.queryByText(/only guardian of Sam/)).toBeNull();
   });
 });
 

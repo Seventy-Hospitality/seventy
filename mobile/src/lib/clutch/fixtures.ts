@@ -666,3 +666,115 @@ export function makeGroupInvitation(over: Over<typeof GroupInvitationSchema> = {
     over,
   );
 }
+
+// ─── P2 billing results and P5 deletion preview (account / onboarding) ──────
+
+import {
+  AccountDeletionPreviewSchema,
+  ChangeTierResultSchema,
+  EligibleChangeTierSchema,
+  MembershipConfirmSchema,
+  SetupIntentSchema,
+  SubscribeResultSchema,
+} from './contract.pending';
+
+const SHEET_BUNDLE = {
+  clientSecret: 'pi_sub_secret_abc',
+  intentType: 'payment' as const,
+  customerId: 'cus_123',
+  ephemeralKeySecret: 'ek_123',
+  stripeAccount: 'acct_club',
+  simulated: false,
+};
+
+/** POST /me/membership/subscribe. */
+export function makeSubscribeResult(over: Over<typeof SubscribeResultSchema> = {}) {
+  return build(
+    SubscribeResultSchema,
+    {
+      ...SHEET_BUNDLE,
+      status: 'requires_payment',
+      subscription_id: 'sub_123',
+      attempt_id: 'att_123',
+      tier_id: TIER_ID,
+    } as z.input<typeof SubscribeResultSchema>,
+    over,
+  );
+}
+
+/** POST /me/membership/confirm (membership: the billing view without `subscription`). */
+export function makeMembershipConfirm(over: Over<typeof MembershipConfirmSchema> = {}) {
+  const view = makeBillingMembership();
+  const { subscription: _summary, ...membership } = view.data as MyMembershipBilling;
+  return build(
+    MembershipConfirmSchema,
+    { activated: true, payment_status: 'succeeded', membership } as z.input<typeof MembershipConfirmSchema>,
+    over,
+  );
+}
+
+/** POST /me/membership/change. */
+export function makeChangeTierResult(over: Over<typeof ChangeTierResultSchema> = {}) {
+  return build(
+    ChangeTierResultSchema,
+    {
+      ...SHEET_BUNDLE,
+      clientSecret: 'pi_up_secret_abc',
+      kind: 'upgraded',
+      status: 'requires_payment',
+      effective_at: null,
+    } as z.input<typeof ChangeTierResultSchema>,
+    over,
+  );
+}
+
+/** A row of GET /me/membership/change. */
+export function makeEligibleChangeTier(over: Over<typeof EligibleChangeTierSchema> = {}) {
+  return build(
+    EligibleChangeTierSchema,
+    {
+      id: '70000000-0000-4000-8000-000000000002',
+      name: 'Premium',
+      description: null,
+      price_cents: 14900,
+      currency: 'USD',
+      interval: 'monthly',
+      advance_booking_days: 21,
+      change_type: 'upgrade',
+    } as z.input<typeof EligibleChangeTierSchema>,
+    over,
+  );
+}
+
+/** POST /me/payment-methods/setup-intent. */
+export function makeSetupIntent(over: Over<typeof SetupIntentSchema> = {}) {
+  return build(
+    SetupIntentSchema,
+    {
+      ...SHEET_BUNDLE,
+      clientSecret: 'seti_123_secret_abc',
+      intentType: 'setup',
+      setupIntentId: 'seti_123',
+    } as z.input<typeof SetupIntentSchema>,
+    over,
+  );
+}
+
+/** GET /me/account/deletion (no blockers, step-up not satisfied). */
+export function makeDeletionPreview(over: Over<typeof AccountDeletionPreviewSchema> = {}) {
+  return build(
+    AccountDeletionPreviewSchema,
+    {
+      blockers: { owned_clubs: [], managed_children: [] },
+      step_up: {
+        satisfied: false,
+        reason: 'stale_sign_in',
+        authenticated_at: null,
+        fresh_until: null,
+        max_age_seconds: 300,
+        second_factor_required: false,
+      },
+    } as z.input<typeof AccountDeletionPreviewSchema>,
+    over,
+  );
+}

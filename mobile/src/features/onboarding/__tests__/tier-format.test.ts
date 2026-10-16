@@ -12,7 +12,7 @@ import {
 
 const monthly = makeTier({ id: asTierId('t-month'), interval: 'monthly', sort_order: 2 });
 const yearly = makeTier({ id: asTierId('t-year'), interval: 'yearly', price_cents: 99_000, sort_order: 1 });
-const quarterly = makeTier({ id: asTierId('t-q'), interval: 'quarterly', is_active: false });
+const quarterly = makeTier({ id: asTierId('t-q'), interval: 'quarterly', sort_order: 3 });
 
 describe('tier formatting', () => {
   it('formats Clutch cents in the tier currency without inventing decimals', () => {
@@ -27,25 +27,30 @@ describe('tier formatting', () => {
     expect(intervalSuffix('yearly')).toBe('/ year');
   });
 
-  it('offers only intervals of active tiers, in calendar order, defaulting to yearly', () => {
-    expect(intervalsOffered([yearly, quarterly, monthly])).toEqual(['monthly', 'yearly']);
+  it('offers the intervals of listed tiers, in calendar order, defaulting to yearly', () => {
+    expect(intervalsOffered([yearly, monthly])).toEqual(['monthly', 'yearly']);
+    expect(intervalsOffered([yearly, quarterly, monthly])).toEqual(['monthly', 'quarterly', 'yearly']);
     expect(defaultInterval([monthly, yearly])).toBe('yearly');
     expect(defaultInterval([monthly])).toBe('monthly');
   });
 
-  it('lists active tiers of an interval in the club order', () => {
+  it('lists the tiers of an interval in the club order', () => {
     const second = makeTier({ id: asTierId('t-month-2'), interval: 'monthly', sort_order: 1 });
     expect(tiersForInterval([monthly, second, quarterly], 'monthly').map((t) => t.id)).toEqual([
       't-month-2',
       't-month',
     ]);
-    expect(tiersForInterval([quarterly], 'quarterly')).toEqual([]);
+    expect(tiersForInterval([quarterly], 'yearly')).toEqual([]);
   });
 
-  it('shows string benefits and skips anything else', () => {
-    expect(benefitLines({ benefits: ['Court booking 14 days out', { x: 1 }, '  ', 3] })).toEqual([
-      'Court booking 14 days out',
+  it("states Clutch's booking window and discount as benefits", () => {
+    expect(benefitLines(makeTier({ advance_booking_days: 14, discount_percent: 10 }))).toEqual([
+      'Book courts up to 14 days ahead',
+      '10% off court bookings',
     ]);
-    expect(benefitLines({ benefits: null })).toEqual([]);
+    expect(benefitLines(makeTier({ advance_booking_days: 1, discount_percent: 0 }))).toEqual([
+      'Book courts up to 1 day ahead',
+    ]);
+    expect(benefitLines(makeTier({ advance_booking_days: 0, discount_percent: 0 }))).toEqual([]);
   });
 });

@@ -15,6 +15,14 @@
  * - 500 account_deletion_failed: nothing was deleted; try again.
  * - { deleted: true }: every token is dead; end the local session.
  * The password and code never leave this screen except to GoTrue.
+ *
+ * A second-factor account (step_up.second_factor_required) cannot pass the
+ * step-up in the app (no second-factor check here yet), so no method is
+ * offered: the copy sends the member to the website instead.
+ *
+ * Push: this install's registration is removed right before the step-up and
+ * delete, while the session can still authenticate (after the delete every
+ * token is dead). If the delete does not happen, registration is resumed.
  */
 import { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
@@ -30,6 +38,7 @@ import { colors, radius, spacing, typography } from '../../theme/tokens';
 import { AccountFrame } from './AccountFrame';
 import { identitiesQuery } from './account-data';
 import { blockerSentences, clutchErrorMessage, deletionBlockersFrom, hasDeletionBlockers } from './account-lib';
+import { requestPushResync, unregisterPushForSignOut } from './usePushRegistration';
 import {
   sendStepUpCode,
   StepUpWrongAccountError,
@@ -86,11 +95,16 @@ export function DeleteAccountScreen() {
           />
         </View>
       ) : hasDeletionBlockers(preview.data.blockers) ? (
-        <BlockedView blockers={preview.data.blockers} onCheckAgain={() => void preview.refetch()} />
+        <BlockedView
+          blockers={preview.data.blockers}
+          checking={preview.isFetching}
+          onCheckAgain={() => void preview.refetch()}
+        />
       ) : (
         <DeleteFlow
           methods={stepUpMethods(identities.data)}
           stepUpSatisfied={preview.data.step_up.satisfied}
+          secondFactorRequired={preview.data.step_up.second_factor_required}
           onStateChanged={() => void preview.refetch()}
         />
       )}
@@ -98,7 +112,15 @@ export function DeleteAccountScreen() {
   );
 }
 
-function BlockedView({ blockers, onCheckAgain }: { blockers: DeletionBlockers; onCheckAgain: () => void }) {
+function BlockedView({
+  blockers,
+  checking = false,
+  onCheckAgain,
+}: {
+  blockers: DeletionBlockers;
+  checking?: boolean;
+  onCheckAgain: () => void;
+}) {
   const router = useRouter();
   return (
     <View style={[styles.box, styles.blocked]} accessibilityRole="alert">
@@ -110,27 +132,29 @@ function BlockedView({ blockers, onCheckAgain }: { blockers: DeletionBlockers; o
         </View>
       ))}
       <Text style={styles.muted}>Once that is resolved you can try again. Contact the club if you need help.</Text>
-      <PrimaryButton label="Check again" variant="secondary" onPress={onCheckAgain} />
+      <PrimaryButton label="Check again" variant="secondary" loading={checking} onPress={onCheckAgain} />
       <PrimaryButton label="Back to preferences" variant="ghost" onPress={() => router.replace('/account/preferences')} />
     </View>
   );
 }
 
-function stepUpMessage(details: Record<string, unknown> | undefined): string {
+const SECOND_FACTOR_COPY =
+  'Your account uses a second sign-in factor, which this app cannot check yet. Delete your account from the Club70 website instead.';
+
+function needsSecondFactor(details: Record<string, unknown> | undefined): boolean {
   const state = StepUpStateSchema.safeParse(details);
-  if (state.success && state.data.second_factor_required) {
-    return 'Your account uses a second sign-in factor, which this app cannot check yet. Delete your account from the Club70 website instead.';
-  }
-  return 'For your security, confirm it is you again, then delete straight away.';
+  return state.success && state.data.second_factor_required;
 }
 
 function DeleteFlow({
   methods,
   stepUpSatisfied,
+  secondFactorRequired,
   onStateChanged,
 }: {
   methods: StepUpMethod[];
   stepUpSatisfied: boolean;
+  secondFactorRequired: boolean;
   onStateChanged: () => void;
 }) {
   const router = useRouter();
@@ -143,9 +167,14 @@ function DeleteFlow({
   const [codeSent, setCodeSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [blockers, setBlockers] = useState<DeletionBlockers | null>(null);
+  /** Set when a delete answered step_up_required with a second factor. */
+  const [secondFactorSeen, setSecondFactorSeen] = useState(false);
 
-  const hasEmail = methods.some((m) => m.kind === 'password');
-  const providers = methods.flatMap((m) => (m.kind === 'federated' ? [m.provider] : []));
+  // No in-app step-up can pass a second factor: offer none rather than ones that will fail.
+  const secondFactor = !stepUpSatisfied && (secondFactorRequired || secondFactorSeen);
+  const offered = secondFactor ? [] : methods;
+  const hasEmail = offered.some((m) => m.kind === 'password');
+  const providers = offered.flatMap((m) => (m.kind === 'federated' ? [m.provider] : []));
 
   const sendCode = useMutation({
     mutationFn: () => sendStepUpCode(email ?? ''),
@@ -159,6 +188,9 @@ function DeleteFlow({
   const run = useMutation({
     mutationFn: async (stepUp: () => Promise<void>) => {
       if (!userId) throw new Error('Not signed in.');
+      // This is a sign-out path: stop push to this install while the session
+      // can still say so (once the account is deleted every token is dead).
+      await unregisterPushForSignOut();
       await stepUp();
       return deleteKey.run('delete-account', (k) => clutch.me.deleteAccount({ idempotencyKey: k }));
     },
@@ -171,17 +203,25 @@ function DeleteFlow({
       }
     },
     onError: async (err) => {
-      if (err instanceof OAuthCancelledError) return;
       if (err instanceof StepUpWrongAccountError) {
         // The session now belongs to that other login: leave it rather than act as it.
+        await unregisterPushForSignOut();
         await signOut();
         router.replace('/auth/sign-in');
         return;
       }
+      // The account stays and so does the session: push resumes.
+      requestPushResync();
+      if (err instanceof OAuthCancelledError) return;
       if (isClutchError(err)) {
         switch (err.code) {
           case 'step_up_required':
-            setError(stepUpMessage(err.details));
+            if (needsSecondFactor(err.details)) {
+              setSecondFactorSeen(true);
+              setError(SECOND_FACTOR_COPY);
+            } else {
+              setError('For your security, confirm it is you again, then delete straight away.');
+            }
             onStateChanged();
             return;
           case 'account_deletion_blocked': {
@@ -210,7 +250,17 @@ function DeleteFlow({
   });
 
   if (blockers !== null) {
-    return <BlockedView blockers={blockers} onCheckAgain={onStateChanged} />;
+    return (
+      <BlockedView
+        blockers={blockers}
+        onCheckAgain={() => {
+          // Drop what the refused delete said and show what Clutch says now.
+          setBlockers(null);
+          setError(null);
+          onStateChanged();
+        }}
+      />
+    );
   }
 
   const busy = run.isPending;
@@ -230,10 +280,12 @@ function DeleteFlow({
       <Text style={styles.muted}>
         {stepUpSatisfied
           ? 'You signed in recently, so your account is deleted as soon as you confirm.'
-          : 'Confirm it is you. Your account is deleted as soon as you do.'}
+          : secondFactor
+            ? SECOND_FACTOR_COPY
+            : 'Confirm it is you. Your account is deleted as soon as you do.'}
       </Text>
 
-      {error ? (
+      {error && !(secondFactor && error === SECOND_FACTOR_COPY) ? (
         <Text style={styles.error} accessibilityRole="alert">
           {error}
         </Text>

@@ -1,37 +1,42 @@
 /**
  * Payment methods: the cards Clutch holds for this member at the club
- * (GET /me/payment-methods), make one the default (PATCH), remove one
- * (DELETE; Clutch may refuse to remove the card a live subscription bills,
- * and its explanation is shown), and add a card:
+ * (GET /me/payment-methods, on main today). Changing them is Clutch P2
+ * (capabilities.nativePayments); without it the list is shown and the
+ * actions say they are not in the app yet:
  *
- *   POST /me/payment-methods/setup-intent (PENDING P2) -> SetupIntent sheet
- *   on the club's connected account -> POST /me/payment-methods
- *   {setup_intent_id} (PENDING P2): Clutch retrieves the SetupIntent and
- *   stores the card it holds -> re-read the list.
+ * - make one the default (PATCH), remove one (DELETE; Clutch refuses the card
+ *   a live subscription bills with card_in_use_by_subscription);
+ * - add a card: POST /me/payment-methods/setup-intent -> SetupIntent sheet on
+ *   the club's connected account -> POST /me/payment-methods
+ *   {setup_intent_id}: Clutch retrieves the SetupIntent and stores the card
+ *   it holds -> re-read the list.
  *
  * A completed sheet is not a saved card: only Clutch's save is. Simulated
- * deployments show no sheet. Card data never touches our code (SAQ-A).
+ * deployments show no sheet (Clutch still saves by the intent id). Card data
+ * never touches our code (SAQ-A).
  */
 import { useState } from 'react';
 import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import {
+  bundleToSheet,
   clutch,
-  toSheetIntent,
   useMutationKey,
   type CardId,
-  type SavedPaymentMethod,
+  type SavedCard,
+  type SetupIntent,
 } from '../../lib/clutch';
 import { paymentMethodsQuery, queryKeys } from '../../lib/queries';
 import { usePresentConnectedSheet } from '../../lib/stripe';
-import { Badge, EmptyStateView, PrimaryButton, Skeleton, useToast } from '../../components';
+import { Badge, EmptyStateView, FeatureUnavailable, PrimaryButton, Skeleton, useToast } from '../../components';
 import { colors, fonts, radius, spacing, typography } from '../../theme/tokens';
 import { AccountFrame } from './AccountFrame';
-import { clutchErrorMessage, paymentMethodLabel } from './account-lib';
+import { billingErrorMessage, paymentMethodLabel } from './account-lib';
 
 export function PaymentMethodScreen() {
   const methods = useQuery(paymentMethodsQuery);
+  const canManage = clutch.capabilities.nativePayments;
 
   return (
     <AccountFrame
@@ -56,23 +61,31 @@ export function PaymentMethodScreen() {
           {methods.data.length === 0 ? (
             <EmptyStateView
               title="No payment methods"
-              description="Add a card to pay for your membership and bookings."
+              description={canManage ? 'Add a card to pay for your membership and bookings.' : 'You have no cards on file at the club.'}
             />
           ) : (
             <View style={styles.card}>
               {methods.data.map((method, index) => (
-                <MethodRow key={method.id} method={method} first={index === 0} />
+                <MethodRow key={method.id} method={method} first={index === 0} canManage={canManage} />
               ))}
             </View>
           )}
-          <AddCard />
+          {canManage ? (
+            <AddCard />
+          ) : (
+            <FeatureUnavailable
+              capability="nativePayments"
+              title="Managing cards"
+              description="Adding, removing or changing your default card is not available in the app yet. The club front desk can help meanwhile."
+            />
+          )}
         </>
       )}
     </AccountFrame>
   );
 }
 
-function MethodRow({ method, first }: { method: SavedPaymentMethod; first: boolean }) {
+function MethodRow({ method, first, canManage }: { method: SavedCard; first: boolean; canManage: boolean }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const defaultKey = useMutationKey();
@@ -87,7 +100,7 @@ function MethodRow({ method, first }: { method: SavedPaymentMethod; first: boole
     mutationFn: (cardId: CardId) =>
       defaultKey.run(cardId, (k) => clutch.paymentMethods.setDefault(cardId, { idempotencyKey: k })),
     onSuccess: refresh,
-    onError: (err) => toast({ variant: 'error', message: clutchErrorMessage(err, 'We could not change your default card.') }),
+    onError: (err) => toast({ variant: 'error', message: billingErrorMessage(err, 'We could not change your default card.') }),
   });
 
   const remove = useMutation({
@@ -97,8 +110,8 @@ function MethodRow({ method, first }: { method: SavedPaymentMethod; first: boole
       refresh();
       toast({ variant: 'success', message: 'Card removed.' });
     },
-    // Clutch refuses to remove the card a live subscription bills: its reason is shown as is.
-    onError: (err) => toast({ variant: 'error', message: clutchErrorMessage(err, 'We could not remove that card.') }),
+    // Clutch refuses to remove the card a live subscription bills (card_in_use_by_subscription).
+    onError: (err) => toast({ variant: 'error', message: billingErrorMessage(err, 'We could not remove that card.') }),
   });
 
   const label = paymentMethodLabel(method);
@@ -115,6 +128,7 @@ function MethodRow({ method, first }: { method: SavedPaymentMethod; first: boole
         <Text style={styles.rowLabel}>{label}</Text>
         {method.is_default ? <Badge label="Default" variant="accent" /> : null}
       </View>
+      {canManage ? (
       <View style={styles.rowActions}>
         {!method.is_default ? (
           <TextAction
@@ -132,6 +146,7 @@ function MethodRow({ method, first }: { method: SavedPaymentMethod; first: boole
           onPress={confirmRemove}
         />
       </View>
+      ) : null}
     </View>
   );
 }
@@ -191,7 +206,7 @@ function AddCard() {
       await refreshList();
     } catch (err) {
       setUnsaved(setupIntentId);
-      setError(clutchErrorMessage(err, 'Your card was accepted, but the club could not save it yet. Try again.'));
+      setError(billingErrorMessage(err, 'Your card was accepted, but the club could not save it yet. Try again.'));
     }
   }
 
@@ -205,23 +220,23 @@ function AddCard() {
         await saveWithClutch(unsaved);
         return;
       }
-      let bundle;
+      let bundle: SetupIntent;
       try {
         bundle = await setupKey.run('setup-intent', (k) => clutch.paymentMethods.setupIntent({ idempotencyKey: k }));
       } catch (err) {
-        setError(clutchErrorMessage(err, 'We could not start adding a card. Please try again.'));
+        setError(billingErrorMessage(err, 'We could not start adding a card. Please try again.'));
         return;
       }
-      const intent = toSheetIntent(bundle);
+      const intent = bundleToSheet(bundle, bundle.setupIntentId);
       if (intent.mode === 'simulated') {
-        // Simulated deployments have no Stripe: Clutch handles the card itself.
-        setNotice('Cards are simulated in this environment: no card details are needed.');
-        await refreshList();
+        // Simulated deployments have no Stripe sheet; Clutch still stores the card by the intent id.
+        await saveWithClutch(bundle.setupIntentId);
         return;
       }
       const sheet = await presentSheet(intent, { merchantDisplayName: 'Club70' });
       switch (sheet.status) {
         case 'canceled':
+        case 'busy':
           return;
         case 'unconfigured':
           setError('Payments are not configured in this build.');
@@ -230,7 +245,7 @@ function AddCard() {
           setError(sheet.message || 'Your card could not be added. Please try again.');
           return;
         case 'completed':
-          await saveWithClutch(sheet.intentId);
+          await saveWithClutch(bundle.setupIntentId);
           return;
       }
     } finally {

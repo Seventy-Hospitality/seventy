@@ -15,7 +15,12 @@ export { ChangeMembershipScreen } from './ChangeMembershipScreen';
 export { DeleteAccountScreen } from './DeleteAccountScreen';
 export { SignInMethodsScreen } from './SignInMethodsScreen';
 
-export { PushRegistrationSync, usePushRegistration } from './usePushRegistration';
+export {
+  PushRegistrationSync,
+  requestPushResync,
+  unregisterPushForSignOut,
+  usePushRegistration,
+} from './usePushRegistration';
 export { useSignOut } from './useSignOut';
 export { refreshMembershipState } from './account-data';
 

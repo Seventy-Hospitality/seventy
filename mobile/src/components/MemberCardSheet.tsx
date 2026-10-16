@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { clutch, isClutchError } from '../lib/clutch';
 import { queryKeys } from '../lib/queries';
 import { colors, fonts, radius, spacing } from '../theme/tokens';
+import { FeatureUnavailable } from './FeatureUnavailable';
 import { PrimaryButton } from './PrimaryButton';
 import { QRCode } from './QRCode';
 import { Sheet } from './Sheet';
@@ -80,7 +81,15 @@ export function MemberCardSheet({ open, onClose, memberName, detail }: MemberCar
           <Text style={styles.brandUrl}>CLUB70.COM</Text>
         </View>
 
-        {open ? <MemberCardQr memberName={memberName} /> : null}
+        {open && clutch.capabilities.checkinToken ? <MemberCardQr memberName={memberName} /> : null}
+        {open && !clutch.capabilities.checkinToken ? (
+          <FeatureUnavailable
+            capability="checkinToken"
+            title="Check-in code"
+            description="Check-in codes are not available in the app yet. Give your name at the desk."
+            compact
+          />
+        ) : null}
 
         <Text style={styles.name}>{memberName.toUpperCase()}</Text>
         {detail ? <Text style={styles.detail}>{detail}</Text> : null}

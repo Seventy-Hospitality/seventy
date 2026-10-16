@@ -58,14 +58,9 @@ export function formatCentsExact(cents: number, currency: string): string {
   }).format(cents / 100);
 }
 
-/** Active tiers only: an inactive tier cannot be subscribed to. */
-export function activeTiers(tiers: MembershipTier[]): MembershipTier[] {
-  return tiers.filter((tier) => tier.is_active);
-}
-
-/** Billing intervals the club offers, in calendar order. */
+/** Billing intervals the club offers, in calendar order. Clutch lists only tiers on offer. */
 export function intervalsOffered(tiers: MembershipTier[]): BillingInterval[] {
-  const present = new Set(activeTiers(tiers).map((tier) => tier.interval));
+  const present = new Set(tiers.map((tier) => tier.interval));
   return INTERVAL_ORDER.filter((interval) => present.has(interval));
 }
 
@@ -75,16 +70,18 @@ export function defaultInterval(tiers: MembershipTier[]): BillingInterval {
   return offered.includes('yearly') ? 'yearly' : (offered[0] ?? 'monthly');
 }
 
-/** Active tiers billed at `interval`, in the club's own order. */
+/** Tiers billed at `interval`, in the club's own order. */
 export function tiersForInterval(tiers: MembershipTier[], interval: BillingInterval): MembershipTier[] {
-  return activeTiers(tiers)
-    .filter((tier) => tier.interval === interval)
-    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+  return tiers.filter((tier) => tier.interval === interval).sort((a, b) => a.sort_order - b.sort_order);
 }
 
-/** The tier's benefit lines (Clutch stores free-form JSON; strings are shown). */
-export function benefitLines(tier: Pick<MembershipTier, 'benefits'>): string[] {
-  return (tier.benefits ?? []).filter(
-    (item): item is string => typeof item === 'string' && item.trim().length > 0,
-  );
+/** What the tier gives, in Clutch's own numbers (booking window, booking discount). */
+export function benefitLines(tier: Pick<MembershipTier, 'advance_booking_days' | 'discount_percent'>): string[] {
+  const lines: string[] = [];
+  if (tier.advance_booking_days > 0) {
+    const days = tier.advance_booking_days === 1 ? '1 day' : `${tier.advance_booking_days} days`;
+    lines.push(`Book courts up to ${days} ahead`);
+  }
+  if (tier.discount_percent > 0) lines.push(`${tier.discount_percent}% off court bookings`);
+  return lines;
 }

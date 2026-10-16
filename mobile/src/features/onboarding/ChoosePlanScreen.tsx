@@ -1,17 +1,23 @@
 /**
  * Onboarding: choose a tier (Figma onboarding/choose-membership 68:1559).
  * A billing-interval toggle when the club offers more than one, one card per
- * active tier from GET /clubs/{club}/membership-tiers, Continue to checkout.
+ * tier GET /clubs/{club}/membership-tiers lists, Continue to checkout.
  * Prices are the tiers' own price_cents, formatted.
+ *
+ * Paying needs Clutch P2 (capabilities.nativePayments). Without it the tiers
+ * are still shown, and in place of Continue the member is told paying is not
+ * in the app yet and how to become a member meanwhile (at the club), with a
+ * re-check for when the club has added them.
  */
 import { useState } from 'react';
 import { useRouter } from 'expo-router';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import type { BillingInterval, MembershipTier, TierId } from '../../lib/clutch';
-import { tiersQuery } from '../../lib/queries';
+import { clutch, type BillingInterval, type MembershipTier, type TierId } from '../../lib/clutch';
+import { queryKeys, tiersQuery } from '../../lib/queries';
 import { AppScreen } from '../../components/AppScreen';
+import { FeatureUnavailable } from '../../components/FeatureUnavailable';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { SegmentedControl } from '../../components/SegmentedControl';
 import { Skeleton } from '../../components/Skeleton';
@@ -35,6 +41,15 @@ export function ChoosePlanScreen() {
   const [chosenInterval, setChosenInterval] = useState<BillingInterval | null>(null);
   const [chosenTier, setChosenTier] = useState<TierId | null>(null);
   const signOutMutation = useMutation({ mutationFn: signOut });
+  const queryClient = useQueryClient();
+  const recheck = useMutation({
+    mutationFn: () =>
+      Promise.all([
+        queryClient.refetchQueries({ queryKey: queryKeys.me, exact: true }),
+        queryClient.refetchQueries({ queryKey: queryKeys.membership, exact: true }),
+      ]),
+  });
+  const canPay = clutch.capabilities.nativePayments;
 
   const all = tiers.data?.tiers ?? [];
   const intervals = intervalsOffered(all);
@@ -92,15 +107,31 @@ export function ChoosePlanScreen() {
           </View>
 
           <View style={styles.footer}>
-            <PrimaryButton
-              label="Continue"
-              disabled={!selected}
-              onPress={() => {
-                if (selected) {
-                  router.push({ pathname: '/onboarding/checkout', params: { tier: selected.id } });
-                }
-              }}
-            />
+            {canPay ? (
+              <PrimaryButton
+                label="Continue"
+                disabled={!selected}
+                onPress={() => {
+                  if (selected) {
+                    router.push({ pathname: '/onboarding/checkout', params: { tier: selected.id } });
+                  }
+                }}
+              />
+            ) : (
+              <>
+                <FeatureUnavailable
+                  capability="nativePayments"
+                  title="Joining in the app"
+                  description="Paying for a membership is not available in the app yet. Become a member at the Club70 front desk; once the club has added your membership, check again."
+                />
+                <PrimaryButton
+                  label="Check again"
+                  variant="secondary"
+                  loading={recheck.isPending}
+                  onPress={() => recheck.mutate()}
+                />
+              </>
+            )}
             <Pressable
               accessibilityRole="button"
               disabled={signOutMutation.isPending}
@@ -110,6 +141,16 @@ export function ChoosePlanScreen() {
             </Pressable>
           </View>
         </>
+      )}
+
+      {!(tiers.isSuccess && intervals.length > 0) && (
+        <Pressable
+          accessibilityRole="button"
+          disabled={signOutMutation.isPending}
+          onPress={() => signOutMutation.mutate()}
+        >
+          <Text style={styles.signOut}>Sign out</Text>
+        </Pressable>
       )}
     </AppScreen>
   );

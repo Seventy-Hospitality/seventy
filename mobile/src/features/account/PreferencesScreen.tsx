@@ -12,18 +12,18 @@ import { openContactEmail, openLegalPage } from '../../lib/links';
 import { useRouter } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import Constants from 'expo-constants';
-import {
-  clutch,
-  useMutationKey,
-  type NotificationCategory,
-  type NotificationChannel,
-  type NotificationPreferences,
-} from '../../lib/clutch';
+import { clutch, useMutationKey, type NotificationPreferences } from '../../lib/clutch';
 import { preferencesQuery } from '../../lib/queries';
 import { PrimaryButton, Skeleton, useToast } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
 import { AccountFrame } from './AccountFrame';
-import { SHOWN_CATEGORIES, SHOWN_CHANNELS, withToggle } from './preferences';
+import {
+  SHOWN_CATEGORIES,
+  SHOWN_CHANNELS,
+  withToggle,
+  type NotificationCategory,
+  type NotificationChannel,
+} from './preferences';
 import { SettingsGroup, SettingsRow } from './SettingsList';
 import { usePushRegistration } from './usePushRegistration';
 

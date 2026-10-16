@@ -9,7 +9,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
-import type { MySubscription, PaymentHistoryItem, SavedPaymentMethod } from '../../lib/clutch';
+import type { Payment, SavedCard } from '../../lib/clutch';
 import { useClub } from '../../lib/club';
 import { membershipQuery, paymentMethodsQuery } from '../../lib/queries';
 import { EmptyStateView, PrimaryButton, Skeleton } from '../../components';
@@ -17,9 +17,6 @@ import { colors, fonts, radius, spacing, typography } from '../../theme/tokens';
 import { AccountFrame } from './AccountFrame';
 import { paymentsInfiniteQuery } from './account-data';
 import {
-  canCancel,
-  canChangeTier,
-  canResume,
   formatCents,
   instantDateLabel,
   intervalNoun,
@@ -27,8 +24,9 @@ import {
   paymentMethodLabel,
   paymentStatusLabel,
   paymentTitle,
+  planSummary,
   refundLabel,
-  subscriptionStatusLine,
+  type PlanSummary,
 } from './account-lib';
 
 export function BillingScreen() {
@@ -61,10 +59,11 @@ export function BillingScreen() {
           <ErrorBox message="We could not load your membership." onRetry={() => void membership.refetch()} />
         ) : (
           <MembershipCard
-            subscription={membership.data.subscription}
+            plan={planSummary(membership.data, timezone)}
             defaultMethod={methods.data?.find((m) => m.is_default) ?? null}
             methodsLoading={methods.isPending}
-            timezone={timezone}
+            methodsFailed={methods.isError}
+            onRetryMethods={() => void methods.refetch()}
           />
         )}
       </View>
@@ -117,20 +116,21 @@ function ErrorBox({ message, onRetry }: { message: string; onRetry: () => void }
 }
 
 function MembershipCard({
-  subscription,
+  plan,
   defaultMethod,
   methodsLoading,
-  timezone,
+  methodsFailed,
+  onRetryMethods,
 }: {
-  subscription: MySubscription | null;
-  defaultMethod: SavedPaymentMethod | null;
+  plan: PlanSummary | null;
+  defaultMethod: SavedCard | null;
   methodsLoading: boolean;
-  timezone?: string;
+  methodsFailed: boolean;
+  onRetryMethods: () => void;
 }) {
   const router = useRouter();
 
-  if (!subscription) {
-    // Uncertain until Clutch P3 (a failed read looks the same): describe only.
+  if (!plan) {
     return (
       <View style={styles.card}>
         <Text style={styles.noMembershipTitle}>No membership tier on file.</Text>
@@ -139,54 +139,72 @@ function MembershipCard({
     );
   }
 
-  const manage = canChangeTier(subscription) || canCancel(subscription) || canResume(subscription);
-
   return (
     <View style={styles.card}>
       <View style={styles.planRow}>
-        <Text style={styles.planName}>{subscription.tier_name}</Text>
-        <Text style={styles.planPrice}>
-          {formatCents(subscription.price_cents, subscription.currency)}
-          <Text style={styles.planPeriod}> / {intervalNoun(subscription.interval)}</Text>
-        </Text>
+        <Text style={styles.planName}>{plan.name}</Text>
+        {plan.price ? (
+          <Text style={styles.planPrice}>
+            {formatCents(plan.price.cents, plan.price.currency)}
+            <Text style={styles.planPeriod}> / {intervalNoun(plan.price.interval)}</Text>
+          </Text>
+        ) : null}
       </View>
-      <Text style={styles.planStatus}>{subscriptionStatusLine(subscription, timezone)}</Text>
+      <Text style={styles.planStatus}>{plan.statusLine}</Text>
 
       <View style={styles.divider} />
 
-      <View style={styles.paymentRow}>
-        <Ionicons name="card-outline" size={18} color={colors.textMuted} />
-        <Text style={styles.cardText} numberOfLines={1}>
-          {methodsLoading ? 'Loading payment method' : defaultMethod ? paymentMethodLabel(defaultMethod) : 'No payment method on file'}
-        </Text>
-        <Text
-          accessibilityRole="button"
-          accessibilityLabel={defaultMethod ? 'Manage payment methods' : 'Add payment method'}
-          onPress={() => router.push('/account/payment-method')}
-          style={styles.paymentAction}
-        >
-          {defaultMethod ? 'Manage' : 'Add'}
-        </Text>
-      </View>
-
-      {manage ? (
-        <>
-          <View style={styles.divider} />
+      {methodsFailed ? (
+        // A failed read is not "no card": say so and offer the re-read.
+        <View style={styles.paymentRow} accessibilityRole="alert">
+          <Ionicons name="alert-circle-outline" size={18} color={colors.textMuted} />
+          <Text style={styles.cardText}>We could not load your payment method.</Text>
           <Text
             accessibilityRole="button"
-            accessibilityLabel="Manage membership"
-            onPress={() => router.push('/account/change-membership')}
-            style={styles.changeRow}
+            accessibilityLabel="Try loading your payment method again"
+            onPress={onRetryMethods}
+            style={styles.paymentAction}
           >
-            Manage membership{'  '}›
+            Try again
           </Text>
-        </>
-      ) : null}
+        </View>
+      ) : (
+        <View style={styles.paymentRow}>
+          <Ionicons name="card-outline" size={18} color={colors.textMuted} />
+          <Text style={styles.cardText} numberOfLines={1}>
+            {methodsLoading
+              ? 'Loading payment method'
+              : defaultMethod
+                ? paymentMethodLabel(defaultMethod)
+                : 'No payment method on file'}
+          </Text>
+          {methodsLoading ? null : (
+            <Text
+              accessibilityRole="button"
+              accessibilityLabel={defaultMethod ? 'Manage payment methods' : 'Payment methods'}
+              onPress={() => router.push('/account/payment-method')}
+              style={styles.paymentAction}
+            >
+              {defaultMethod ? 'Manage' : 'View'}
+            </Text>
+          )}
+        </View>
+      )}
+
+      <View style={styles.divider} />
+      <Text
+        accessibilityRole="button"
+        accessibilityLabel="Manage membership"
+        onPress={() => router.push('/account/change-membership')}
+        style={styles.changeRow}
+      >
+        Manage membership{'  '}›
+      </Text>
     </View>
   );
 }
 
-function PaymentRow({ item, timezone, first }: { item: PaymentHistoryItem; timezone?: string; first: boolean }) {
+function PaymentRow({ item, timezone, first }: { item: Payment; timezone?: string; first: boolean }) {
   const status = paymentStatusLabel(item.status);
   const inactive = item.status === 'failed';
   const refund = refundLabel(item);

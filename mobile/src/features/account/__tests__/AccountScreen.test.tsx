@@ -2,7 +2,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react-native';
 import * as Notifications from 'expo-notifications';
 import type { MockClutch } from '../../../lib/clutch/testing';
 import { clutchError } from '../../../lib/clutch/testing';
-import { makeClub, makeMe, makeProfile, makeSubscription } from '../../../lib/clutch/fixtures';
+import { makeClub, makeMe, makeProfile, makeStandingMembership } from '../../../lib/clutch/fixtures';
 import { AccountScreen } from '../AccountScreen';
 import { renderWithProviders } from './render-account';
 
@@ -28,8 +28,8 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockClutch.me.get.mockResolvedValue(makeMe({ profile: makeProfile({ username: 'alexm' }) }));
   mockClutch.club.verify.mockResolvedValue(makeClub());
-  mockClutch.membership.get.mockResolvedValue({ membership: { role: 'player' }, subscription: makeSubscription() });
-  mockClutch.me.unregisterDevice.mockResolvedValue(null);
+  mockClutch.membership.get.mockResolvedValue(makeStandingMembership());
+  mockClutch.me.unregisterDevice.mockResolvedValue({ removed: true });
 });
 
 describe('AccountScreen', () => {
@@ -41,6 +41,12 @@ describe('AccountScreen', () => {
     expect(screen.getByText('alex@example.com')).toBeTruthy();
     expect(await screen.findByText('Renews Nov 15, 2026')).toBeTruthy();
     expect(screen.queryByText('Courts booked')).toBeNull();
+  });
+
+  it('treats an empty Clutch name as no name', async () => {
+    mockClutch.me.get.mockResolvedValue(makeMe({ profile: makeProfile({ full_name: '', username: null }) }));
+    renderWithProviders(<AccountScreen />);
+    expect(await screen.findByText('alex')).toBeTruthy();
   });
 
   it('removes the push registration before signing out', async () => {

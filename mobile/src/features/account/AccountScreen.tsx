@@ -14,12 +14,12 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
-import type { MySubscription, Profile } from '../../lib/clutch';
+import type { Profile } from '../../lib/clutch';
 import { useClub } from '../../lib/club';
 import { meQuery, membershipQuery } from '../../lib/queries';
 import { AppScreen, Avatar, MemberCardSheet, PrimaryButton, Skeleton, useToast } from '../../components';
 import { colors, fonts, radius, spacing, typography } from '../../theme/tokens';
-import { profileDisplayName, subscriptionStatusLine } from './account-lib';
+import { planSummary, profileDisplayName, type PlanSummary } from './account-lib';
 import { ProfileEditor } from './ProfileEditor';
 import { SettingsGroup, SettingsRow } from './SettingsList';
 import { useAvatarUpload } from './useAvatarUpload';
@@ -65,7 +65,7 @@ function AccountView({ profile }: { profile: Profile }) {
   const [cardOpen, setCardOpen] = useState(false);
 
   const name = profileDisplayName(profile);
-  const subscription = membership.data?.subscription ?? null;
+  const plan = membership.data ? planSummary(membership.data, club.data?.timezone) : null;
 
   const signOutMutation = useMutation({
     mutationFn: signOut,
@@ -114,8 +114,7 @@ function AccountView({ profile }: { profile: Profile }) {
       <MembershipSummary
         loading={membership.isPending}
         failed={membership.isError}
-        subscription={subscription}
-        timezone={club.data?.timezone}
+        plan={plan}
         onRetry={() => void membership.refetch()}
         onOpen={() => router.push('/account/change-membership')}
       />
@@ -138,7 +137,7 @@ function AccountView({ profile }: { profile: Profile }) {
         open={cardOpen}
         onClose={() => setCardOpen(false)}
         memberName={name}
-        detail={subscription?.tier_name ?? null}
+        detail={plan?.name ?? null}
       />
     </>
   );
@@ -147,15 +146,13 @@ function AccountView({ profile }: { profile: Profile }) {
 function MembershipSummary({
   loading,
   failed,
-  subscription,
-  timezone,
+  plan,
   onRetry,
   onOpen,
 }: {
   loading: boolean;
   failed: boolean;
-  subscription: MySubscription | null;
-  timezone?: string;
+  plan: PlanSummary | null;
   onRetry: () => void;
   onOpen: () => void;
 }) {
@@ -168,9 +165,7 @@ function MembershipSummary({
       </View>
     );
   }
-  if (!subscription) {
-    // Uncertain until Clutch P3 (a failed read looks the same), so this only
-    // describes, it never offers anything that moves money.
+  if (!plan) {
     return (
       <View style={styles.membershipCard}>
         <Text style={styles.membershipTier}>No membership tier</Text>
@@ -181,13 +176,13 @@ function MembershipSummary({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`${subscription.tier_name} membership. Manage membership`}
+      accessibilityLabel={`${plan.name} membership. Manage membership`}
       onPress={onOpen}
       style={({ pressed }) => [styles.membershipCard, pressed ? styles.pressed : null]}
     >
       <View style={styles.membershipText}>
-        <Text style={styles.membershipTier}>{subscription.tier_name}</Text>
-        <Text style={styles.subtle}>{subscriptionStatusLine(subscription, timezone)}</Text>
+        <Text style={styles.membershipTier}>{plan.name}</Text>
+        <Text style={styles.subtle}>{plan.statusLine}</Text>
       </View>
       <Ionicons name="chevron-forward" size={18} color={colors.textSubtle} />
     </Pressable>

@@ -1,20 +1,22 @@
 /**
- * Onboarding checkout (Figma onboarding/checkout 26:841 / 32:569).
+ * Onboarding checkout (Figma onboarding/checkout 26:841 / 32:569). Clutch P2
+ * (capabilities.nativePayments); without it the screen says paying is not in
+ * the app yet and never calls a P2 route.
  *
- *  1. POST /me/membership/subscribe {tier, terms_version} (PENDING P2) starts
- *     a subscription attempt, or reuses the incomplete one for this tier, and
- *     returns its PaymentSheet bundle. A $0 or trial tier returns a SetupIntent
- *     (intentType 'setup') so a card is saved for later.
+ *  1. POST /me/membership/subscribe {tier, terms_version} starts a
+ *     subscription attempt (or reuses the pending one for this tier) and
+ *     answers its PaymentSheet bundle with a `status`: `active` (nothing to
+ *     pay), `requires_payment`, or `requires_setup` (a trial: save a card).
  *  2. Stripe mode: presentConnectedSheet on the club's connected account.
  *     Simulated mode: no sheet at all.
- *  3. POST /me/membership/confirm (PENDING P2) makes Clutch re-read Stripe
- *     through its one state function; then GET /me/membership is re-read and
- *     the outcome is decided from Clutch's subscription, never from the sheet.
- *     A charge still clearing parks in a "processing" hold with a re-check
- *     (re-checking reads, it never charges again).
+ *  3. POST /me/membership/confirm makes Clutch ask Stripe now; its answer
+ *     ({activated, payment_status}) decides, never the sheet. If confirm
+ *     cannot answer, GET /me/membership is re-read and entitlement() decides.
+ *     A charge still clearing parks in "processing" with a re-check
+ *     (re-checking asks, it never charges again).
  *
- * Resume: with no ?tier param, an incomplete attempt (P2 subscription_status
- * 'incomplete') is resumed for its tier.
+ * Resume: with no ?tier param, the pending attempt (billing.pending_attempt)
+ * is resumed for its tier.
  */
 import { useState, type ReactNode } from 'react';
 import { openLegalPage } from '../../lib/links';
@@ -23,61 +25,41 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
+  bundleToSheet,
   clutch,
   hasCode,
   isClutchError,
-  toSheetIntent,
   useMutationKey,
   type MembershipTier,
-  type MySubscription,
-  type TierId,
+  type MembershipView,
+  type SubscribeResult,
 } from '../../lib/clutch';
 import { membershipQuery, queryKeys, tiersQuery } from '../../lib/queries';
 import { usePresentConnectedSheet } from '../../lib/stripe';
 import { AppScreen } from '../../components/AppScreen';
 import { Checkbox } from '../../components/Checkbox';
+import { FeatureUnavailable } from '../../components/FeatureUnavailable';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { Skeleton } from '../../components/Skeleton';
 import { colors, fonts, radius, spacing, typography } from '../../theme/tokens';
-import { billingState, checkoutOutcome, TERMS_VERSION } from './onboarding';
+import { confirmOutcome, TERMS_VERSION, viewOutcome, type CheckoutOutcome } from './onboarding';
 import { formatCentsExact, intervalNoun } from './tier-format';
 
 /** What the summary and subscribe need. */
-export interface CheckoutTier {
-  id: TierId;
-  name: string;
-  description: string | null;
-  price_cents: number;
-  currency: string;
-  interval: string;
-}
+export type CheckoutTier = Pick<MembershipTier, 'id' | 'name' | 'description' | 'price_cents' | 'currency' | 'interval'>;
 
 /**
- * The tier being bought: the ?tier param when it names an active tier,
- * otherwise the tier of an incomplete attempt being resumed.
+ * The tier being bought: the ?tier param when it names a listed tier,
+ * otherwise the tier of the pending attempt being resumed.
  */
 export function resolveCheckoutTier(
   tierParam: string | null,
   tiers: MembershipTier[],
-  subscription: MySubscription | null,
+  view: MembershipView | null,
 ): CheckoutTier | null {
-  if (tierParam !== null) {
-    return tiers.find((tier) => tier.id === tierParam && tier.is_active) ?? null;
-  }
-  if (subscription && billingState(subscription) === 'incomplete' && subscription.tier_id) {
-    const tierId = subscription.tier_id;
-    const listed = tiers.find((tier) => tier.id === tierId);
-    return (
-      listed ?? {
-        id: tierId,
-        name: subscription.tier_name,
-        description: subscription.tier_description,
-        price_cents: subscription.price_cents,
-        currency: subscription.currency,
-        interval: subscription.interval,
-      }
-    );
-  }
+  if (tierParam !== null) return tiers.find((tier) => tier.id === tierParam) ?? null;
+  const pending = view?.kind === 'billing' ? view.data.pending_attempt : null;
+  if (pending) return tiers.find((tier) => tier.id === pending.tier_id) ?? null;
   return null;
 }
 
@@ -93,6 +75,10 @@ function subscribeErrorMessage(err: unknown): string {
       return 'Too many attempts. Wait a minute and try again.';
     case 'not_club_member':
       return 'Your club membership is not set up yet. Go back and try again.';
+    case 'membership_not_active':
+      return 'Your club membership is on hold. Contact the club front desk to sort it out.';
+    case 'membership_unconfirmed':
+      return 'The club has not confirmed your membership yet. Contact the club front desk.';
     default:
       return err.kind === 'network'
         ? 'We could not reach Club70. Check your connection and try again.'
@@ -103,6 +89,22 @@ function subscribeErrorMessage(err: unknown): string {
 type PayPhase = 'idle' | 'paying' | 'processing';
 
 export function CheckoutScreen() {
+  if (!clutch.capabilities.nativePayments) {
+    return (
+      <CheckoutFrame>
+        <FeatureUnavailable
+          capability="nativePayments"
+          title="Paying in the app"
+          description="Paying for a membership is not available in the app yet. Become a member at the Club70 front desk meanwhile."
+        />
+        <BackToPlans />
+      </CheckoutFrame>
+    );
+  }
+  return <CheckoutLoader />;
+}
+
+function CheckoutLoader() {
   const params = useLocalSearchParams<{ tier?: string | string[] }>();
   const tierParam = Array.isArray(params.tier) ? (params.tier[0] ?? null) : (params.tier ?? null);
 
@@ -139,7 +141,7 @@ export function CheckoutScreen() {
     );
   }
 
-  const tier = resolveCheckoutTier(tierParam, tiers.data.tiers, membership.data.subscription);
+  const tier = resolveCheckoutTier(tierParam, tiers.data.tiers, membership.data);
   if (!tier) return <Redirect href="/onboarding/plan" />;
   return <CheckoutView tier={tier} />;
 }
@@ -159,35 +161,46 @@ function CheckoutView({ tier }: { tier: CheckoutTier }) {
 
   /** Clutch's view of the membership changed: every screen that shows it re-reads. */
   function invalidateMembershipViews() {
-    for (const queryKey of [queryKeys.me, queryKeys.tiers, queryKeys.home, queryKeys.paymentMethods, queryKeys.payments]) {
+    for (const queryKey of [
+      queryKeys.me,
+      queryKeys.membership,
+      queryKeys.tiers,
+      queryKeys.home,
+      queryKeys.paymentMethods,
+      queryKeys.payments,
+    ]) {
       void queryClient.invalidateQueries({ queryKey });
     }
   }
 
-  /** Ask Clutch to re-read Stripe, then decide from GET /me/membership. Never rejects. */
+  /** Ask Clutch to re-read Stripe; decide from its answer (or a re-read). Never rejects. */
   async function confirmWithClutch(): Promise<void> {
     setChecking(true);
     try {
+      let outcome: CheckoutOutcome;
       try {
-        await confirmKey.run('confirm', (k) => clutch.membership.confirm({ idempotencyKey: k }));
+        const confirmed = await confirmKey.run(
+          'confirm',
+          (k) => clutch.membership.confirm({ idempotencyKey: k }),
+          { rerunnable: true },
+        );
+        outcome = confirmOutcome(confirmed);
       } catch {
-        // Confirm is a read of Stripe; a failure says nothing about the charge.
-        // Fall through to the membership read, which decides.
+        // Confirm could not answer; that says nothing about the charge. The
+        // membership read decides.
+        try {
+          outcome = viewOutcome(await queryClient.fetchQuery({ ...membershipQuery, staleTime: 0 }));
+        } catch {
+          setError('We could not check your membership. Check again in a moment; you will not be charged twice.');
+          setPhase('processing');
+          return;
+        }
       }
-      let subscription: MySubscription | null;
-      try {
-        const fresh = await queryClient.fetchQuery({ ...membershipQuery, staleTime: 0 });
-        subscription = fresh.subscription;
-      } catch {
-        setError('We could not check your membership. Check again in a moment; you will not be charged twice.');
-        setPhase('processing');
-        return;
-      }
-      switch (checkoutOutcome(subscription)) {
+      invalidateMembershipViews();
+      switch (outcome) {
         case 'active':
           setError(null);
           setPhase('idle');
-          invalidateMembershipViews();
           router.replace('/(tabs)');
           return;
         case 'processing':
@@ -209,16 +222,16 @@ function CheckoutView({ tier }: { tier: CheckoutTier }) {
     setError(null);
     setPhase('paying');
 
-    let result;
+    let result: SubscribeResult;
     try {
       const input = { tierId: tier.id, terms: TERMS_VERSION };
       result = await subscribeKey.run(input, (k) =>
         clutch.membership.subscribe(tier.id, TERMS_VERSION, { idempotencyKey: k }),
       );
     } catch (err) {
-      if (hasCode(err, 'subscription_exists')) {
-        // Already subscribed (another device, or a webhook got there first):
-        // re-read and let Clutch's state route the member.
+      if (hasCode(err, 'already_subscribed')) {
+        // Already paying (another device, or a webhook got there first):
+        // let Clutch's state route the member.
         await confirmWithClutch();
         return;
       }
@@ -227,27 +240,31 @@ function CheckoutView({ tier }: { tier: CheckoutTier }) {
       return;
     }
 
-    const intent = toSheetIntent(result);
-    if (intent.mode === 'stripe') {
-      const sheet = await presentSheet(intent, { merchantDisplayName: 'Club70' });
-      switch (sheet.status) {
-        case 'canceled':
-          // The attempt stays incomplete and is reused on the next tap.
-          setPhase('idle');
-          return;
-        case 'unconfigured':
-          setError('Payments are not configured in this build.');
-          setPhase('idle');
-          return;
-        case 'failed':
-          setError(sheet.message || 'Your payment could not be completed.');
-          setPhase('idle');
-          return;
-        case 'completed':
-          break;
+    if (result.status !== 'active') {
+      const intent = bundleToSheet(result);
+      if (intent.mode === 'stripe') {
+        const sheet = await presentSheet(intent, { merchantDisplayName: 'Club70' });
+        switch (sheet.status) {
+          case 'canceled':
+          case 'busy':
+            // Nothing was paid (or another sheet is up). The attempt stays
+            // pending and is reused on the next tap.
+            setPhase('idle');
+            return;
+          case 'unconfigured':
+            setError('Payments are not configured in this build.');
+            setPhase('idle');
+            return;
+          case 'failed':
+            setError(sheet.message || 'Your payment could not be completed.');
+            setPhase('idle');
+            return;
+          case 'completed':
+            break;
+        }
+      } else {
+        setSimulated(true);
       }
-    } else {
-      setSimulated(true);
     }
     await confirmWithClutch();
   }

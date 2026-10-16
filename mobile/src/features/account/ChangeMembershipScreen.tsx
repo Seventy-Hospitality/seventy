@@ -1,48 +1,63 @@
 /**
- * Manage membership: the current tier, a switch to another tier, cancel and
- * resume. Clutch decides everything and the screen re-reads it after every
- * action (GET /me/membership); nothing is inferred locally.
+ * Manage membership: the current tier, a switch to another tier, keeping the
+ * tier when a downgrade is booked, cancel and resume. All of it is Clutch P2
+ * (capabilities.nativePayments); without it the screen shows the plan and
+ * says changes are not in the app yet. Clutch decides everything and the
+ * screen re-reads GET /me/membership after every action; nothing is inferred.
  *
- * - Tiers on offer: GET /me/membership/change (Clutch's eligible list, each
- *   marked upgrade or downgrade by Clutch).
- * - Switch: POST /me/membership/change (PENDING P2). An upgrade applies now
- *   and may need a payment sheet for the prorated invoice (built from the
- *   bundle fields in the answer); then POST /me/membership/confirm (PENDING
- *   P2) and a re-read. A downgrade is scheduled for `effectiveAt`.
- * - Cancel at period end or now: DELETE /me/membership/subscription
- *   (PENDING P2). Resume a scheduled cancellation: POST
- *   /me/membership/subscription/resume (PENDING P2).
+ * - Tiers on offer: GET /me/membership/change (each marked upgrade or
+ *   downgrade by Clutch, `change_type`).
+ * - Switch: POST /me/membership/change answers `kind`:
+ *   `upgraded` applies once its prorated invoice is paid (status
+ *   `requires_payment`: sheet, then POST /me/membership/confirm and a
+ *   re-read); `downgrade_scheduled` starts at `effective_at`;
+ *   `downgrade_cancelled` when the current tier is named while a downgrade is
+ *   booked (the "keep my tier" action).
+ * - Cancel at period end or now: DELETE /me/membership/subscription.
+ *   Resume a scheduled cancellation: POST /me/membership/subscription/resume.
  */
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import {
+  bundleToSheet,
   clutch,
-  toSheetIntent,
   useMutationKey,
   type ChangeTierResult,
   type EligibleChangeTier,
-  type MySubscription,
+  type MyMembershipBilling,
   type SheetIntent,
+  type TierId,
 } from '../../lib/clutch';
 import { useClub } from '../../lib/club';
 import { membershipQuery, queryKeys } from '../../lib/queries';
 import { usePresentConnectedSheet } from '../../lib/stripe';
-import { Badge, Checkbox, EmptyStateView, PrimaryButton, Sheet, Skeleton, useToast } from '../../components';
+import {
+  Badge,
+  Checkbox,
+  EmptyStateView,
+  FeatureUnavailable,
+  PrimaryButton,
+  Sheet,
+  Skeleton,
+  useToast,
+} from '../../components';
 import { colors, fonts, radius, spacing, typography } from '../../theme/tokens';
 import { AccountFrame } from './AccountFrame';
 import { refreshMembershipState } from './account-data';
 import {
+  billingErrorMessage,
   canCancel,
+  canCancelDowngrade,
   canChangeTier,
   canResume,
-  clutchErrorMessage,
   formatCents,
   instantDateLabel,
   intervalNoun,
-  subscriptionStatusLine,
+  planSummary,
   tierChangeApplied,
+  type PlanSummary,
 } from './account-lib';
 
 const eligibleChangesQuery = {
@@ -52,20 +67,13 @@ const eligibleChangesQuery = {
 
 /** The sheet for an upgrade's prorated invoice, when Clutch asked for one. */
 export function changeSheetIntent(result: ChangeTierResult): SheetIntent | null {
-  if (result.kind !== 'upgraded') return null;
-  if (!result.clientSecret && !result.simulated) return null;
-  return toSheetIntent({
-    clientSecret: result.clientSecret,
-    intentType: result.intentType ?? 'payment',
-    customerId: result.customerId,
-    ephemeralKeySecret: result.ephemeralKeySecret,
-    stripeAccount: result.stripeAccount,
-    simulated: result.simulated ?? false,
-  });
+  if (result.kind !== 'upgraded' || result.status !== 'requires_payment') return null;
+  return bundleToSheet(result);
 }
 
 export function ChangeMembershipScreen() {
   const membership = useQuery(membershipQuery);
+  const timezone = useClub().data?.timezone;
 
   return (
     <AccountFrame
@@ -85,27 +93,65 @@ export function ChangeMembershipScreen() {
           <Text style={styles.text}>We could not load your membership.</Text>
           <PrimaryButton label="Try again" variant="secondary" onPress={() => void membership.refetch()} />
         </View>
-      ) : membership.data.subscription ? (
-        <ManageView subscription={membership.data.subscription} />
       ) : (
-        <EmptyStateView
-          title="No membership tier on file"
-          description="Contact the club if this looks wrong."
-        />
+        (() => {
+          const plan = planSummary(membership.data, timezone);
+          if (!plan) {
+            return (
+              <EmptyStateView title="No membership tier on file" description="Contact the club if this looks wrong." />
+            );
+          }
+          if (!clutch.capabilities.nativePayments || membership.data.kind !== 'billing') {
+            return (
+              <>
+                <CurrentPlan plan={plan} />
+                <FeatureUnavailable
+                  capability="nativePayments"
+                  title="Changing your membership"
+                  description="Switching, cancelling or resuming your membership is not available in the app yet. The club front desk can help meanwhile."
+                />
+              </>
+            );
+          }
+          return <ManageView plan={plan} data={membership.data.data} />;
+        })()
       )}
     </AccountFrame>
   );
+}
+
+function CurrentPlan({ plan }: { plan: PlanSummary }) {
+  return (
+    <View style={styles.box}>
+      <Text style={styles.label}>Current tier</Text>
+      <View style={styles.tierRow}>
+        <Text style={styles.tierName}>{plan.name}</Text>
+        {plan.price ? (
+          <Text style={styles.price}>
+            {formatCents(plan.price.cents, plan.price.currency)}
+            <Text style={styles.per}> / {intervalNoun(plan.price.interval)}</Text>
+          </Text>
+        ) : null}
+      </View>
+      <Text style={styles.muted}>{plan.statusLine}</Text>
+    </View>
+  );
+}
+
+interface Target {
+  id: TierId;
+  name: string;
 }
 
 type SwitchPhase =
   | { name: 'idle' }
   | { name: 'working' }
   /** The upgrade waits on its payment: pay (again) to finish. */
-  | { name: 'pay'; intent: SheetIntent; target: EligibleChangeTier }
+  | { name: 'pay'; intent: SheetIntent; target: Target }
   /** Paid, but Clutch does not show the new tier yet: re-check. */
-  | { name: 'settling'; target: EligibleChangeTier };
+  | { name: 'settling'; target: Target };
 
-function ManageView({ subscription }: { subscription: MySubscription }) {
+function ManageView({ plan, data }: { plan: PlanSummary; data: MyMembershipBilling }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const timezone = useClub().data?.timezone;
@@ -115,7 +161,7 @@ function ManageView({ subscription }: { subscription: MySubscription }) {
   const cancelKey = useMutationKey();
   const resumeKey = useMutationKey();
 
-  const changeable = canChangeTier(subscription);
+  const changeable = canChangeTier(data);
   const eligible = useQuery({ ...eligibleChangesQuery, enabled: changeable });
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -124,26 +170,26 @@ function ManageView({ subscription }: { subscription: MySubscription }) {
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelNow, setCancelNow] = useState(false);
 
-  const periodEnd = subscription.current_period_end
-    ? instantDateLabel(subscription.current_period_end, timezone)
+  const periodEnd = data.billing.current_period_end
+    ? instantDateLabel(data.billing.current_period_end, timezone)
     : null;
   const selected = eligible.data?.find((tier) => tier.id === selectedId) ?? null;
 
   /** Confirm with Clutch, re-read, and say what Clutch now shows. */
-  async function settle(target: EligibleChangeTier) {
+  async function settle(target: Target) {
     try {
-      await confirmKey.run('confirm', (k) => clutch.membership.confirm({ idempotencyKey: k }));
+      await confirmKey.run('confirm', (k) => clutch.membership.confirm({ idempotencyKey: k }), { rerunnable: true });
     } catch {
-      // A failed re-read of Stripe decides nothing; the membership read below does.
+      // A failed ask of Stripe decides nothing; the membership read below does.
     }
-    let fresh: MySubscription | null = null;
+    let applied = false;
     try {
-      fresh = (await queryClient.fetchQuery({ ...membershipQuery, staleTime: 0 })).subscription;
+      applied = tierChangeApplied(await queryClient.fetchQuery({ ...membershipQuery, staleTime: 0 }), target.id);
     } catch {
       // Unknown: offer a re-check rather than guessing.
     }
     await refreshMembershipState(queryClient);
-    if (tierChangeApplied(fresh, target)) {
+    if (applied) {
       setPhase({ name: 'idle' });
       setSelectedId(null);
       setNotice(null);
@@ -153,12 +199,16 @@ function ManageView({ subscription }: { subscription: MySubscription }) {
     }
   }
 
-  async function pay(intent: SheetIntent, target: EligibleChangeTier) {
+  async function pay(intent: SheetIntent, target: Target) {
     if (intent.mode === 'stripe') {
       const sheet = await presentSheet(intent, { merchantDisplayName: 'Club70' });
       switch (sheet.status) {
         case 'canceled':
           setNotice('The switch waits for this payment. Pay to finish it, or leave it and keep your current tier.');
+          setPhase({ name: 'pay', intent, target });
+          return;
+        case 'busy':
+          // Another sheet is already up; nothing was presented.
           setPhase({ name: 'pay', intent, target });
           return;
         case 'unconfigured':
@@ -177,7 +227,7 @@ function ManageView({ subscription }: { subscription: MySubscription }) {
     await settle(target);
   }
 
-  async function switchTo(target: EligibleChangeTier) {
+  async function change(target: Target) {
     if (phase.name === 'working') return;
     setNotice(null);
     setPhase({ name: 'working' });
@@ -185,22 +235,35 @@ function ManageView({ subscription }: { subscription: MySubscription }) {
     try {
       result = await changeKey.run(target.id, (k) => clutch.membership.change(target.id, { idempotencyKey: k }));
     } catch (err) {
-      setNotice(clutchErrorMessage(err, 'We could not change your membership. Please try again.'));
+      setNotice(billingErrorMessage(err, 'We could not change your membership. Please try again.'));
       setPhase({ name: 'idle' });
       await refreshMembershipState(queryClient);
       return;
     }
-    if (result.kind === 'downgrade_scheduled') {
-      await refreshMembershipState(queryClient);
-      setPhase({ name: 'idle' });
-      setSelectedId(null);
-      const when = result.effectiveAt ? instantDateLabel(result.effectiveAt, timezone) : periodEnd;
-      toast({ variant: 'success', message: when ? `Switch to ${target.name} scheduled for ${when}.` : `Switch to ${target.name} scheduled.` });
-      return;
+    switch (result.kind) {
+      case 'downgrade_scheduled': {
+        await refreshMembershipState(queryClient);
+        setPhase({ name: 'idle' });
+        setSelectedId(null);
+        const when = result.effective_at ? instantDateLabel(result.effective_at, timezone) : periodEnd;
+        toast({
+          variant: 'success',
+          message: when ? `Switch to ${target.name} scheduled for ${when}.` : `Switch to ${target.name} scheduled.`,
+        });
+        return;
+      }
+      case 'downgrade_cancelled':
+        await refreshMembershipState(queryClient);
+        setPhase({ name: 'idle' });
+        toast({ variant: 'success', message: `The switch is off. You keep ${target.name}.` });
+        return;
+      case 'upgraded': {
+        const intent = changeSheetIntent(result);
+        if (intent) await pay(intent, target);
+        else await settle(target);
+        return;
+      }
     }
-    const intent = changeSheetIntent(result);
-    if (intent) await pay(intent, target);
-    else await settle(target);
   }
 
   const cancel = useMutation({
@@ -213,7 +276,7 @@ function ManageView({ subscription }: { subscription: MySubscription }) {
     },
     onError: (err) => {
       setCancelOpen(false);
-      toast({ variant: 'error', message: clutchErrorMessage(err, 'We could not cancel your membership. Please try again.') });
+      toast({ variant: 'error', message: billingErrorMessage(err, 'We could not cancel your membership. Please try again.') });
     },
   });
 
@@ -222,24 +285,16 @@ function ManageView({ subscription }: { subscription: MySubscription }) {
     onSettled: () => refreshMembershipState(queryClient),
     onSuccess: () => toast({ variant: 'success', message: 'Resume received. Your membership status is shown below.' }),
     onError: (err) =>
-      toast({ variant: 'error', message: clutchErrorMessage(err, 'We could not resume your membership. Please try again.') }),
+      toast({ variant: 'error', message: billingErrorMessage(err, 'We could not resume your membership. Please try again.') }),
   });
 
   const working = phase.name === 'working';
+  const pendingTier = data.billing.pending_tier;
+  const currentTier = data.tier;
 
   return (
     <>
-      <View style={styles.box}>
-        <Text style={styles.label}>Current tier</Text>
-        <View style={styles.tierRow}>
-          <Text style={styles.tierName}>{subscription.tier_name}</Text>
-          <Text style={styles.price}>
-            {formatCents(subscription.price_cents, subscription.currency)}
-            <Text style={styles.per}> / {intervalNoun(subscription.interval)}</Text>
-          </Text>
-        </View>
-        <Text style={styles.muted}>{subscriptionStatusLine(subscription, timezone)}</Text>
-      </View>
+      <CurrentPlan plan={plan} />
 
       {notice ? (
         <Text style={styles.alert} accessibilityRole="alert">
@@ -270,7 +325,23 @@ function ManageView({ subscription }: { subscription: MySubscription }) {
         </View>
       ) : null}
 
-      {canResume(subscription) ? (
+      {canCancelDowngrade(data) && pendingTier && currentTier ? (
+        <View style={styles.box}>
+          <Text style={styles.text}>
+            {data.billing.pending_tier_effective_at
+              ? `You switch to ${pendingTier.name} on ${instantDateLabel(data.billing.pending_tier_effective_at, timezone)}.`
+              : `You switch to ${pendingTier.name} when this period ends.`}
+          </Text>
+          <PrimaryButton
+            label={`Keep ${currentTier.name}`}
+            variant="secondary"
+            loading={working}
+            onPress={() => void change({ id: currentTier.id, name: currentTier.name })}
+          />
+        </View>
+      ) : null}
+
+      {canResume(data) ? (
         <View style={styles.box}>
           <Text style={styles.text}>
             {periodEnd ? `Your membership ends ${periodEnd}.` : 'Your membership is set to end.'} Resume it to keep
@@ -308,21 +379,21 @@ function ManageView({ subscription }: { subscription: MySubscription }) {
           {selected ? (
             <View style={styles.box}>
               <Text style={styles.text}>
-                {selected.changeType === 'upgrade'
-                  ? `${selected.name} starts right away. If there is a prorated charge, you confirm it in the next step.`
-                  : `${selected.name} starts when this billing period ends${periodEnd ? ` (${periodEnd})` : ''}. You keep ${subscription.tier_name} until then.`}
+                {selected.change_type === 'upgrade'
+                  ? `${selected.name} starts once its prorated charge is paid. You confirm it in the next step.`
+                  : `${selected.name} starts when this billing period ends${periodEnd ? ` (${periodEnd})` : ''}. You keep ${plan.name} until then.`}
               </Text>
               <PrimaryButton
-                label={selected.changeType === 'upgrade' ? 'Switch now' : 'Schedule switch'}
+                label={selected.change_type === 'upgrade' ? 'Switch now' : 'Schedule switch'}
                 loading={working}
-                onPress={() => void switchTo(selected)}
+                onPress={() => void change(selected)}
               />
             </View>
           ) : null}
         </View>
       ) : null}
 
-      {canCancel(subscription) && !subscription.cancel_at_period_end ? (
+      {canCancel(data) ? (
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Cancel membership"
@@ -389,14 +460,14 @@ function TierChoice({
     <Pressable
       accessibilityRole="radio"
       accessibilityState={{ selected }}
-      accessibilityLabel={`${tier.name}, ${price} per ${intervalNoun(tier.interval)}, ${tier.changeType}`}
+      accessibilityLabel={`${tier.name}, ${price} per ${intervalNoun(tier.interval)}, ${tier.change_type}`}
       onPress={onSelect}
       style={[styles.choice, selected ? styles.choiceSelected : null]}
     >
       <View style={styles.tierRow}>
         <Text style={styles.tierName}>{tier.name}</Text>
         <View style={styles.badges}>
-          <Badge label={tier.changeType === 'upgrade' ? 'Upgrade' : 'Downgrade'} variant={tier.changeType === 'upgrade' ? 'accent' : 'neutral'} />
+          <Badge label={tier.change_type === 'upgrade' ? 'Upgrade' : 'Downgrade'} variant={tier.change_type === 'upgrade' ? 'accent' : 'neutral'} />
           {selected ? (
             <View style={styles.check}>
               <Ionicons name="checkmark" size={16} color={colors.textOnAccent} />

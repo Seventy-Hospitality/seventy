@@ -4,7 +4,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { Linking } from 'react-native';
 import type { MockClutch } from '../../../lib/clutch/testing';
 import { clutchError } from '../../../lib/clutch/testing';
-import type { NotificationPreferences } from '../../../lib/clutch';
+import { makePreferences } from '../../../lib/clutch/fixtures';
 import { PreferencesScreen } from '../PreferencesScreen';
 import { renderWithProviders } from './render-account';
 
@@ -15,12 +15,18 @@ jest.mock('../../../lib/clutch', () => {
 });
 const mockClutch = (jest.requireMock('../../../lib/clutch') as { clutch: MockClutch }).clutch;
 
+// The install's push device_secret is made from random bytes.
+jest.mock('expo-crypto', () => ({
+  randomUUID: jest.fn(() => require('crypto').randomUUID()),
+  getRandomBytes: jest.fn((n: number) => new Uint8Array(require('crypto').randomBytes(n))),
+}));
+
 jest.mock('expo-router', () => ({
   useRouter: () => ({ push: jest.fn(), replace: jest.fn(), back: jest.fn(), canGoBack: () => true }),
 }));
 
 const off = { push: false, email: false, sms: false };
-const PREFS: NotificationPreferences = {
+const PREFS = makePreferences({
   bookings: { push: false, email: true, sms: true },
   tournaments: { push: true, email: false, sms: false },
   leagues: off,
@@ -28,13 +34,14 @@ const PREFS: NotificationPreferences = {
   clubAnnouncements: off,
   promotions: off,
   smsPhone: '+15550100',
-};
+});
 
 beforeEach(() => {
   jest.clearAllMocks();
   mockClutch.me.preferences.mockResolvedValue(PREFS);
-  mockClutch.me.putPreferences.mockResolvedValue(null);
+  mockClutch.me.putPreferences.mockImplementation(async (prefs) => prefs);
   mockClutch.me.registerDevice.mockResolvedValue({ token: 'ExponentPushToken[test]', platform: 'ios' });
+  mockClutch.me.unregisterDevice.mockResolvedValue({ removed: true });
 });
 
 describe('PreferencesScreen', () => {
@@ -68,6 +75,20 @@ describe('PreferencesScreen', () => {
 
     await waitFor(() => expect(Notifications.requestPermissionsAsync).toHaveBeenCalled());
     await waitFor(() => expect(mockClutch.me.putPreferences).toHaveBeenCalled());
+  });
+
+  it('keeps this install registered while a hidden category still wants push', async () => {
+    mockClutch.me.preferences.mockResolvedValue({ ...PREFS, promotions: { push: true, email: false, sms: false } });
+    (Notifications.getPermissionsAsync as jest.Mock)
+      .mockResolvedValueOnce({ granted: true, canAskAgain: true })
+      .mockResolvedValueOnce({ granted: true, canAskAgain: true });
+    renderWithProviders(<PreferencesScreen />);
+
+    fireEvent(await screen.findByLabelText('Promotions push notifications'), 'valueChange', false);
+
+    await waitFor(() => expect(mockClutch.me.putPreferences).toHaveBeenCalled());
+    await waitFor(() => expect(mockClutch.me.registerDevice).toHaveBeenCalled());
+    expect(mockClutch.me.unregisterDevice).not.toHaveBeenCalled();
   });
 
   it('opens the legal pages in the in-app browser and contact in the mail app', async () => {

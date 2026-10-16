@@ -9,6 +9,7 @@ import { PrimaryButton } from '../../components/PrimaryButton';
 import { SectionCard } from '../../components/SectionCard';
 import { FormField, PasswordInput } from '../../components/FormField';
 import { authStyles as styles } from './auth-styles';
+import { unregisterPushForSignOut } from './usePushRegistration';
 
 /**
  * Set a new password after a recovery link or code (PASSWORD_RECOVERY). The
@@ -67,7 +68,11 @@ export function SetPasswordScreen() {
             )}
           />
           <PrimaryButton label="Save Password" loading={form.formState.isSubmitting} onPress={() => void onSubmit()} />
-          <PrimaryButton label="Sign out instead" variant="ghost" onPress={() => void signOut()} />
+          <PrimaryButton
+            label="Sign out instead"
+            variant="ghost"
+            onPress={() => void unregisterPushForSignOut().then(() => signOut())}
+          />
         </View>
       </SectionCard>
     </AppScreen>

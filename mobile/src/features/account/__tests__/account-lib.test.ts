@@ -1,11 +1,21 @@
-import { makeProfile, makeSubscription } from '../../../lib/clutch/fixtures';
-import { clutchError, networkError } from '../../../lib/clutch/testing';
-import { asCardId, asTierId, type PaymentHistoryItem, type SavedPaymentMethod } from '../../../lib/clutch';
-import { TEST_CLUB_ID } from '../../../lib/clutch/testing';
+import {
+  makeBillingMembership,
+  makePayment,
+  makeProfile,
+  makeSavedCard,
+  makeStandingMembership,
+  makeSubscription,
+  TIER_ID,
+} from '../../../lib/clutch/fixtures';
+import { clutchError, networkError, TEST_CLUB_ID } from '../../../lib/clutch/testing';
+import { asTierId } from '../../../lib/clutch';
 import {
   avatarErrorMessage,
+  billingErrorMessage,
+  billingStatusLine,
   blockerSentences,
   canCancel,
+  canCancelDowngrade,
   canChangeTier,
   canResume,
   clutchErrorMessage,
@@ -16,76 +26,108 @@ import {
   paymentTitle,
   profileDisplayName,
   profileErrorMessage,
+  planSummary,
   refundLabel,
-  subscriptionStatusLine,
   tierChangeApplied,
 } from '../account-lib';
 
 const TZ = 'America/New_York';
 
-function payment(over: Partial<PaymentHistoryItem> = {}): PaymentHistoryItem {
-  return {
-    id: 'p1',
-    club_id: TEST_CLUB_ID,
-    amount_cents: 3000,
-    currency: 'USD',
-    payment_type: 'booking',
-    payment_method: 'stripe',
-    status: 'succeeded',
-    reference_id: null,
-    description: null,
-    created_at: '2026-10-10T15:00:00.000Z',
-    refunded_amount_cents: 0,
-    ...over,
-  };
+function payment(over: Parameters<typeof makePayment>[0] = {}) {
+  return makePayment({ description: null, ...over });
 }
 
 describe('profileDisplayName', () => {
   it('prefers the full name, then the username, then the email', () => {
     expect(profileDisplayName(makeProfile())).toBe('Alex Morgan');
     expect(profileDisplayName(makeProfile({ full_name: ' ', username: 'alexm' }))).toBe('@alexm');
-    expect(profileDisplayName(makeProfile({ full_name: null, username: null }))).toBe('alex');
+    expect(profileDisplayName(makeProfile({ full_name: '', username: null }))).toBe('alex');
+    expect(profileDisplayName(makeProfile({ full_name: '', username: null, email: '' }))).toBe('Member');
   });
 });
 
-describe('subscriptionStatusLine', () => {
-  it('says what happens next, from Clutch fields only', () => {
-    expect(subscriptionStatusLine(makeSubscription(), TZ)).toBe('Renews Nov 15, 2026');
-    expect(subscriptionStatusLine(makeSubscription({ cancel_at_period_end: true }), TZ)).toBe('Ends Nov 15, 2026');
+const BASE = makeBillingMembership();
+if (BASE.kind !== 'billing') throw new Error('fixture');
+const BILLING = BASE.data.billing;
+const data = (over: Parameters<typeof makeBillingMembership>[0]) => {
+  const view = makeBillingMembership(over);
+  if (view.kind !== 'billing') throw new Error('fixture');
+  return view.data;
+};
+
+describe('planSummary', () => {
+  it('reads the club standing view (today)', () => {
+    expect(planSummary(makeStandingMembership(), TZ)).toEqual({
+      tierId: TIER_ID,
+      name: 'Member',
+      price: { cents: 9900, currency: 'USD', interval: 'monthly' },
+      statusLine: 'Renews Nov 15, 2026',
+    });
     expect(
-      subscriptionStatusLine(
-        makeSubscription({ pending_tier_name: 'Social', pending_effective_at: '2026-12-01T17:00:00.000Z' }),
+      planSummary(
+        makeStandingMembership({ subscription: makeSubscription({ status: 'suspended' }) }),
+        TZ,
+      )?.statusLine,
+    ).toBe('Membership suspended');
+    expect(planSummary(makeStandingMembership({ membership: null, subscription: null }), TZ)).toBeNull();
+  });
+
+  it('reads the P2 billing view', () => {
+    expect(planSummary(BASE, TZ)?.statusLine).toBe('Renews Nov 15, 2026');
+    expect(planSummary(makeBillingMembership({ tier: null }), TZ)).toBeNull();
+  });
+});
+
+describe('billingStatusLine', () => {
+  it('says what happens next, from Clutch fields only', () => {
+    expect(billingStatusLine(data({}), TZ)).toBe('Renews Nov 15, 2026');
+    expect(billingStatusLine(data({ billing: { ...BILLING, cancel_at_period_end: true } }), TZ)).toBe('Ends Nov 15, 2026');
+    expect(
+      billingStatusLine(
+        data({
+          billing: {
+            ...BILLING,
+            pending_tier: { ...BASE.data.tier!, name: 'Social' },
+            pending_tier_effective_at: '2026-12-01T17:00:00.000Z',
+          },
+        }),
         TZ,
       ),
     ).toBe('Switches to Social on Dec 1, 2026');
-    expect(subscriptionStatusLine(makeSubscription({ subscription_status: 'past_due' }), TZ)).toBe('Payment past due');
+    expect(billingStatusLine(data({ billing: { ...BILLING, subscription_status: 'past_due' } }), TZ)).toBe(
+      'Payment past due',
+    );
   });
 });
 
 describe('membership gates', () => {
   it('offers change only on a live subscription with no cancellation scheduled', () => {
-    expect(canChangeTier(makeSubscription())).toBe(true);
-    expect(canChangeTier(makeSubscription({ subscription_status: 'past_due' }))).toBe(false);
-    expect(canChangeTier(makeSubscription({ cancel_at_period_end: true }))).toBe(false);
-    expect(canChangeTier(null)).toBe(false);
+    expect(canChangeTier(data({}))).toBe(true);
+    expect(canChangeTier(data({ billing: { ...BILLING, subscription_status: 'past_due' } }))).toBe(false);
+    expect(canChangeTier(data({ billing: { ...BILLING, cancel_at_period_end: true } }))).toBe(false);
   });
 
-  it('never traps a member: cancel stays open until the subscription is over', () => {
-    expect(canCancel(makeSubscription({ subscription_status: 'past_due' }))).toBe(true);
-    expect(canCancel(makeSubscription({ subscription_status: 'canceled' }))).toBe(false);
+  it('never traps a member: cancel stays open until the subscription is over or ending', () => {
+    expect(canCancel(data({ billing: { ...BILLING, subscription_status: 'past_due' } }))).toBe(true);
+    expect(canCancel(data({ billing: { ...BILLING, subscription_status: 'canceled' } }))).toBe(false);
+    expect(canCancel(data({ billing: { ...BILLING, cancel_at_period_end: true } }))).toBe(false);
   });
 
   it('offers resume only for a scheduled cancellation', () => {
-    expect(canResume(makeSubscription({ cancel_at_period_end: true }))).toBe(true);
-    expect(canResume(makeSubscription())).toBe(false);
+    expect(canResume(data({ billing: { ...BILLING, cancel_at_period_end: true } }))).toBe(true);
+    expect(canResume(data({}))).toBe(false);
   });
 
-  it('judges a tier change applied from the subscription Clutch returns', () => {
-    const target = { id: asTierId('t2'), name: 'Pro' };
-    expect(tierChangeApplied(makeSubscription({ tier_id: asTierId('t2') }), target)).toBe(true);
-    expect(tierChangeApplied(makeSubscription({ tier_id: asTierId('t1'), tier_name: 'Pro' }), target)).toBe(false);
-    expect(tierChangeApplied(makeSubscription({ tier_name: 'Pro' }), target)).toBe(true);
-    expect(tierChangeApplied(null, target)).toBe(false);
+  it('offers keeping the tier only while a downgrade is booked', () => {
+    expect(canCancelDowngrade(data({}))).toBe(false);
+    expect(canCancelDowngrade(data({ billing: { ...BILLING, pending_tier: BASE.data.tier } }))).toBe(true);
+  });
+
+  it('judges a tier change applied from the tier Clutch now shows', () => {
+    expect(tierChangeApplied(BASE, asTierId(TIER_ID))).toBe(true);
+    expect(tierChangeApplied(BASE, asTierId('t2'))).toBe(false);
+    expect(tierChangeApplied(makeStandingMembership(), asTierId(TIER_ID))).toBe(false);
+    expect(tierChangeApplied(null, asTierId(TIER_ID))).toBe(false);
   });
 });
 
@@ -101,16 +143,7 @@ describe('payments', () => {
   });
 
   it('labels a saved card', () => {
-    const card: SavedPaymentMethod = {
-      id: asCardId('c1'),
-      stripe_payment_method_id: 'pm_1',
-      type: 'card',
-      card_brand: 'visa',
-      card_last4: '4242',
-      card_exp_month: 9,
-      card_exp_year: 2027,
-      is_default: true,
-    };
+    const card = makeSavedCard({ card_exp_month: 9, card_exp_year: 2027 });
     expect(paymentMethodLabel(card)).toBe('Visa •••• 4242 · exp 09/27');
   });
 });
@@ -119,6 +152,14 @@ describe('error copy', () => {
   it('maps profile codes', () => {
     expect(profileErrorMessage(clutchError('username_taken'))).toMatch(/taken/);
     expect(profileErrorMessage(clutchError('invalid_username', 400))).toMatch(/3 to 20/);
+  });
+
+  it('maps P2 billing codes', () => {
+    expect(billingErrorMessage(clutchError('already_on_tier'), 'x')).toMatch(/already on that/);
+    expect(billingErrorMessage(clutchError('subscription_ending'), 'x')).toMatch(/Resume it first/);
+    expect(billingErrorMessage(clutchError('card_in_use_by_subscription'), 'x')).toMatch(/pays your membership/);
+    expect(billingErrorMessage(clutchError('setup_incomplete'), 'x')).toMatch(/not confirmed yet/);
+    expect(billingErrorMessage(networkError(), 'x')).toMatch(/connection/);
   });
 
   it('maps avatar codes', () => {
@@ -147,5 +188,5 @@ describe('error copy', () => {
     expect(hasDeletionBlockers({ owned_clubs: [], managed_children: [] })).toBe(false);
     expect(deletionBlockersFrom({ owned_clubs: 'nope' })).toBeNull();
     expect(deletionBlockersFrom(undefined)).toBeNull();
-});
+  });
 });
