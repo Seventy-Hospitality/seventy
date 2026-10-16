@@ -13,6 +13,7 @@ import { SessionProvider } from '../src/lib/session';
 import { StripeAppProvider } from '../src/lib/stripe';
 import { ClubCheck } from '../src/features/app/ClubCheck';
 import { RecoveryRedirect } from '../src/features/app/RecoveryRedirect';
+import { PushRegistrationSync } from '../src/features/account/usePushRegistration';
 import { colors, fontAssets, fonts } from '../src/theme/tokens';
 
 // Baseline family for any Text without an explicit fontFamily, so stray copy
@@ -50,6 +51,8 @@ export default function RootLayout() {
                 <StatusBar style="light" backgroundColor={colors.bg} />
                 <ClubCheck>
                   <RecoveryRedirect />
+                  {/* Signed-in anywhere (onboarding included), not only in the tabs. */}
+                  <PushRegistrationSync />
                   <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }} />
                 </ClubCheck>
               </ToastProvider>

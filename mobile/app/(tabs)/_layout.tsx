@@ -2,7 +2,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { Redirect, Tabs } from 'expo-router';
 import { ActivityIndicator, View } from 'react-native';
 import { useSession } from '../../src/lib/session';
-import { PushRegistrationSync } from '../../src/features/account/usePushRegistration';
 import { colors, fonts } from '../../src/theme/tokens';
 
 export default function TabsLayout() {
@@ -29,7 +28,6 @@ export default function TabsLayout() {
 
   return (
     <>
-      <PushRegistrationSync />
       <Tabs
         screenOptions={{
           headerShown: false,
