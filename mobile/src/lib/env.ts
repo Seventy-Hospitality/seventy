@@ -41,14 +41,6 @@ export const CLUB_ID =
 export const CLUB_SLUG = optional(process.env.EXPO_PUBLIC_CLUB_SLUG) ?? '770';
 
 /**
- * Member web origin, used to build shareable links that resolve in a browser
- * (the group invite/QR join link). Defaults to the Clutch web app.
- */
-export const WEB_URL = (
-  optional(process.env.EXPO_PUBLIC_WEB_URL) ?? 'https://club-management-web.vercel.app'
-).replace(/\/+$/, '');
-
-/**
  * Stripe publishable key of the CLUTCH PLATFORM account (pk_...). Club charges
  * are direct charges on the club's connected account, so the SDK is
  * re-initialised with that account id per sheet (presentConnectedSheet).

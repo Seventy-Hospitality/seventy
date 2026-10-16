@@ -1,103 +1,129 @@
-# Club70 mobile app: parity plan
+# Club70 mobile app: architecture on Clutch
 
-Bring the existing Expo app (`mobile/`) to full parity with the finished web
-client and backend: the same six flows, 1:1 with the Figma phone frames.
+The Expo app (`mobile/`) is a client of **Clutch** (we-are-clutch/club-management:
+Supabase + Next.js). It no longer talks to `seventy/api`. Club 70 is the Clutch
+club "Seventy" (slug `770`, id `15e24f5f-ee39-4154-8ad6-06942d06cb8a`,
+America/New_York). There were no live members on seventy/api, so nothing was
+migrated.
 
-## Current state (verified)
-- Expo SDK 54, expo-router 6, RN 0.81, react-query, react-hook-form + zod
-  (partial). Bearer-token auth via expo-secure-store, magic-link ONLY.
-- Own dark-green design tokens (close to Figma), no custom font, no tests.
-- Screens present: home (thin), booking, account (partial). Onboarding,
-  reservations/invites, clubs are MISSING.
-- BROKEN: booking/events/billing call admin-only or legacy endpoints
-  (`/api/courts`, `/api/showers`, `/api/events`, `/api/stripe/*`) that a member
-  token gets 403 on. All must be rewired to the new member engine.
+## Stack
+Expo SDK 54, expo-router 6, RN 0.81, react-query 5, react-hook-form + zod 4,
+supabase-js 2 (auth only), @stripe/stripe-react-native 0.50.3. Tabs: Home /
+Reserve / Groups / Account.
 
-## Locked decisions
-- **Extend**, do not rebuild: keep Expo Router, SessionProvider, react-query,
-  the RN component set; grow them.
-- **Tabs = Home / Reserve / Clubs / Account** (Figma bottom bar). Drop the
-  legacy "Connect" events tab; events surface in Home's spotlight only.
-- **Re-sync design tokens + fonts to the finished web client**
-  (`member-web/src/theme/tokens.ts`: bg `#1e2a20`, accent `#ecfeaa`, Manrope
-  display + Inter body) so the two clients look like one product.
-- **Auth**: password + magic-link now; native Google/Apple wired but degrading
-  until OAuth web/native client IDs are supplied. Fix the contract: send
-  `X-Client-Type: mobile`, capture + persist `refreshToken`/`expiresAt` from the
-  magic-link callback, implement `POST /api/auth/refresh` (bearer refresh).
-- **Payments**: `@stripe/stripe-react-native` PaymentSheet. The backend billing
-  was built for this (subscribe/confirm return `clientSecret` +
-  `ephemeralKeySecret`; booking create + payment-method setup return client
-  secrets).
-- **Backend unchanged**: everything mobile needs already exists.
+## Two services
+- **Supabase GoTrue** (`EXPO_PUBLIC_SUPABASE_URL` + anon key) for every auth
+  flow, on the device through supabase-js. The app never calls Clutch's
+  `/api/v1/auth/*` proxy.
+- **Clutch HTTP API** (`EXPO_PUBLIC_CLUTCH_API_URL`, ending in `/api/v1`) for
+  all data, with the Supabase access token as Bearer (RLS runs as the user).
 
-## Endpoint rewire (off the broken admin/legacy calls)
-- Facilities/availability: `GET /api/resource-types`,
-  `GET /api/resource-types/:code/availability` (day-bucketed), `GET /api/venue`.
-- Booking: `POST /api/reservations/quote` -> `POST /api/reservations`
-  (returns clientSecret) -> PaymentSheet -> `POST /api/reservations/:id/confirm`.
-- Membership: `POST /api/me/membership/subscribe` + `/confirm` (PaymentSheet),
-  `/change`, `DELETE /api/me/membership`; plan catalog `GET /api/plans`.
-- Billing: `GET /api/me/billing`, `/billing/transactions`,
-  `/payment-methods/setup-intent`, `/payment-methods/:id/default`.
-- Home: consume the full `GET /api/me/home` payload (greeting, pendingInvitations,
-  clubInvitations, quickBook, amenities), not just legacy `upcomingBookings`.
+## Auth (`src/lib/supabase.ts`, `secure-storage.ts`, `session.tsx`, `oauth.ts`)
+- supabase-js owns the session: `flowType: 'pkce'`, `detectSessionInUrl: false`,
+  storage = a chunked SecureStore adapter (a session outgrows SecureStore's
+  ~2 KB value limit), auto refresh started/stopped with AppState.
+- Email links (magic link, signup confirmation, password reset) land on
+  `seventy://auth/callback?code=...` and `exchangeCodeForSession` completes them
+  with the PKCE verifier only this device holds, which also binds the link to
+  the device (the old app-minted `state` is gone). Each email also carries a
+  6-digit code (`verifyOtp`) for links opened on another device.
+- Password recovery signs in in recovery mode (`PASSWORD_RECOVERY`) and the
+  root layout holds the user on `/auth/set-password` until `updateUser`.
+- Google / Apple: the app mints a raw nonce, the platform SDK gets
+  `sha256(raw)`, and `signInWithIdToken({provider, token, nonce: raw})`.
+- `onAuthStateChange`: `SIGNED_OUT` (and a different user signing in) clears
+  the react-query cache.
 
-## Packages (fan out, each with a review gate)
-- **M0 Foundation**: re-sync tokens + load Manrope/Inter; extend the RN design
-  system (Avatar, Badge, Sheet/Modal, FormField/Input, QRCode, ListRow, Toast);
-  auth (password + magic-link + X-Client-Type + refresh + OAuth port that
-  degrades without creds); API client rewired + typed to the new engine +
-  react-query; Stripe provider (`StripeProvider` + PaymentSheet helper);
-  tab shell Home/Reserve/Clubs/Account; jest + RN-testing-library harness.
-- **M1 Onboarding**: plan select (`GET /api/plans`), Stripe PaymentSheet
-  membership subscribe/confirm, ID-verification photo (image picker) submit/skip,
-  onboarding-resume gate (`GET /api/me/onboarding`).
-- **M2 Home**: rich home from `/api/me/home` (greeting, quick-book, upcoming
-  reservations w/ participation + weekly badge, inline invitation accept/decline,
-  club invitations, spotlight events, empty state), member QR card sheet.
-- **M3 Booking**: resource-type list, availability (date rail + 30-min slots),
-  multi-slot select, invite players (member search + club "add all"), quote,
-  create + PaymentSheet + "securing your spot" + confirm, confirmation sheet.
-- **M4 Reservations**: detail (roster + statuses), accept/decline/withdraw,
-  edit/reschedule (delta + PaymentSheet for a grow charge), cancel (tiered
-  refund), invite more.
-- **M5 Clubs**: list, create wizard, detail + activity, members roster + owner
-  actions, invite modal (member picker + copy link + QR + share), join via link.
-- **M6 Account**: profile + avatar upload, lifetime stats, member QR card,
-  notification preferences, device/push registration, billing history, payment
-  methods (setup-intent PaymentSheet + set default), membership change/cancel,
-  delete account (step-up), Google/Apple identity linking.
+## Clutch client (`src/lib/clutch/`)
+- `contract.gen.ts`: zod response schemas + inferred types for every endpoint
+  the app calls, in Clutch's words (booking, court, court_type, tier, group,
+  user_id). Hand-written from the route code until Clutch's
+  `feat/api-contract` publishes `docs/api/openapi.json`; then a generator
+  replaces it. Fields from in-flight Clutch branches are marked PENDING.
+- `client.ts`: `createClutchClient({ clubId, ... })`, one typed function per
+  endpoint, grouped as `club`, `bookings`, `groups`, `membership`,
+  `paymentMethods`, `me`. Transport rules:
+  - strict envelope (`{data, count?}` / `{error, message, details?}`), data
+    parsed by the endpoint's schema; drift is a `ClutchError` of kind
+    `contract`;
+  - `ClutchError.code` is `ErrorCode | 'unknown'` (`errors.ts`), screens branch
+    only on the code;
+  - 401 -> one shared `refreshSession()` -> retry once;
+  - every mutation carries an `Idempotency-Key`; features pass the logical
+    mutation's key (`useMutationKey`) so a retry replays instead of acting
+    twice, and `409 request_in_flight` waits and retries with the same key;
+  - the club is bound at construction; `club.verify()` checks at startup that
+    the id resolves to the expected slug (`ClubCheck` blocks a misconfigured
+    build). `/me/groups` is filtered to this club.
+- `ids.ts`: branded `ClubId`, `GroupId`, `UserId`, `BookingId`, `CourtId`,
+  `TierId`, ... so a group id can never stand in for a club id.
+- `src/lib/queries.ts`: the shared query keys; every feature invalidates these.
+- Tests mock at the client boundary (`testing.ts` `createMockClutch`,
+  `fixtures.ts`).
+
+## Payments (`src/lib/stripe.tsx`)
+Clutch charges are direct charges on the club's Stripe connected account.
+Every payment result becomes a `SheetIntent` union (`stripe` with
+`clientSecret` + `stripeAccount` + optional customer/ephemeral key, or
+`simulated`). The only way to show a sheet is `presentConnectedSheet(intent)`,
+which re-initialises the SDK with `{publishableKey, stripeAccountId}` behind a
+lock and returns the completed intent id. The app never reports success: it
+hands the intent id to Clutch (`confirm` / `save`) and shows Clutch's answer.
+`EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY` is the Clutch platform key. Physical venue
+memberships use Stripe, never IAP (App Store 3.1.3(e)).
+
+## Features
+- **Onboarding**: signed in -> join the club (`POST /clubs/{id}/join`, then
+  re-read `/me`; membership is never inferred from the join) -> pick a tier ->
+  subscribe (PaymentSheet) -> Clutch confirms. ID verification is dropped.
+- **Reserve**: sports from the club's courts, the per-court availability grid
+  for a day, a contiguous range, `pickCourt` chooses one court free for the
+  whole range; quote, hold (15 minutes), payment intent, sheet, confirm. The
+  hold and the intent are tracked separately.
+- **Bookings**: detail with players and dues, cancel, reschedule, invite
+  players or a group, accept/decline, leave, pay a balance due.
+- **Home**: `/me/home` (profile, upcoming bookings, club announcements),
+  booking and group invitations, the member QR card (signed check-in token).
+- **Groups**: Clutch member groups (create, roster, owner transfer, invites,
+  invite links, activity, join by link).
+- **Account**: profile + avatar, notification preferences on Clutch's
+  category x channel matrix, Expo push registration, payment history, saved
+  cards, tier change / cancel / resume, sign-in methods (link/unlink through
+  supabase-js), delete account with a fresh sign-in as step-up.
+
+## Waiting on Clutch (coded against the design, verify when merged)
+- P1 `feat/expo-push`: `POST/DELETE /me/devices`.
+- P2 `feat/native-payments`: PaymentSheet bundle (customer + ephemeral key +
+  account), subscribe / confirm / change / cancel / resume, setup-intent +
+  save by `setup_intent_id`, booking payment intent with customer + key.
+- P3 `feat/api-contract`: OpenAPI + ErrorCode export (replaces the
+  hand-written contract), `/me` lists every membership with status + tier and
+  fails instead of returning `[]` on a failed read, join returns the status,
+  player names on booking detail.
+- P4 `feat/member-booking-parity`: `POST /bookings/quote`, invite respond,
+  player removal, member player search, dearer reschedule, payment clearing vs
+  failed split, members-only and tier gating.
+- P5 `feat/account-deletion-and-checkin`: `DELETE /me/account` with step-up,
+  `GET /me/checkin-token`.
+
+Until P3 lands, `/me` memberships `[]` and `/me/membership` `null` are treated
+as "not known", never as proof of absence.
+
+## Supabase dashboard setup
+- Auth > URL configuration: add `seventy://auth/callback` to the redirect URLs.
+- Auth > Providers > Google: enable; authorized client ids = the iOS, Android
+  and web OAuth client ids used by the app (comma separated); "skip nonce
+  check" off.
+- Auth > Providers > Apple: enable; authorized client ids = bundle id
+  `club.seventy.mobile` (and the services id if Android/web Apple sign-in is
+  used).
+- Auth > Email templates: keep `{{ .Token }}` in the magic link, confirmation
+  and recovery templates so the 6-digit code fallback works.
+- Auth > Settings: enable manual identity linking (Sign-in methods screen).
+- EAS: set `EXPO_PUBLIC_SUPABASE_URL` / `EXPO_PUBLIC_SUPABASE_ANON_KEY` and the
+  Stripe, Google and Apple values as EAS environment variables per profile.
 
 ## Verification (honest limits)
-No iOS/Android simulator in this environment. Gate = `tsc --noEmit` clean, jest
-tests, Figma-frame fidelity (the phone frames are exact), and adversarial code
-review per package. `expo start --web` (react-native-web) can render the
-non-native screens for a rough visual check; native modules (PaymentSheet,
-Apple auth, secure-store, camera) will not render there. The owner runs it on a
-real simulator/device.
-
-## Security follow-ups (from M0 review, deferred with rationale)
-- **Verified app / universal links for the magic-link callback.** M0 binds the
-  `seventy://auth/callback` deep link with an app-generated `state` (minted +
-  persisted before the send, echoed back by the backend redirect, verified +
-  burned single-use on arrival), which closes the forced-login / token-injection
-  hole. The bare custom scheme is still invocable by any app; moving to verified
-  universal/app links (Apple App Site Association + Android asset links) is
-  defense-in-depth on top of the state binding, and is infra config beyond M0
-  code. The state check stands on its own until then.
-- **Cold-start transient recovery.** A transient failure (network/5xx) while
-  restoring the session on launch now KEEPS the stored tokens and drops to the
-  signed-in-again UI, so a relaunch auto-restores rather than forcing re-login
-  (only a definitive 401/403 forgets the session). A nicer UX would retry with
-  backoff in-session instead of waiting for the next launch; the credential-loss
-  harm is already fixed, so this is optional polish.
-
-## Standing conventions (set by M0, enforced in review)
-- react-query for all data; loading/error/empty states on every screen.
-- Forms via react-hook-form + zod; tokens only (no hardcoded colors).
-- Bearer token in expo-secure-store, never logged; `X-Client-Type: mobile`.
-- PaymentSheet only for card entry (no raw card data); confirm/settle mirrors the
-  web hold/confirm contract.
-- Accessibility: accessible roles/labels, adequate touch targets, dynamic-type
-  friendly.
+No iOS/Android simulator here. Gate: `npm run typecheck`, `npm test` (jest,
+mocked at the client boundary). The owner runs it on a device against a
+Clutch deployment.
