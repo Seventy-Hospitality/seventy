@@ -3,6 +3,12 @@ name: Deploy
 on:
   push:
     branches: [main]
+    # Only the API image deploys from here; the marketing site at the repo root is
+    # served by GitHub Pages, so site-only pushes should not rebuild the API.
+    paths:
+      - 'api/**'
+      - 'web/**'
+      - 'member-web/**'
 
 env:
   AWS_REGION: us-east-1
