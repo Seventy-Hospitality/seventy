@@ -2,9 +2,10 @@ import type { ReactNode } from 'react';
 import { useState } from 'react';
 import { fireEvent, render, screen } from '@testing-library/react-native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { asCourtId, clutch, type AvailabilitySlot, type SlotStatus } from '../../../lib/clutch';
+import { asCourtId, CAPABILITIES, clutch, type AvailabilitySlot, type SlotStatus } from '../../../lib/clutch';
 import type { MockClutch } from '../../../lib/clutch/testing';
-import { makeClub, makeCourtAvailability, makeSlot } from '../../../lib/clutch/fixtures';
+import { makeClub, makeCourtAvailability, makeQuote, makeSlot } from '../../../lib/clutch/fixtures';
+import { bookingRulesOf, type SportRules } from '../club-rules';
 import { SelectTimeStep, type TimePick } from '../SelectTimeStep';
 
 jest.mock('../../../lib/clutch', () => {
@@ -25,13 +26,13 @@ function slots(courtId: typeof C1, statuses: SlotStatus[], cents = 1500): Availa
   });
 }
 
-function Harness({ onContinue }: { onContinue: (pick: TimePick) => void }) {
+function Harness({ onContinue, rules }: { onContinue: (pick: TimePick) => void; rules: SportRules }) {
   const [selected, setSelected] = useState<string[]>([]);
   return (
     <SelectTimeStep
       sport="badminton"
       timezone="America/New_York"
-      rules={makeClub().booking_rules!}
+      rules={rules}
       date="2099-06-01"
       onDateChange={() => undefined}
       slots={selected}
@@ -43,16 +44,19 @@ function Harness({ onContinue }: { onContinue: (pick: TimePick) => void }) {
   );
 }
 
-function renderStep(onContinue = jest.fn()) {
+function renderStep(onContinue = jest.fn(), rules: SportRules = bookingRulesOf(makeClub())) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
-  render(<Harness onContinue={onContinue} />, { wrapper });
+  render(<Harness onContinue={onContinue} rules={rules} />, { wrapper });
   return onContinue;
 }
 
-beforeEach(() => jest.clearAllMocks());
+beforeEach(() => {
+  jest.clearAllMocks();
+  mockClutch.capabilities = { ...CAPABILITIES, bookingParity: true };
+});
 
 describe('SelectTimeStep', () => {
   it('offers times with a free court, picks one court for the range, and shows Clutch quote', async () => {
@@ -61,7 +65,7 @@ describe('SelectTimeStep', () => {
       makeCourtAvailability(C2, { court_name: 'Court 2' }, slots(C2, ['available', 'available', 'booked'])),
       makeCourtAvailability(asCourtId('t1'), { court_type: 'tennis' }, slots(asCourtId('t1'), ['available'])),
     ]);
-    mockClutch.bookings.quote.mockResolvedValue({ subtotal_cents: 3000, total_cents: 2700, currency: 'USD' });
+    mockClutch.bookings.quote.mockResolvedValue(makeQuote({ total_cents: 2700 }));
     const onContinue = renderStep();
 
     const first = await screen.findByLabelText(/^6:00PM - 6:30PM, \$15, 2 courts free/);
@@ -96,6 +100,32 @@ describe('SelectTimeStep', () => {
     expect(onContinue).not.toHaveBeenCalled();
     // The single first slot was quotable; the impossible hour never is.
     expect(mockClutch.bookings.quote).not.toHaveBeenCalledWith(expect.objectContaining({ end_time: '19:00' }));
+  });
+
+  it('without P4 asks for no quote and says the total is shown at payment', async () => {
+    mockClutch.capabilities = { ...CAPABILITIES, bookingParity: false };
+    mockClutch.club.availability.mockResolvedValue([
+      makeCourtAvailability(C1, {}, slots(C1, ['available', 'available'])),
+    ]);
+    renderStep();
+    fireEvent.press(await screen.findByLabelText(/^6:00PM - 6:30PM/));
+    fireEvent.press(screen.getByLabelText(/^6:30PM - 7:00PM/));
+    expect(await screen.findByText('Total shown at payment')).toBeTruthy();
+    expect(mockClutch.bookings.quote).not.toHaveBeenCalled();
+  });
+
+  it("drops starts outside the sport's opening hours (P4)", async () => {
+    mockClutch.club.availability.mockResolvedValue([
+      makeCourtAvailability(C1, {}, slots(C1, ['available', 'available', 'available'])),
+    ]);
+    // 2099-06-01 is a Monday: open until 18:30.
+    const rules: SportRules = {
+      ...bookingRulesOf(makeClub()),
+      hours: [{ day_of_week: 1, open_time: '08:00:00', close_time: '18:30:00', is_closed: false }],
+    };
+    renderStep(jest.fn(), rules);
+    expect(await screen.findByLabelText(/^6:00PM - 6:30PM/)).toBeTruthy();
+    expect(screen.queryByLabelText(/^6:30PM - 7:00PM/)).toBeNull();
   });
 
   it('shows the empty state when every court of the sport is taken', async () => {

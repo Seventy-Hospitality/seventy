@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { clutch, type BookingRules, type CourtAvailability } from '../../lib/clutch';
+import { clutch, type CourtAvailability } from '../../lib/clutch';
 import { availabilityQuery } from '../../lib/queries';
 import { EmptyStateView, PrimaryButton, Skeleton } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
 import {
   buildDateStrip,
+  dateKeyToDate,
   formatDuration,
   formatMoney,
   formatStripDay,
@@ -22,8 +23,11 @@ import {
   gridSlotMinutes,
   pickCourt,
   timesFor,
+  withinHours,
   type OwnRange,
 } from './court-picker';
+import type { SportRules } from './club-rules';
+import { quoteQuery } from './quote';
 import { SlotPill } from './SlotPill';
 import { StepShell } from './StepShell';
 
@@ -41,7 +45,7 @@ export interface SelectTimeStepProps {
   sport: string;
   /** The club's IANA zone: the rail's "today". */
   timezone: string;
-  rules: BookingRules;
+  rules: SportRules;
   date: string;
   onDateChange: (date: string) => void;
   /** Selected slot starts ("HH:MM"), contiguous. */
@@ -57,6 +61,11 @@ export interface SelectTimeStepProps {
   continueLabel?: string;
   /** Extra gate on Continue (reschedule: the range must actually change). */
   continueDisabled?: boolean;
+  /**
+   * Show a new booking's total for the range. Off for a move: a move is
+   * priced by its own reschedule quote, never the new-booking quote.
+   */
+  showTotal?: boolean;
 }
 
 /**
@@ -65,7 +74,10 @@ export interface SelectTimeStepProps {
  * the day's availability grid folded by sport: a start time shows when at
  * least one court of the sport is free, with the grid's price. The member
  * picks a contiguous range; the app names the one court free for all of it
- * (pickCourt), and Clutch quotes the total for that court and range.
+ * (pickCourt). With Clutch P4 the footer shows the quote's total (tax
+ * included) for that court and range; without it there is no quote, and the
+ * footer says the total is shown at payment. Per-sport opening hours (P4)
+ * trim the offered starts.
  */
 export function SelectTimeStep({
   sport,
@@ -82,6 +94,7 @@ export function SelectTimeStep({
   title,
   continueLabel = 'Continue',
   continueDisabled = false,
+  showTotal = true,
 }: SelectTimeStepProps) {
   const strip = useMemo(
     () => buildDateStrip(todayDateKey(timezone), rules.advance_booking_days),
@@ -92,13 +105,18 @@ export function SelectTimeStep({
 
   const grid = useQuery(availabilityQuery(date));
   const ownToday = own && own.date === date ? own : null;
+  const dayOfWeek = dateKeyToDate(date).getDay();
   const options = useMemo(
-    () => (grid.data ? timesFor(grid.data, sport, { own: ownToday }) : []),
-    [grid.data, sport, ownToday],
+    () =>
+      grid.data
+        ? timesFor(grid.data, sport, { own: ownToday }).filter((option) =>
+            withinHours(option.start, option.end, rules.hours, dayOfWeek),
+          )
+        : [],
+    [grid.data, sport, ownToday, rules.hours, dayOfWeek],
   );
   const offered = useMemo(() => options.map((option) => option.start), [options]);
-  const slotMinutes =
-    rules.slot_duration_minutes || (grid.data ? gridSlotMinutes(grid.data) : null) || 60;
+  const slotMinutes = rules.slot_duration_minutes || (grid.data ? gridSlotMinutes(grid.data) : null) || 60;
 
   // A refetch can take a selected start away (someone else booked it): prune
   // so the selection never holds a time that is not offered.
@@ -115,26 +133,26 @@ export function SelectTimeStep({
   const problem = range ? durationProblem(range.minutes, rules) : null;
   const ready = !!range && !!court && !problem;
 
-  const quote = useQuery({
-    queryKey: ['reserve', 'quote', court?.court_id ?? null, date, range?.start ?? null, range?.end ?? null],
-    queryFn: () =>
-      clutch.bookings.quote({
-        court_id: court!.court_id,
-        date,
-        start_time: range!.start,
-        end_time: range!.end,
-      }),
-    enabled: ready,
-    retry: false,
-    staleTime: 15_000,
-  });
+  const parity = clutch.capabilities.bookingParity;
+  const quote = useQuery(
+    quoteQuery(
+      showTotal && ready && court && range
+        ? {
+            court_id: court.court_id,
+            date,
+            start_time: range.start,
+            end_time: range.end,
+          }
+        : null,
+    ),
+  );
 
   const hint = !range
     ? null
     : problem === 'too_short'
-      ? `Book at least ${formatDuration(rules.min_duration_minutes)}.`
+      ? `Book at least ${formatDuration(rules.min_duration_minutes ?? 0)}.`
       : problem === 'too_long'
-        ? `Book at most ${formatDuration(rules.max_duration_minutes)}.`
+        ? `Book at most ${formatDuration(rules.max_duration_minutes ?? 0)}.`
         : !court
           ? 'No single court is free for that whole time. Shorten it or pick another start.'
           : null;
@@ -151,20 +169,22 @@ export function SelectTimeStep({
               <Text style={styles.summaryCourt} numberOfLines={1}>
                 {court.court_name} · {formatDuration(range.minutes)}
               </Text>
-              <Text style={styles.summaryTotal}>
-                {quote.data
-                  ? `Total ${formatMoney(quote.data.total_cents, quote.data.currency)}`
-                  : quote.isPending
-                    ? 'Pricing...'
-                    : 'Total shown at checkout'}
-              </Text>
+              {showTotal ? (
+                <Text style={styles.summaryTotal}>
+                  {!parity
+                    ? 'Total shown at payment'
+                    : quote.data
+                      ? `Total ${formatMoney(quote.data.total_cents, quote.data.currency)}`
+                      : quote.isPending
+                        ? 'Pricing...'
+                        : 'Total shown at payment'}
+                </Text>
+              ) : null}
             </View>
           ) : null}
           <PrimaryButton
             label={continueLabel}
-            onPress={
-              canContinue && court && range ? () => onContinue({ court, date, range }) : undefined
-            }
+            onPress={canContinue && court && range ? () => onContinue({ court, date, range }) : undefined}
             variant={canContinue ? 'primary' : 'ghost'}
           />
         </View>

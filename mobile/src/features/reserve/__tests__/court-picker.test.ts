@@ -6,6 +6,7 @@ import {
   slotPrice,
   sportsFrom,
   timesFor,
+  withinHours,
 } from '../court-picker';
 import { asCourtId, type AvailabilitySlot, type CourtAvailability, type SlotStatus } from '../../../lib/clutch';
 import { makeCourt, makeCourtAvailability, makeSlot } from '../../../lib/clutch/fixtures';
@@ -210,10 +211,83 @@ describe('durationProblem and gridSlotMinutes', () => {
     expect(durationProblem(120, rules)).toBeNull();
     expect(durationProblem(150, rules)).toBe('too_long');
     expect(durationProblem(600, { min_duration_minutes: 30, max_duration_minutes: 0 })).toBeNull();
+    expect(durationProblem(15, { min_duration_minutes: null, max_duration_minutes: null })).toBeNull();
   });
 
   it('reads the slot length off the grid', () => {
     expect(gridSlotMinutes([row(C1, ['available'])])).toBe(30);
     expect(gridSlotMinutes([])).toBeNull();
+  });
+});
+
+describe('midnight: Clutch writes the end of the day as 00:00', () => {
+  /** The last two slots of a day: 23:00-23:30 and 23:30-00:00. */
+  function lateRow(courtId: ReturnType<typeof asCourtId>, statuses: SlotStatus[]): CourtAvailability {
+    const slots = [
+      makeSlot({ court_id: courtId, start_time: '23:00', end_time: '23:30', status: statuses[0] }),
+      makeSlot({ court_id: courtId, start_time: '23:30', end_time: '00:00', status: statuses[1] }),
+    ];
+    return makeCourtAvailability(courtId, {}, slots);
+  }
+
+  it('books a range that ends at midnight, whether asked as 24:00 or 00:00', () => {
+    const grid = [lateRow(C1, ['available', 'available'])];
+    expect(pickCourt(grid, 'badminton', '23:00', '24:00')?.court_id).toBe(C1);
+    expect(pickCourt(grid, 'badminton', '23:00', '00:00')?.court_id).toBe(C1);
+    expect(pickCourt(grid, 'badminton', '23:30', '00:00:00')?.court_id).toBe(C1);
+  });
+
+  it('offers the last slot and keeps it last in time order', () => {
+    const grid = [lateRow(C1, ['available', 'available'])];
+    const times = timesFor(grid, 'badminton');
+    expect(times.map((t) => t.start)).toEqual(['23:00', '23:30']);
+    expect(times[1].end).toBe('00:00');
+  });
+
+  it('reads the slot length of a slot ending at midnight as 30, not -1410', () => {
+    const court = makeCourtAvailability(C1, {}, [
+      makeSlot({ court_id: C1, start_time: '23:30', end_time: '00:00' }),
+    ]);
+    expect(gridSlotMinutes([court])).toBe(30);
+  });
+
+  it("counts a moved booking's own slots up to midnight as free", () => {
+    const grid = [lateRow(C1, ['booked', 'booked'])];
+    const own = { court_id: C1, start_time: '23:00:00', end_time: '00:00:00' };
+    expect(timesFor(grid, 'badminton', { own }).map((t) => t.start)).toEqual(['23:00', '23:30']);
+    expect(pickCourt(grid, 'badminton', '23:00', '24:00', { own })?.court_id).toBe(C1);
+  });
+
+  it('respects a maximum length across midnight', () => {
+    const grid = [
+      makeCourtAvailability(C1, { max_booking_duration_minutes: 30 }, [
+        makeSlot({ court_id: C1, start_time: '23:00', end_time: '23:30' }),
+        makeSlot({ court_id: C1, start_time: '23:30', end_time: '00:00' }),
+      ]),
+    ];
+    expect(pickCourt(grid, 'badminton', '23:00', '00:00')).toBeNull();
+    expect(pickCourt(grid, 'badminton', '23:30', '00:00')?.court_id).toBe(C1);
+  });
+});
+
+describe('withinHours', () => {
+  const hours = [
+    { day_of_week: 1, open_time: '08:00:00', close_time: '00:00:00', is_closed: false },
+    { day_of_week: 2, open_time: '08:00:00', close_time: '22:00:00', is_closed: false },
+    { day_of_week: 3, open_time: '08:00:00', close_time: '22:00:00', is_closed: true },
+  ];
+
+  it('reads a close of 00:00 as midnight at the end of the day', () => {
+    expect(withinHours('23:30', '00:00', hours, 1)).toBe(true);
+    expect(withinHours('07:30', '08:00', hours, 1)).toBe(false);
+  });
+
+  it('closes days marked closed or not listed, and allows everything without hours', () => {
+    expect(withinHours('21:30', '22:00', hours, 2)).toBe(true);
+    expect(withinHours('22:00', '22:30', hours, 2)).toBe(false);
+    expect(withinHours('10:00', '11:00', hours, 3)).toBe(false);
+    expect(withinHours('10:00', '11:00', hours, 4)).toBe(false);
+    expect(withinHours('10:00', '11:00', null, 4)).toBe(true);
+    expect(withinHours('10:00', '11:00', [], 4)).toBe(true);
   });
 });

@@ -1,30 +1,30 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { StyleSheet, Text, View, Pressable } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
   clutch,
   useMutationKey,
-  type Booking,
+  type BookingId,
+  type BookingRecord,
   type CourtAvailability,
 } from '../../lib/clutch';
 import { queryKeys } from '../../lib/queries';
+import { useSession } from '../../lib/session';
 import { PrimaryButton, Skeleton } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
-import {
-  formatDateLong,
-  formatDuration,
-  formatMoney,
-  formatTimeRangeCompact,
-  type TimeRange,
-} from './booking';
+import { formatDateLong, formatDuration, formatTimeRangeCompact, type TimeRange } from './booking';
 import { describeBookingFailure, type BookingFailure } from './booking-failures';
 import { BookingSummaryCard } from './BookingSummaryCard';
+import { chargeFromQuote, chargeTotal, type Charge } from './charge';
+import { ChargeSummary } from './ChargeSummary';
 import type { HoldSession } from './hold-session';
 import { MembershipInactiveState } from './MembershipInactiveState';
+import { paymentLedger, usePaymentLedger } from './payment-ledger';
 import { ProcessingOverlay } from './ProcessingOverlay';
+import { quoteQuery } from './quote';
 import { StepShell } from './StepShell';
-import { useBookingPayment } from './useBookingPayment';
+import { useBookingPayment, type BookingFacts } from './useBookingPayment';
 import { useCountdown } from './useCountdown';
 
 const HOLD_WARNING_SECONDS = 120;
@@ -35,28 +35,32 @@ export interface CheckoutStepProps {
   date: string;
   range: TimeRange;
   holdSession: HoldSession;
-  onConfirmed: (booking: Booking) => void;
+  /** Clutch confirmed the booking; `charge` is what checkout showed for it. */
+  onConfirmed: (booking: BookingFacts, charge: Charge | null) => void;
   /** The time cannot be had (taken, hold ended, released): back to times. */
   onPickAnotherTime: (message: string | null) => void;
-  /** A payment is clearing and the member leaves: open the booking to finish there. */
-  onLeaveToBooking: (booking: Booking) => void;
+  /** A payment is clearing and the member leaves: open the booking to check it there. */
+  onLeaveToBooking: (bookingId: BookingId) => void;
 }
 
 /**
  * Checkout: hold the court, pay, confirm.
  *
  *  1. POST /bookings holds the court for this range: a `pending` booking
- *     with a 15-minute hold. Its price_cents is the authoritative total.
- *  2. Pay through useBookingPayment (intent, sheet or simulated checkout,
- *     confirm with the completed intent id; a free booking confirms directly).
- *  3. Clutch's confirmed booking is the success.
+ *     with a 15-minute hold.
+ *  2. The total shown is Clutch's: the P4 quote's total_cents (tax
+ *     included); without P4 there is no quote, so the court price shows with
+ *     "total shown at payment", and once the intent exists, its subtotal and
+ *     tax as Clutch returned them (never added up here).
+ *  3. Pay through useBookingPayment (one intent per hold for the session,
+ *     sheet or simulated checkout, confirm with the completed intent id; a
+ *     free booking confirms directly). Clutch's answer is the success.
  *
  * Hold and payment are separate. A failed intent request or a closed sheet
  * KEEPS the hold so the member can try again until it expires; "Release
- * court" cancels it explicitly. A payment Clutch has not seen settle
- * (payment_not_verified / payment_processing) is re-checked, never re-paid.
- * A hold that ended (booking_changed, booking_not_pending, expiry) sends the
- * member back to times with a fresh grid.
+ * court" lets it go, but only through hold-release.ts (a fresh read says it
+ * is still a pending hold and no payment is in flight). A payment Clutch has
+ * not confirmed is re-checked, never re-paid, and leaving does not release.
  */
 export function CheckoutStep({
   sport,
@@ -69,8 +73,10 @@ export function CheckoutStep({
   onLeaveToBooking,
 }: CheckoutStepProps) {
   const queryClient = useQueryClient();
+  const { userId } = useSession();
   const createKey = useMutationKey();
-  const [held, setHeld] = useState<Booking | null>(null);
+  const [held, setHeld] = useState<BookingRecord | null>(null);
+  usePaymentLedger();
 
   const input = {
     court_id: court.court_id,
@@ -78,6 +84,8 @@ export function CheckoutStep({
     start_time: range.start,
     end_time: range.end,
   };
+
+  const quote = useQuery(quoteQuery(input));
 
   const create = useMutation({
     // The hold is reported from inside mutationFn: the request can outlive
@@ -96,8 +104,16 @@ export function CheckoutStep({
     },
   });
 
+  const quoted = quote.data ? chargeFromQuote(quote.data) : null;
+  const quotedRef = useRef<Charge | null>(null);
+  quotedRef.current = quoted;
+
   const payment = useBookingPayment(held?.id ?? null, {
-    onConfirmed,
+    mode: 'hold',
+    currency: held?.currency ?? court.slots[0]?.currency ?? 'USD',
+    // The confirmation shows what checkout showed: the quote, else the
+    // intent's own lines.
+    onConfirmed: (booking, charged) => onConfirmed(booking, quotedRef.current ?? charged),
     onLockChange: (locked) => holdSession.setPaymentLocked(locked),
   });
 
@@ -112,7 +128,7 @@ export function CheckoutStep({
   }, [createMutate, input]);
 
   const secondsLeft = useCountdown(held?.hold_expires_at ?? null);
-  const settling = payment.stage !== 'idle' && payment.stage !== 'submitted';
+  const settling = payment.stage !== 'idle';
   const holdLapsed = secondsLeft !== null && secondsLeft <= 0 && !settling;
 
   const subtitle = 'Confirm and pay to book your court';
@@ -120,7 +136,7 @@ export function CheckoutStep({
   // ── Hold could not be created ──
 
   if (create.isError) {
-    const failure = describeBookingFailure(create.error);
+    const failure = describeBookingFailure(create.error, { bookingParity: clutch.capabilities.bookingParity });
     return (
       <StepShell title="Checkout" subtitle={subtitle}>
         <FailureBox
@@ -145,9 +161,11 @@ export function CheckoutStep({
     );
   }
 
+  const inFlight = paymentLedger.inFlight(userId, held.id);
+
   // ── The hold ended before the booking was confirmed ──
 
-  if (holdLapsed) {
+  if (holdLapsed && !inFlight) {
     return (
       <StepShell title="Checkout" subtitle={subtitle}>
         <Notice
@@ -161,7 +179,11 @@ export function CheckoutStep({
   }
 
   const failure = payment.failure;
-  if (failure && (failure.action === 'pick-time' || failure.action === 'membership' || failure.action === 'waiver')) {
+  if (
+    failure &&
+    payment.stage === 'idle' &&
+    (failure.action === 'pick-time' || failure.action === 'membership' || failure.action === 'waiver')
+  ) {
     return (
       <StepShell title="Checkout" subtitle={subtitle}>
         <FailureBox failure={failure} onPickTime={() => onPickAnotherTime(failure.message)} />
@@ -170,25 +192,20 @@ export function CheckoutStep({
   }
 
   if (payment.stage === 'unconfirmed') {
+    // Money may be moving: no Pay here or on the booking screen, only asking
+    // Clutch again. Leaving keeps the hold (nothing releases it while the
+    // payment is in flight).
     return (
       <StepShell title="Checkout" subtitle={subtitle}>
         <Notice
           title={failure?.title ?? 'Your payment is clearing'}
           message={
             failure?.message ??
-            'The club has not seen your payment settle yet. Check again in a moment; you will not be charged twice.'
+            'The club has not confirmed your payment yet. Check again in a moment; you will not be charged twice.'
           }
         >
-          <PrimaryButton
-            label="Check again"
-            variant="secondary"
-            onPress={() => void payment.checkAgain()}
-          />
-          <PrimaryButton
-            label="Leave and check later"
-            variant="ghost"
-            onPress={() => onLeaveToBooking(held)}
-          />
+          <PrimaryButton label="Check again" variant="secondary" onPress={() => void payment.checkAgain()} />
+          <PrimaryButton label="Leave and check later" variant="ghost" onPress={() => onLeaveToBooking(held.id)} />
         </Notice>
       </StepShell>
     );
@@ -197,8 +214,12 @@ export function CheckoutStep({
   // ── The payable hold ──
 
   const free = held.price_cents <= 0;
-  const payLabel = free ? 'Confirm booking' : `Confirm and pay ${formatMoney(held.price_cents, held.currency)}`;
+  const charge: Charge = quoted ??
+    payment.charge ?? { kind: 'unknown', currency: held.currency, price_cents: held.price_cents };
+  const total = chargeTotal(charge);
+  const payLabel = free ? 'Confirm booking' : total ? `Confirm and pay ${total}` : 'Continue to payment';
   const busy = payment.stage === 'preparing' || payment.stage === 'paying' || payment.stage === 'confirming';
+  const canRelease = !busy && !inFlight;
 
   return (
     <StepShell
@@ -209,9 +230,9 @@ export function CheckoutStep({
           <PrimaryButton
             label={payLabel}
             loading={busy}
-            onPress={() => void payment.pay({ amountCents: held.price_cents, settle: 'confirm' })}
+            onPress={() => void payment.pay({ free })}
           />
-          {!busy ? (
+          {canRelease ? (
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Release court"
@@ -237,20 +258,7 @@ export function CheckoutStep({
         ]}
       />
 
-      <View style={styles.orderSummary}>
-        <Text style={styles.orderTitle}>Order summary</Text>
-        {held.original_price_cents && held.discount_amount_cents ? (
-          <>
-            <Row label="Court fee" value={formatMoney(held.original_price_cents, held.currency)} />
-            <Row label="Discount" value={`-${formatMoney(held.discount_amount_cents, held.currency)}`} />
-          </>
-        ) : null}
-        <View style={styles.orderDivider} />
-        <View style={styles.orderRow}>
-          <Text style={styles.orderTotalLabel}>Total due today</Text>
-          <Text style={styles.orderTotal}>{formatMoney(held.price_cents, held.currency)}</Text>
-        </View>
-      </View>
+      {free ? null : <ChargeSummary charge={charge} />}
 
       {secondsLeft !== null ? (
         <View style={styles.holdHint} accessibilityLabel={holdAnnouncement(court.court_name, secondsLeft)}>
@@ -261,7 +269,7 @@ export function CheckoutStep({
           />
           <Text style={styles.holdHintText}>
             {court.court_name} is held for you for{' '}
-            <Text style={styles.holdHintStrong}>{formatCountdown(secondsLeft)}</Text>
+            <Text style={styles.holdHintStrong}>{formatCountdown(Math.max(0, secondsLeft))}</Text>
           </Text>
         </View>
       ) : null}
@@ -280,15 +288,6 @@ export function CheckoutStep({
 
       <ProcessingOverlay visible={payment.stage === 'confirming'} courtName={court.court_name} />
     </StepShell>
-  );
-}
-
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.orderRow}>
-      <Text style={styles.orderLabel}>{label}</Text>
-      <Text style={styles.orderValue}>{value}</Text>
-    </View>
   );
 }
 
@@ -370,49 +369,6 @@ const styles = StyleSheet.create({
     color: colors.textLink,
     fontFamily: fonts.bodySemibold,
     fontSize: 14,
-  },
-  orderSummary: {
-    backgroundColor: colors.bgElevated,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing.md,
-    gap: spacing.sm,
-  },
-  orderTitle: {
-    color: colors.text,
-    fontFamily: fonts.displaySemibold,
-    fontSize: 16,
-  },
-  orderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: spacing.md,
-  },
-  orderLabel: {
-    color: colors.textMuted,
-    fontFamily: fonts.body,
-    fontSize: 14,
-  },
-  orderValue: {
-    color: colors.text,
-    fontFamily: fonts.bodySemibold,
-    fontSize: 14,
-  },
-  orderDivider: {
-    height: 1,
-    backgroundColor: colors.border,
-  },
-  orderTotalLabel: {
-    color: colors.text,
-    fontFamily: fonts.bodySemibold,
-    fontSize: 15,
-  },
-  orderTotal: {
-    color: colors.accent,
-    fontFamily: fonts.displayBold,
-    fontSize: 18,
   },
   holdHint: {
     flexDirection: 'row',

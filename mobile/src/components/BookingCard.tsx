@@ -1,6 +1,6 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
-import type { BookingWithCourt } from '../lib/clutch';
+import type { Booking } from '../lib/clutch';
 import {
   bookingStatusLabel,
   formatDateHeading,
@@ -11,12 +11,16 @@ import {
 import { colors, fonts, radius, spacing } from '../theme/tokens';
 import { Badge, bookingStatusVariant } from './Badge';
 
-/** The fields of a Clutch booking row (GET /me/bookings) the card renders. */
+/**
+ * The fields of a Clutch booking row (/me/home, /me/bookings) the card
+ * renders. `my_due_cents` is null on a booking that is not live, and absent
+ * where the caller has no such figure.
+ */
 export type BookingCardBooking = Pick<
-  BookingWithCourt,
+  Booking,
   'id' | 'date' | 'start_time' | 'end_time' | 'status' | 'court_name' | 'court_type' | 'currency'
 > &
-  Partial<Pick<BookingWithCourt, 'my_due_cents'>>;
+  Partial<Pick<Booking, 'my_due_cents'>>;
 
 interface BookingCardProps {
   booking: BookingCardBooking;
@@ -36,6 +40,7 @@ export function BookingCard({ booking, onPress, variant = 'standard' }: BookingC
   const sport = booking.court_type ? sportLabel(booking.court_type) : 'Court';
   const when = `${formatDateHeading(booking.date)} | ${formatTimeRangeCompact(booking.start_time, booking.end_time)}`;
   const due = booking.my_due_cents ?? 0;
+  // Dues are before tax; tax, if any, is added at payment.
   return (
     <Pressable
       onPress={open}

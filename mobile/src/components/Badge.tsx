@@ -1,6 +1,8 @@
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import { colors, fonts, radius, spacing } from '../theme/tokens';
-import type { BookingPlayerStatus, BookingStatus } from '../lib/clutch';
+import type { Booking } from '../lib/clutch';
+
+type BookingStatus = Booking['status'];
 
 export type BadgeVariant = 'neutral' | 'accent' | 'success' | 'danger' | 'warning' | 'pro';
 
@@ -39,7 +41,8 @@ const BOOKING_TONE: Record<BookingStatus, BadgeVariant> = {
   no_show: 'neutral',
 };
 
-const PLAYER_TONE: Record<BookingPlayerStatus, BadgeVariant> = {
+/** Player rows type their status as a string (`invited`, `accepted`, `declined`). */
+const PLAYER_TONE: Record<string, BadgeVariant> = {
   accepted: 'success',
   invited: 'warning',
   declined: 'danger',
@@ -51,7 +54,7 @@ export function bookingStatusVariant(status: BookingStatus): BadgeVariant {
 }
 
 /** Map a booking player's status to a badge variant. */
-export function playerStatusVariant(status: BookingPlayerStatus): BadgeVariant {
+export function playerStatusVariant(status: string): BadgeVariant {
   return PLAYER_TONE[status] ?? 'neutral';
 }
 

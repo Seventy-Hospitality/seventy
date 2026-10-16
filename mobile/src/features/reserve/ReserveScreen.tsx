@@ -1,30 +1,56 @@
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useQuery } from '@tanstack/react-query';
+import { entitlement } from '../../lib/clutch';
 import { useClub } from '../../lib/club';
+import { membershipQuery } from '../../lib/queries';
 import { AppScreen, EmptyStateView, PrimaryButton, Skeleton } from '../../components';
 import { colors, fonts, spacing } from '../../theme/tokens';
 import { sportLabel } from './booking';
 import { courtCountFor, sportsFrom } from './court-picker';
+import { membershipGateCopy } from './membership-gate';
+import { MembershipInactiveState } from './MembershipInactiveState';
 import { SportTile } from './SportIcon';
 
 /**
  * The Reserve tab: the club's sports (distinct court types, in court order)
  * with how many courts each has. Picking a sport opens the booking wizard for
- * that court_type. Whether the member may book is Clutch's answer at hold
- * time, not a guess made here.
+ * that court_type. A member who may not book (entitlement() over GET
+ * /me/membership) sees why and where to fix it above the list; the wizard
+ * enforces the same gate.
  */
 export function ReserveScreen() {
   const club = useClub();
+  const membership = useQuery(membershipQuery);
+  const access = membership.data ? entitlement(membership.data) : null;
+  const gate = access && access !== 'entitled' ? membershipGateCopy(access) : null;
   const courts = club.data?.courts ?? [];
   const sports = sportsFrom(courts);
 
   return (
-    <AppScreen refreshing={club.isRefetching} onRefresh={() => void club.refetch()}>
+    <AppScreen
+      refreshing={club.isRefetching}
+      onRefresh={() => {
+        void club.refetch();
+        void membership.refetch();
+      }}
+    >
       <View style={styles.header}>
         <Text style={styles.title}>Reserve</Text>
         <Text style={styles.subtitle}>Book a court in advance</Text>
       </View>
+
+      {gate ? (
+        <View style={styles.errorBox}>
+          <MembershipInactiveState
+            title={gate.title}
+            description={gate.description}
+            actionLabel={gate.actionLabel}
+            href={gate.href}
+          />
+        </View>
+      ) : null}
 
       {club.isPending ? (
         <View style={styles.list} accessibilityLabel="Loading sports">

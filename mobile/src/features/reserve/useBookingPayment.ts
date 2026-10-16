@@ -1,265 +1,208 @@
 /**
- * The one way the app pays for a booking: a new hold at checkout, a hold
- * resumed from the booking screen, the booker's balance on a confirmed
- * booking, a player's share, and (Clutch P4) the difference on a dearer move.
+ * The three things a member pays for on a booking, each on the one payment
+ * path (usePaymentFlow):
  *
- *   intent  POST /bookings/{id}/payment-intent  (Clutch issues it; the app
- *           never picks the amount: share_cents is only Clutch's own due echoed
- *           back as a check that the figure shown is still the one owed)
- *   pay     stripe:    presentConnectedSheet(intent) on the club's account
- *           simulated: POST /bookings/{id}/payment-intent/pay (no sheet)
- *   settle  'confirm': POST /bookings/{id}/confirm with the COMPLETED intent
- *                      id; Clutch asks the provider and records the payment.
- *                      A free booking confirms with no intent.
- *           'refetch': a player's share. Clutch records it from the provider
- *                      (webhook); /api/v1 has no confirm for a player's share
- *                      yet, so the app reloads the booking and shows its dues.
+ * - useBookingPayment: the booker's hold (pending: pay, then confirm) or
+ *   balance (confirmed: pay what Clutch says they still owe, then confirm
+ *   records it). POST /bookings/{id}/payment-intent, then /confirm.
+ * - useSharePayment (Clutch P4): a player's share of someone else's booking.
+ *   POST /bookings/{id}/shares/payment-intent, then /shares/confirm; never
+ *   the booker's /payment-intent. Simulated: /payment-intent/pay, then
+ *   /shares/confirm.
+ * - useMovePayment (Clutch P4): the difference plus tax on a dearer move.
+ *   POST /bookings/{id}/reschedule/payment-intent, then /reschedule/confirm.
  *
- * A completed sheet is never shown as success on its own: success is what
- * confirm (or the reloaded booking) says.
- *
- * Keys: one per logical mutation. The intent key is per booking and share; the
- * confirm key per booking and intent. A 4xx ends a key (Clutch caches it), so
- * "Check again" after payment_not_verified sends a NEW key and Clutch asks the
- * provider afresh; a network failure keeps the key so the retry replays.
+ * Callers gate the P4 flows on clutch.capabilities.bookingParity.
  */
-import { useCallback, useRef, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
 import {
-  bookingIntentToSheet,
+  bookingCheckoutToSheet,
+  checkoutIntentId,
   clutch,
-  useMutationKey,
-  type Booking,
+  snakeCheckoutToSheet,
+  type BookingDetail,
   type BookingId,
-  type BookingPaymentIntent,
+  type BookingMove,
+  type BookingRecord,
+  type ParityBooking,
+  type ShareSettled,
+  type UserId,
 } from '../../lib/clutch';
-import { queryKeys } from '../../lib/queries';
-import { usePresentConnectedSheet, type SheetResult } from '../../lib/stripe';
-import { describeBookingFailure, type BookingFailure } from './booking-failures';
+import { useSession } from '../../lib/session';
+import { endToMinutes, timeToMinutes } from './booking';
+import type { BookingFailure } from './booking-failures';
+import { chargeFromBookingCheckout, chargeFromSnakeCheckout, type Charge } from './charge';
+import { usePaymentFlow, type Settled, type Verdict } from './usePaymentFlow';
 
-export type PaymentStage =
-  /** Nothing in flight; the member can pay. */
-  | 'idle'
-  /** Asking Clutch for the payment intent. */
-  | 'preparing'
-  /** The sheet is up, or the simulated checkout is being paid. */
-  | 'paying'
-  /** Handing the completed intent to Clutch. */
-  | 'confirming'
-  /**
-   * Money moved but Clutch has not confirmed: the payment is clearing, or the
-   * confirm did not get an answer. The only way forward is checkAgain(),
-   * never a second payment.
-   */
-  | 'unconfirmed'
-  /** A share was paid; Clutch records it and the booking reloads. */
-  | 'submitted';
+export type { PaymentStage } from './usePaymentFlow';
 
-export interface PayRequest {
-  /** What Clutch says is owed now (a hold's price_cents, or a due). */
-  amountCents: number;
-  /** Pay only this share: Clutch's own due_cents for the caller. */
-  shareCents?: number;
-  /** An intent Clutch already issued (the difference on a dearer move). */
-  intent?: BookingPaymentIntent;
-  settle: 'confirm' | 'refetch';
+/** The booking fields a confirmed payment hands back, from confirm or a re-read. */
+export type BookingFacts = Pick<
+  BookingRecord,
+  'id' | 'date' | 'start_time' | 'end_time' | 'status' | 'currency' | 'price_cents' | 'paid_cents'
+>;
+
+const LIVE = new Set(['pending', 'confirmed']);
+
+function holdExpired(booking: BookingDetail, now: Date): boolean {
+  return !!booking.hold_expires_at && new Date(booking.hold_expires_at).getTime() <= now.getTime();
+}
+
+/** The booker's payment, judged from a fresh read of the booking. */
+export function bookerVerdict(booking: BookingDetail, mode: 'hold' | 'balance', now: Date = new Date()): Verdict {
+  if (!LIVE.has(booking.status)) return 'ended';
+  if (booking.status === 'pending') return holdExpired(booking, now) ? 'ended' : 'open';
+  if (mode === 'hold') return 'settled';
+  const due = booking.dues.find((row) => row.party === 'booker');
+  return !due || due.due_cents <= 0 ? 'settled' : 'open';
+}
+
+/** A player's share, judged from a fresh read (they see only their own due row). */
+export function shareVerdict(booking: BookingDetail, userId: UserId | null): Verdict {
+  if (!LIVE.has(booking.status) || !userId) return 'ended';
+  const me = booking.players.find((player) => player.user_id === userId);
+  if (!me || me.status !== 'accepted') return 'ended';
+  const due = booking.dues.find((row) => row.party === 'player' && row.user_id === userId);
+  return !due || due.due_cents <= 0 ? 'settled' : 'open';
+}
+
+/** A paid move, judged from a fresh read: made once the booking sits at the target. */
+export function moveVerdict(booking: BookingDetail, move: BookingMove): Verdict {
+  if (booking.status !== 'confirmed') return 'ended';
+  const atTarget =
+    booking.date === move.new_date &&
+    timeToMinutes(booking.start_time) === timeToMinutes(move.new_start_time) &&
+    endToMinutes(booking.end_time) === endToMinutes(move.new_end_time) &&
+    (!move.new_court_id || booking.court_id === move.new_court_id);
+  return atTarget ? 'settled' : 'open';
+}
+
+const HOLD_ENDED: BookingFailure = {
+  action: 'pick-time',
+  title: 'Your hold ended',
+  message:
+    'The court is no longer held for you. If a payment went through, the club returns it to your card. Pick a time again.',
+};
+
+const PAYMENT_ENDED: BookingFailure = {
+  action: 'refresh',
+  title: 'This payment can no longer go through',
+  message:
+    'The booking changed (it ended, or you are no longer on it). If money moved, the club returns it to your card.',
+};
+
+const MOVE_ENDED: BookingFailure = {
+  action: 'pick-time',
+  title: 'Your booking was not moved',
+  message: 'The booking changed before the move was made. If money moved, the club returns it to your card.',
+};
+
+function factsOf<T extends BookingFacts>(outcome: Settled<T>): BookingFacts {
+  return outcome.via === 'confirm' ? outcome.result : outcome.booking;
 }
 
 export interface UseBookingPaymentOptions {
-  onConfirmed?: (booking: Booking) => void;
-  onSubmitted?: () => void;
-  /** True from submitting a payment until Clutch has answered. */
+  /** hold: the booker's pending booking. balance: what they still owe on a confirmed one. */
+  mode: 'hold' | 'balance';
+  currency: string;
+  /** Balance only: Clutch's own due for the booker, echoed as a check. */
+  shareCents?: number;
+  onConfirmed?: (booking: BookingFacts, charge: Charge | null) => void;
   onLockChange?: (locked: boolean) => void;
   merchantDisplayName?: string;
 }
 
-const UNCONFIGURED: BookingFailure = {
-  action: 'none',
-  title: 'Card payments unavailable',
-  message: 'Card payments are not set up in this build of the app.',
-};
-
-export function useBookingPayment(bookingId: BookingId | null, options: UseBookingPaymentOptions = {}) {
-  const queryClient = useQueryClient();
-  const presentSheet = usePresentConnectedSheet();
-  const intentKey = useMutationKey();
-  const simulatedKey = useMutationKey();
-  const confirmKey = useMutationKey();
-
-  const [stage, setStage] = useState<PaymentStage>('idle');
-  const [failure, setFailure] = useState<BookingFailure | null>(null);
-  /** The member closed the sheet without paying; the hold is kept. */
-  const [canceled, setCanceled] = useState(false);
-  /** The completed intent awaiting Clutch's confirm (for checkAgain). */
-  const pendingIntent = useRef<string | null>(null);
-  const optionsRef = useRef(options);
-  optionsRef.current = options;
-
-  const lock = useCallback((locked: boolean) => optionsRef.current.onLockChange?.(locked), []);
-
-  const invalidate = useCallback(
-    (id: BookingId) => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.booking(id) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.bookings });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.home });
+export function useBookingPayment(bookingId: BookingId | null, options: UseBookingPaymentOptions) {
+  const { userId } = useSession();
+  return usePaymentFlow<BookingRecord>({
+    bookingId,
+    userId,
+    purpose: 'booking',
+    variant: options.shareCents === undefined ? '' : `share:${options.shareCents}`,
+    createIntent: async (id, key) => {
+      const checkout = await clutch.bookings.paymentIntent(id, {
+        idempotencyKey: key,
+        shareCents: options.shareCents,
+      });
+      return {
+        sheet: bookingCheckoutToSheet(checkout),
+        intentId: checkoutIntentId(checkout),
+        charge: chargeFromBookingCheckout(checkout, options.currency),
+      };
     },
-    [queryClient],
-  );
-
-  const confirmWith = useCallback(
-    async (id: BookingId, intentId: string | null) => {
-      pendingIntent.current = intentId;
-      setStage('confirming');
-      try {
-        const booking = await confirmKey.run({ id, intentId }, (key) =>
-          clutch.bookings.confirm(id, intentId, { idempotencyKey: key }),
-        );
-        pendingIntent.current = null;
-        queryClient.setQueryData(queryKeys.booking(id), (old: unknown) =>
-          old && typeof old === 'object' ? { ...old, ...booking } : old,
-        );
-        invalidate(id);
-        setStage('idle');
-        optionsRef.current.onConfirmed?.(booking);
-        lock(false);
-      } catch (err) {
-        const described = describeBookingFailure(err);
-        setFailure(described);
-        if (intentId && (described.action === 'check-again' || described.action === 'retry')) {
-          // Money may have moved: stay locked and only ever ask Clutch again.
-          setStage('unconfirmed');
-          return;
-        }
-        if (!intentId && described.action === 'retry') {
-          // A free booking: nothing was paid, the member can simply try again.
-          setStage('idle');
-          lock(false);
-          return;
-        }
-        pendingIntent.current = null;
-        setStage('idle');
-        lock(false);
-        invalidate(id);
-      }
-    },
-    [confirmKey, invalidate, lock, queryClient],
-  );
-
-  const pay = useCallback(
-    async (request: PayRequest) => {
-      if (!bookingId) return;
-      if (stage !== 'idle' && stage !== 'submitted') return;
-      setFailure(null);
-      setCanceled(false);
-
-      if (request.amountCents <= 0 && request.settle === 'confirm' && !request.intent) {
-        lock(true);
-        await confirmWith(bookingId, null);
-        return;
-      }
-
-      let intent = request.intent;
-      if (!intent) {
-        setStage('preparing');
-        try {
-          intent = await intentKey.run({ bookingId, share: request.shareCents ?? null }, (key) =>
-            clutch.bookings.paymentIntent(bookingId, {
-              idempotencyKey: key,
-              shareCents: request.shareCents,
-            }),
-          );
-        } catch (err) {
-          // The intent step failed: the hold is KEPT (it has its own expiry)
-          // so the member can try again; nothing was charged.
-          setFailure(describeBookingFailure(err));
-          setStage('idle');
-          return;
-        }
-      }
-
-      const sheet = bookingIntentToSheet(intent);
-      lock(true);
-      setStage('paying');
-
-      let completedId: string;
-      if (sheet.mode === 'simulated') {
-        const intentId = intent.paymentIntentId;
-        try {
-          await simulatedKey.run({ bookingId, intentId }, (key) =>
-            clutch.bookings.paySimulated(bookingId, intentId, { idempotencyKey: key }),
-          );
-        } catch (err) {
-          setFailure(describeBookingFailure(err));
-          setStage('idle');
-          lock(false);
-          return;
-        }
-        completedId = intentId;
-      } else {
-        let result: SheetResult;
-        try {
-          result = await presentSheet(sheet, {
-            merchantDisplayName: optionsRef.current.merchantDisplayName,
-          });
-        } catch {
-          result = { status: 'failed', message: 'The payment sheet could not open.' };
-        }
-        switch (result.status) {
-          case 'completed':
-            completedId = result.intentId;
-            break;
-          case 'canceled':
-            // Closed before paying: nothing was charged and the hold is kept
-            // for another try until it expires.
-            setCanceled(true);
-            setStage('idle');
-            lock(false);
-            return;
-          case 'failed':
-            // The sheet reports a decline or an error it showed the member.
-            // Unlocking is safe: should the charge have gone through after
-            // all, Clutch returns money held by a hold that is released.
-            setFailure({
-              action: 'retry-payment',
-              title: 'Payment did not go through',
-              message: result.message || 'Your payment could not be completed. Try again.',
-            });
-            setStage('idle');
-            lock(false);
-            return;
-          case 'unconfigured':
-            setFailure(UNCONFIGURED);
-            setStage('idle');
-            lock(false);
-            return;
-        }
-      }
-
-      if (request.settle === 'refetch') {
-        invalidate(bookingId);
-        setStage('submitted');
-        lock(false);
-        optionsRef.current.onSubmitted?.();
-        return;
-      }
-      await confirmWith(bookingId, completedId);
-    },
-    [bookingId, confirmWith, intentKey, invalidate, lock, presentSheet, simulatedKey, stage],
-  );
-
-  /** Ask Clutch again whether the submitted payment settled (new key after a 4xx). */
-  const checkAgain = useCallback(async () => {
-    if (!bookingId || stage !== 'unconfirmed') return;
-    setFailure(null);
-    await confirmWith(bookingId, pendingIntent.current);
-  }, [bookingId, confirmWith, stage]);
-
-  const clearFailure = useCallback(() => {
-    setFailure(null);
-    setCanceled(false);
-  }, []);
-
-  return { stage, failure, canceled, pay, checkAgain, clearFailure };
+    confirm: (id, intentId, key) => clutch.bookings.confirm(id, intentId, { idempotencyKey: key }),
+    judge: (booking) => bookerVerdict(booking, options.mode),
+    onSettled: (outcome, charge) => options.onConfirmed?.(factsOf(outcome), charge),
+    ended: options.mode === 'hold' ? HOLD_ENDED : PAYMENT_ENDED,
+    onLockChange: options.onLockChange,
+    merchantDisplayName: options.merchantDisplayName,
+  });
 }
 
-export type BookingPayment = ReturnType<typeof useBookingPayment>;
+export interface UseSharePaymentOptions {
+  currency: string;
+  /** Clutch recorded the share: its own figures, or the re-read booking. */
+  onPaid?: (outcome: Settled<ShareSettled>) => void;
+  onLockChange?: (locked: boolean) => void;
+}
+
+/** P4: a player pays their share. Callers render it only with bookingParity on. */
+export function useSharePayment(bookingId: BookingId | null, options: UseSharePaymentOptions) {
+  const { userId } = useSession();
+  return usePaymentFlow<ShareSettled>({
+    bookingId,
+    userId,
+    purpose: 'share',
+    createIntent: async (id, key) => {
+      const checkout = await clutch.bookings.sharePaymentIntent(id, { idempotencyKey: key });
+      return {
+        sheet: snakeCheckoutToSheet(checkout),
+        intentId: checkout.payment_intent_id,
+        charge: chargeFromSnakeCheckout(checkout, options.currency),
+      };
+    },
+    confirm: (id, intentId, key) => {
+      // A share always has an intent; the flow never confirms one without.
+      if (!intentId) return Promise.reject(new Error('A share payment needs its intent.'));
+      return clutch.bookings.shareConfirm(id, intentId, { idempotencyKey: key });
+    },
+    judge: (booking) => shareVerdict(booking, userId),
+    onSettled: (outcome) => options.onPaid?.(outcome),
+    ended: PAYMENT_ENDED,
+    onLockChange: options.onLockChange,
+  });
+}
+
+export interface UseMovePaymentOptions {
+  currency: string;
+  onMoved?: (booking: Pick<BookingFacts, 'date' | 'start_time' | 'end_time'>) => void;
+  onLockChange?: (locked: boolean) => void;
+}
+
+/** P4: pay the difference on a dearer move, then make the move. */
+export function useMovePayment(bookingId: BookingId | null, move: BookingMove, options: UseMovePaymentOptions) {
+  const { userId } = useSession();
+  return usePaymentFlow<ParityBooking>({
+    bookingId,
+    userId,
+    purpose: 'move',
+    variant: JSON.stringify(move),
+    createIntent: async (id, key) => {
+      const checkout = await clutch.bookings.reschedulePaymentIntent(id, move, { idempotencyKey: key });
+      return {
+        sheet: snakeCheckoutToSheet(checkout),
+        intentId: checkout.payment_intent_id,
+        charge: chargeFromSnakeCheckout(checkout, options.currency),
+        expiresAt: checkout.expires_at,
+      };
+    },
+    confirm: (id, intentId, key) => {
+      if (!intentId) return Promise.reject(new Error('A paid move needs its intent.'));
+      return clutch.bookings.rescheduleConfirm(id, intentId, { idempotencyKey: key });
+    },
+    judge: (booking) => moveVerdict(booking, move),
+    onSettled: (outcome) =>
+      options.onMoved?.(outcome.via === 'confirm' ? outcome.result : outcome.booking),
+    ended: MOVE_ENDED,
+    onLockChange: options.onLockChange,
+  });
+}

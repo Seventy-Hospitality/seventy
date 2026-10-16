@@ -10,7 +10,10 @@
  * Money is formatted here and never computed: every figure comes from Clutch
  * (a slot's price_cents, a quote, a booking's price_cents, a due).
  */
-import type { BookingPlayerStatus, BookingStatus } from '../../lib/clutch';
+import type { Booking } from '../../lib/clutch';
+
+/** A booking's status, as every booking shape in the contract spells it. */
+export type BookingStatus = Booking['status'];
 
 // ── Wall-clock time ──
 
@@ -23,6 +26,24 @@ export function toHHMM(time: string): string {
 export function timeToMinutes(time: string): number {
   const [hours, minutes] = time.split(':').map(Number);
   return hours * 60 + minutes;
+}
+
+/**
+ * Minutes from the club's midnight for the END of a range. Clutch writes the
+ * end of the day as "00:00" (and "00:00:00"; the client also sends "24:00" as
+ * "00:00"), so an end of 00:00 after any start is midnight at the end of the
+ * day: 1440, never 0.
+ */
+export function endToMinutes(end: string): number {
+  // A range never ends at the midnight it starts from, so 00:00 as an end is
+  // always the midnight that closes the day.
+  const minutes = timeToMinutes(end);
+  return minutes === 0 ? 24 * 60 : minutes;
+}
+
+/** The length of [start, end) in minutes, reading an end of 00:00 as midnight. */
+export function rangeMinutes(start: string, end: string): number {
+  return endToMinutes(end) - timeToMinutes(start);
 }
 
 export function minutesToTime(minutes: number): string {
@@ -256,7 +277,8 @@ export function selectionRange(selected: string[], slotMinutes: number): TimeRan
 /** The slot starts inside [start, end): restores a selection from a booking. */
 export function slotsInRange(start: string, end: string, slotMinutes: number): string[] {
   const out: string[] = [];
-  for (let at = timeToMinutes(start); at < timeToMinutes(end); at += slotMinutes) {
+  const last = endToMinutes(end);
+  for (let at = timeToMinutes(start); at < last; at += slotMinutes) {
     out.push(minutesToTime(at));
   }
   return out;
@@ -321,12 +343,13 @@ export function bookingStatusLabel(status: BookingStatus): string {
   return BOOKING_STATUS_LABELS[status];
 }
 
-const PLAYER_STATUS_LABELS: Record<BookingPlayerStatus, string> = {
+const PLAYER_STATUS_LABELS: Record<string, string> = {
   invited: 'Invited',
   accepted: 'Accepted',
   declined: 'Declined',
 };
 
-export function playerStatusLabel(status: BookingPlayerStatus): string {
-  return PLAYER_STATUS_LABELS[status];
+/** A player row's status (`invited`, `accepted`, `declined`; Clutch types it as a string). */
+export function playerStatusLabel(status: string): string {
+  return PLAYER_STATUS_LABELS[status] ?? sportLabel(status);
 }

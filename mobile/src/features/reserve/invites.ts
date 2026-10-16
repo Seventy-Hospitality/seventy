@@ -4,11 +4,11 @@
  * /bookings/{id}/invite-group, a snapshot of the group's roster). Pure
  * selection logic; sending lives in useSendInvites.
  */
-import type { GroupId, GroupSummary, PlayerSearchResult, UserId } from '../../lib/clutch';
+import type { GroupId, GroupSummary, ClubPlayer, UserId } from '../../lib/clutch';
 
 export interface InviteSelection {
   /** Picked members, in pick order (chips render this order). */
-  players: PlayerSearchResult[];
+  players: ClubPlayer[];
   /** Picked groups, in pick order. */
   groups: GroupSummary[];
 }
@@ -28,7 +28,7 @@ export function isGroupSelected(selection: InviteSelection, groupId: GroupId): b
   return selection.groups.some((group) => group.id === groupId);
 }
 
-export function togglePlayer(selection: InviteSelection, player: PlayerSearchResult): InviteSelection {
+export function togglePlayer(selection: InviteSelection, player: ClubPlayer): InviteSelection {
   if (isPlayerSelected(selection, player.user_id)) return removePlayer(selection, player.user_id);
   return { ...selection, players: [...selection.players, player] };
 }
@@ -56,9 +56,6 @@ export function groupChipLabel(group: GroupSummary): string {
 }
 
 /** Search results minus people who are already on the booking (and the caller). */
-export function invitablePlayers(
-  results: readonly PlayerSearchResult[],
-  exclude: ReadonlySet<string>,
-): PlayerSearchResult[] {
+export function invitablePlayers(results: readonly ClubPlayer[], exclude: ReadonlySet<string>): ClubPlayer[] {
   return results.filter((player) => !exclude.has(player.user_id));
 }

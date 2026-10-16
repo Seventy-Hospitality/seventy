@@ -1,25 +1,19 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
-import {
-  clutch,
-  hasCode,
-  useMutationKey,
-  type BookingDetail,
-  type BookingId,
-  type BookingPlayer,
-} from '../../lib/clutch';
+import { clutch, hasCode, useMutationKey, type BookingDetail, type BookingId } from '../../lib/clutch';
 import { useClub } from '../../lib/club';
-import { bookingQuery, queryKeys } from '../../lib/queries';
+import { bookingInvitationsQuery, bookingQuery, queryKeys } from '../../lib/queries';
 import { useSession } from '../../lib/session';
 import {
   Avatar,
   Badge,
   bookingStatusVariant,
   EmptyStateView,
+  FeatureUnavailable,
   playerStatusVariant,
   PrimaryButton,
   Sheet,
@@ -34,13 +28,23 @@ import {
   formatMoney,
   formatTimeRangeCompact,
   playerStatusLabel,
-  timeToMinutes,
+  rangeMinutes,
 } from '../reserve/booking';
 import { describeBookingFailure } from '../reserve/booking-failures';
 import { BookingSummaryCard } from '../reserve/BookingSummaryCard';
 import { bookingRulesOf, usableTimezone } from '../reserve/club-rules';
-import { useBookingPayment } from '../reserve/useBookingPayment';
-import { playerDisplayName, rosterOf, viewerOf, type BookingViewer } from './booking-viewer';
+import { releaseHoldIfPending } from '../reserve/hold-release';
+import { paymentLedger, usePaymentLedger } from '../reserve/payment-ledger';
+import { rememberAcceptedBooking } from './accepted-bookings';
+import {
+  playerDisplayName,
+  rosterOf,
+  viewerOf,
+  type BookingPlayer,
+  type BookingViewer,
+} from './booking-viewer';
+import { BookerPayBox, DueRow, SharePayBox } from './PayBoxes';
+import { useLeaveBooking } from './useLeaveBooking';
 import { useRespondToBooking } from './useRespondToBooking';
 
 /**
@@ -48,10 +52,16 @@ import { useRespondToBooking } from './useRespondToBooking';
  * its status, the players, and what the viewer owes (Clutch's dues).
  *
  * - the booker cancels (Clutch applies the cancellation window and refund
- *   policy), reschedules, invites more, removes a player, pays a hold or a
- *   balance;
- * - an invited player accepts or declines; an accepted player leaves or pays
- *   their share.
+ *   policy; a pending hold is released only after a fresh read says it is
+ *   still a hold), reschedules, invites more, removes a player (P4), pays a
+ *   hold or a balance;
+ * - an invited player accepts or declines (P4); an accepted player leaves
+ *   (P4) or pays their share (P4).
+ *
+ * Every P4 action is offered only with clutch.capabilities.bookingParity on;
+ * otherwise its place says it is not available in the app yet. Players carry
+ * no names in the contract: each row reads "Player" (the booker's name shows
+ * from the pending invitation, when there is one).
  */
 export function BookingDetailScreen({ bookingId }: { bookingId: BookingId }) {
   const detail = useQuery(bookingQuery(bookingId));
@@ -70,12 +80,13 @@ export function BookingDetailScreen({ bookingId }: { bookingId: BookingId }) {
 
   if (detail.isError && hasCode(detail.error, 'booking_not_found', 'not_found')) {
     // Clutch answers "not found" for a booking the caller may not see, on
-    // purpose: "denied" and "missing" look the same.
+    // purpose: "denied" and "missing" look the same. A hold that ran out is
+    // removed too.
     return (
       <DetailFrame>
         <EmptyStateView
           title="Booking not found"
-          description="This booking does not exist, was removed, or you are not part of it."
+          description="This booking does not exist, was removed (a hold that ran out is), or you are not part of it."
         />
       </DetailFrame>
     );
@@ -103,7 +114,7 @@ export function BookingDetailScreen({ bookingId }: { bookingId: BookingId }) {
     <BookingDetailView
       booking={detail.data}
       timezone={usableTimezone(club.data.timezone)}
-      cancellationHours={bookingRulesOf(club.data).cancellation_hours ?? null}
+      cancellationHours={bookingRulesOf(club.data).cancellation_hours}
     />
   );
 }
@@ -149,7 +160,9 @@ function BookingDetailView({
   const router = useRouter();
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  usePaymentLedger();
   const viewer = viewerOf(booking, userId, timezone);
+  const parity = clutch.capabilities.bookingParity;
 
   const [cancelOpen, setCancelOpen] = useState(false);
   const [leaveOpen, setLeaveOpen] = useState(false);
@@ -158,6 +171,19 @@ function BookingDetailView({
   const cancelKey = useMutationKey();
   const removeKey = useMutationKey();
   const respond = useRespondToBooking();
+  const leave = useLeaveBooking();
+
+  // The booker's name, from the pending invitation (players have no names).
+  const invitations = useQuery({ ...bookingInvitationsQuery, enabled: !viewer.isBooker && !!viewer.me });
+  const inviterName = invitations.data?.find(
+    (invitation) => invitation.booking_id === booking.id,
+  )?.inviter_name;
+
+  // Remember a booking this member plays in: Clutch lists none of them.
+  const playing = !!userId && viewer.me?.status === 'accepted' && viewer.active;
+  useEffect(() => {
+    if (playing && userId) void rememberAcceptedBooking(userId, booking.id).catch(() => undefined);
+  }, [playing, userId, booking.id]);
 
   const refreshEverywhere = () => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.bookings });
@@ -166,28 +192,48 @@ function BookingDetailView({
   };
 
   const fail = (error: unknown) => {
-    const failure = describeBookingFailure(error);
+    const failure = describeBookingFailure(error, { bookingParity: parity });
     toast({ variant: 'error', message: `${failure.title}. ${failure.message}` });
-    if (failure.action === 'refresh') {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.booking(booking.id) });
-    }
+    void queryClient.invalidateQueries({ queryKey: queryKeys.booking(booking.id) });
   };
 
+  const paymentInFlight = paymentLedger.inFlight(userId, booking.id);
+
   const cancel = useMutation({
-    mutationFn: () =>
-      cancelKey.run({ cancel: booking.id }, (key) =>
-        clutch.bookings.cancel(booking.id, { idempotencyKey: key }),
-      ),
+    mutationFn: async () => {
+      const run = (id: BookingId) =>
+        cancelKey.run({ cancel: id }, (key) => clutch.bookings.cancel(id, { idempotencyKey: key }));
+      if (booking.status === 'pending') {
+        // A hold: let it go only while it is still one and no payment is in
+        // flight (it may have been confirmed meanwhile): P4's pending-only
+        // release, else read-then-cancel.
+        const outcome = await releaseHoldIfPending(booking.id, userId, {
+          cancel: run,
+          release: (id) =>
+            cancelKey.run({ release: id }, (key) => clutch.bookings.release(id, { idempotencyKey: key })),
+        });
+        return { released: outcome === 'released', refunded: false };
+      }
+      const result = await run(booking.id);
+      return { released: true, refunded: result.payment_status === 'refunded' };
+    },
     onSuccess: (result) => {
       setCancelOpen(false);
       refreshEverywhere();
+      void queryClient.invalidateQueries({ queryKey: queryKeys.booking(booking.id) });
+      if (!result.released) {
+        toast({
+          variant: 'info',
+          message: 'This booking is no longer just a hold (a payment may have confirmed it). Check it again.',
+        });
+        return;
+      }
       // Clutch applied its cancellation policy; say what it recorded.
       toast({
         variant: 'success',
-        message:
-          result.payment_status === 'refunded'
-            ? 'Booking cancelled. The club is returning your payment to your card.'
-            : 'Booking cancelled.',
+        message: result.refunded
+          ? 'Booking cancelled. The club is returning your payment to your card.'
+          : 'Booking cancelled.',
       });
     },
     onError: (error) => {
@@ -201,49 +247,32 @@ function BookingDetailView({
       removeKey.run({ booking: booking.id, user: target.user_id }, (key) =>
         clutch.bookings.removePlayer(booking.id, target.user_id, { idempotencyKey: key }),
       ),
-    onSuccess: (_result, target) => {
+    onSuccess: () => {
       setRemoveTarget(null);
-      setLeaveOpen(false);
       refreshEverywhere();
-      toast({
-        variant: 'success',
-        message:
-          target.user_id === userId
-            ? 'You left this booking.'
-            : `${playerDisplayName(target)} was removed from the booking.`,
-      });
-      if (target.user_id === userId) {
-        if (router.canGoBack()) router.back();
-        else router.replace('/(tabs)');
-      }
+      void queryClient.invalidateQueries({ queryKey: queryKeys.booking(booking.id) });
+      toast({ variant: 'success', message: 'The player was removed from the booking.' });
     },
     onError: (error) => {
       setRemoveTarget(null);
-      setLeaveOpen(false);
       fail(error);
     },
   });
 
-  const payment = useBookingPayment(booking.id, {
-    onConfirmed: () => toast({ variant: 'success', message: 'Payment received.' }),
-    onSubmitted: () =>
-      toast({ variant: 'info', message: 'Payment sent. Your share shows as paid once the club records it.' }),
-  });
-
-  function payDue() {
-    if (!viewer.payMode || !viewer.myDue) return;
-    const due = viewer.myDue.due_cents;
-    switch (viewer.payMode) {
-      case 'hold':
-        void payment.pay({ amountCents: due, settle: 'confirm' });
-        return;
-      case 'balance':
-        void payment.pay({ amountCents: due, shareCents: due, settle: 'confirm' });
-        return;
-      case 'share':
-        void payment.pay({ amountCents: due, shareCents: due, settle: 'refetch' });
-        return;
-    }
+  function leaveBooking() {
+    leave.mutate(booking.id, {
+      onSuccess: () => {
+        setLeaveOpen(false);
+        refreshEverywhere();
+        toast({ variant: 'success', message: 'You left this booking.' });
+        if (router.canGoBack()) router.back();
+        else router.replace('/(tabs)');
+      },
+      onError: (error) => {
+        setLeaveOpen(false);
+        fail(error);
+      },
+    });
   }
 
   function respondWith(accept: boolean) {
@@ -261,64 +290,44 @@ function BookingDetailView({
   }
 
   const roster = rosterOf(booking);
-  const minutes = timeToMinutes(booking.end_time) - timeToMinutes(booking.start_time);
   const sport = booking.court?.court_type ?? 'court';
-  const paymentBusy = payment.stage !== 'idle' && payment.stage !== 'submitted';
+  const myDue = viewer.myDue;
+  const bookerPays = viewer.isBooker && !!myDue && (viewer.payMode !== null || paymentInFlight);
 
   return (
     <DetailFrame>
-      <StatusBanners booking={booking} viewer={viewer} />
+      <StatusBanners booking={booking} viewer={viewer} paymentInFlight={paymentInFlight} />
 
       <BookingSummaryCard
         sport={sport}
         courtName={booking.court?.name ?? null}
-        trailing={<Badge label={bookingStatusLabel(booking.status)} variant={bookingStatusVariant(booking.status)} />}
+        trailing={
+          <Badge label={bookingStatusLabel(booking.status)} variant={bookingStatusVariant(booking.status)} />
+        }
         rows={[
           { label: 'Date', value: formatDateLong(booking.date) },
           { label: 'Time', value: formatTimeRangeCompact(booking.start_time, booking.end_time) },
-          { label: 'Duration', value: formatDuration(minutes) },
+          { label: 'Duration', value: formatDuration(rangeMinutes(booking.start_time, booking.end_time)) },
           ...(viewer.isBooker
-            ? [{ label: 'Price', value: formatMoney(booking.price_cents, booking.currency) }]
+            ? [{ label: 'Court price', value: formatMoney(booking.price_cents, booking.currency) }]
             : []),
         ]}
       />
 
-      {booking.booker_name && !viewer.isBooker ? (
-        <Text style={styles.meta}>Booked by {booking.booker_name}</Text>
-      ) : null}
+      {inviterName && !viewer.isBooker ? <Text style={styles.meta}>Booked by {inviterName}</Text> : null}
 
-      {viewer.myDue ? (
+      {myDue && bookerPays && viewer.isBooker ? (
+        <BookerPayBox
+          key={`booker:${viewer.payMode ?? 'clearing'}`}
+          booking={booking}
+          due={myDue}
+          mode={booking.status === 'pending' ? 'hold' : 'balance'}
+        />
+      ) : myDue && viewer.payMode === 'share' ? (
+        <SharePayBox booking={booking} due={myDue} />
+      ) : myDue ? (
         <View style={styles.dueBox}>
-          <View style={styles.dueRow}>
-            <Text style={styles.dueLabel}>{viewer.myDue.due_cents > 0 ? 'You owe' : 'Your part'}</Text>
-            <Text style={styles.dueAmount}>
-              {formatMoney(
-                viewer.myDue.due_cents > 0 ? viewer.myDue.due_cents : viewer.myDue.paid_cents,
-                booking.currency,
-              )}
-            </Text>
-          </View>
-          {viewer.myDue.due_cents <= 0 && viewer.myDue.paid_cents > 0 ? (
-            <Text style={styles.dueHint}>Paid. Thank you.</Text>
-          ) : null}
-          {viewer.payMode ? (
-            <PrimaryButton
-              label={`Pay ${formatMoney(viewer.myDue.due_cents, booking.currency)}`}
-              loading={paymentBusy}
-              onPress={payDue}
-            />
-          ) : null}
-          {payment.stage === 'unconfirmed' ? (
-            <PrimaryButton label="Check payment again" variant="secondary" onPress={() => void payment.checkAgain()} />
-          ) : null}
-          {payment.failure ? (
-            <Text style={styles.errorText} accessibilityRole="alert">
-              {payment.failure.title}. {payment.failure.message}
-            </Text>
-          ) : null}
-          {payment.canceled ? (
-            <Text style={styles.dueHint}>Payment not completed. You can pay any time before the booking.</Text>
-          ) : null}
+          <DueRow booking={booking} due={myDue} />
         </View>
       ) : null}
 
@@ -344,22 +353,24 @@ function BookingDetailView({
         </Text>
       ) : (
         <View style={styles.roster} accessibilityLabel="Players">
-          {roster.map((player) => {
+          {roster.map((player, index) => {
             const isSelf = player.user_id === userId;
-            const name = playerDisplayName(player);
+            const name = isSelf ? 'You' : `${playerDisplayName(player)} ${index + 1}`;
             return (
               <View
                 key={player.user_id}
                 style={styles.playerRow}
-                accessibilityLabel={`${name}${isSelf ? ' (you)' : ''}, ${playerStatusLabel(player.status)}`}
+                accessibilityLabel={`${name}, ${playerStatusLabel(player.status)}`}
               >
-                <Avatar name={name} src={player.avatar_url} size="md" />
+                <Avatar name={name} size="md" />
                 <Text style={styles.playerName} numberOfLines={1}>
                   {name}
-                  {isSelf ? <Text style={styles.playerYou}> (you)</Text> : null}
                 </Text>
-                <Badge label={playerStatusLabel(player.status)} variant={playerStatusVariant(player.status)} />
-                {viewer.canRemovePlayers ? (
+                <Badge
+                  label={playerStatusLabel(player.status)}
+                  variant={playerStatusVariant(player.status)}
+                />
+                {viewer.canRemovePlayers && parity ? (
                   <Pressable
                     accessibilityRole="button"
                     accessibilityLabel={`Remove ${name}`}
@@ -376,24 +387,41 @@ function BookingDetailView({
         </View>
       )}
 
+      {viewer.canRemovePlayers && !parity && roster.length > 0 ? (
+        <FeatureUnavailable
+          capability="bookingParity"
+          title="Removing players is not available in the app yet"
+          description="Ask the club to take a player off, or do it on the club website."
+          compact
+        />
+      ) : null}
+
       {viewer.canRespond ? (
-        <View style={styles.actions} accessibilityLabel="Respond to this invitation">
-          <PrimaryButton
-            label="Accept"
-            accessibilityLabel="Accept invitation"
-            loading={respond.isPending && respond.variables?.accept === true}
-            disabled={respond.isPending}
-            onPress={() => respondWith(true)}
+        parity ? (
+          <View style={styles.actions} accessibilityLabel="Respond to this invitation">
+            <PrimaryButton
+              label="Accept"
+              accessibilityLabel="Accept invitation"
+              loading={respond.isPending && respond.variables?.accept === true}
+              disabled={respond.isPending}
+              onPress={() => respondWith(true)}
+            />
+            <PrimaryButton
+              label="Decline"
+              accessibilityLabel="Decline invitation"
+              variant="ghost"
+              loading={respond.isPending && respond.variables?.accept === false}
+              disabled={respond.isPending}
+              onPress={() => respondWith(false)}
+            />
+          </View>
+        ) : (
+          <FeatureUnavailable
+            capability="bookingParity"
+            title="Answering invitations is not available in the app yet"
+            description="Accept or decline this invitation on the club website for now."
           />
-          <PrimaryButton
-            label="Decline"
-            accessibilityLabel="Decline invitation"
-            variant="ghost"
-            loading={respond.isPending && respond.variables?.accept === false}
-            disabled={respond.isPending}
-            onPress={() => respondWith(false)}
-          />
-        </View>
+        )
       ) : null}
 
       {viewer.canReschedule || viewer.canCancel || viewer.canLeave ? (
@@ -401,7 +429,7 @@ function BookingDetailView({
           {viewer.canReschedule ? (
             <PrimaryButton label="Change time" onPress={() => router.push(`/bookings/${booking.id}/edit`)} />
           ) : null}
-          {viewer.canCancel ? (
+          {viewer.canCancel && !paymentInFlight ? (
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Cancel booking"
@@ -412,14 +440,23 @@ function BookingDetailView({
             </Pressable>
           ) : null}
           {viewer.canLeave ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Leave booking"
-              onPress={() => setLeaveOpen(true)}
-              style={styles.textAction}
-            >
-              <Text style={styles.textActionLabel}>Leave booking</Text>
-            </Pressable>
+            parity ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Leave booking"
+                onPress={() => setLeaveOpen(true)}
+                style={styles.textAction}
+              >
+                <Text style={styles.textActionLabel}>Leave booking</Text>
+              </Pressable>
+            ) : (
+              <FeatureUnavailable
+                capability="bookingParity"
+                title="Leaving a booking is not available in the app yet"
+                description="Ask the member who booked to take you off for now."
+                compact
+              />
+            )
           ) : null}
         </View>
       ) : null}
@@ -461,7 +498,7 @@ function BookingDetailView({
       <Sheet
         open={leaveOpen}
         onClose={() => {
-          if (!remove.isPending) setLeaveOpen(false);
+          if (!leave.isPending) setLeaveOpen(false);
         }}
         title="Leave booking"
       >
@@ -473,16 +510,13 @@ function BookingDetailView({
             <PrimaryButton
               label="Leave booking"
               variant="danger"
-              loading={remove.isPending}
-              onPress={() => {
-                const self = viewer.me;
-                if (self) remove.mutate(self);
-              }}
+              loading={leave.isPending}
+              onPress={leaveBooking}
             />
             <PrimaryButton
               label="Stay"
               variant="ghost"
-              disabled={remove.isPending}
+              disabled={leave.isPending}
               onPress={() => setLeaveOpen(false)}
             />
           </View>
@@ -494,12 +528,12 @@ function BookingDetailView({
         onClose={() => {
           if (!remove.isPending) setRemoveTarget(null);
         }}
-        title={removeTarget ? `Remove ${playerDisplayName(removeTarget)}` : 'Remove player'}
+        title="Remove player"
       >
         {removeTarget ? (
           <View style={styles.dialogBody}>
             <Text style={styles.dialogText}>
-              Remove {playerDisplayName(removeTarget)} from this booking? You can invite them again later.
+              Remove this player from the booking? You can invite them again later.
             </Text>
             <View style={styles.dialogActions}>
               <PrimaryButton
@@ -522,17 +556,29 @@ function BookingDetailView({
   );
 }
 
-function StatusBanners({ booking, viewer }: { booking: BookingDetail; viewer: BookingViewer }) {
-  if (booking.status === 'cancelled') return <StatusBanner tone="danger" text="This booking was cancelled." />;
-  if (booking.status === 'no_show') return <StatusBanner tone="danger" text="This booking was marked as a no show." />;
+function StatusBanners({
+  booking,
+  viewer,
+  paymentInFlight,
+}: {
+  booking: BookingDetail;
+  viewer: BookingViewer;
+  paymentInFlight: boolean;
+}) {
+  if (booking.status === 'cancelled')
+    return <StatusBanner tone="danger" text="This booking was cancelled." />;
+  if (booking.status === 'no_show')
+    return <StatusBanner tone="danger" text="This booking was marked as a no show." />;
   if (booking.status === 'pending' && viewer.isBooker) {
     return (
       <StatusBanner
         tone="neutral"
         text={
-          viewer.holdEnded
-            ? 'The hold on this court ended before it was paid. Book a new time from Reserve.'
-            : 'This court is held for you until you pay. Pay below to confirm it.'
+          paymentInFlight
+            ? 'Your payment is clearing. The booking is confirmed once the club sees it settle.'
+            : viewer.holdEnded
+              ? 'The hold on this court ended before it was paid. Book a new time from Reserve.'
+              : 'This court is held for you until you pay. Pay below to confirm it.'
         }
       />
     );
@@ -545,7 +591,10 @@ function StatusBanners({ booking, viewer }: { booking: BookingDetail; viewer: Bo
 
 function StatusBanner({ tone, text }: { tone: 'danger' | 'neutral'; text: string }) {
   return (
-    <View style={[styles.statusBanner, tone === 'danger' ? styles.statusBannerDanger : null]} accessibilityRole="alert">
+    <View
+      style={[styles.statusBanner, tone === 'danger' ? styles.statusBannerDanger : null]}
+      accessibilityRole="alert"
+    >
       <Text style={styles.statusBannerText}>{text}</Text>
     </View>
   );

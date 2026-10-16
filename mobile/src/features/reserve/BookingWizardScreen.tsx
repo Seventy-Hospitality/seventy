@@ -1,33 +1,48 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, BackHandler, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
-import { clutch, useMutationKey, type Booking, type BookingId } from '../../lib/clutch';
+import { clutch, entitlement, useMutationKey, type BookingId } from '../../lib/clutch';
 import { useClub } from '../../lib/club';
-import { queryKeys } from '../../lib/queries';
+import { membershipQuery, queryKeys } from '../../lib/queries';
+import { useSession } from '../../lib/session';
 import { PrimaryButton, useToast } from '../../components';
 import { colors, fonts, spacing } from '../../theme/tokens';
 import { formatDateHeading, formatTimeRangeCompact, sportLabel, todayDateKey } from './booking';
-import { bookingRulesOf, usableTimezone } from './club-rules';
+import type { Charge } from './charge';
+import { usableTimezone, useSportRules } from './club-rules';
 import { CheckoutStep } from './CheckoutStep';
 import { ConfirmationSheet } from './ConfirmationSheet';
+import { releaseHoldIfPending } from './hold-release';
 import { createHoldSession, type HoldSession } from './hold-session';
 import { InvitePlayersStep } from './InvitePlayersStep';
+import { membershipGateCopy } from './membership-gate';
+import { MembershipInactiveState } from './MembershipInactiveState';
 import { SelectTimeStep, type TimePick } from './SelectTimeStep';
+import type { BookingFacts } from './useBookingPayment';
 import { WizardFrame, type WizardStep } from './WizardFrame';
 
 /**
  * The booking wizard for one sport (court_type): choose a time, then
  * checkout (hold, pay, confirm), then the confirmation sheet with invites.
- * Full screen, outside the tab shell. Leaving releases a hold that is still
- * pending, unless a payment is settling (see hold-session.ts).
+ * Full screen, outside the tab shell.
+ *
+ * Gates, in order: the club row, the member's entitlement (GET
+ * /me/membership through entitlement(): only 'entitled' may book), and the
+ * sport's rules (P4 may say this member cannot book this sport).
+ *
+ * Leaving releases a hold that is still pending, unless a payment is
+ * settling; the release itself re-reads the booking first (hold-release.ts).
  */
 export function BookingWizardScreen({ sport }: { sport: string }) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const club = useClub();
+  const membership = useQuery(membershipQuery);
+  const sportRules = useSportRules(sport);
+  const { userId } = useSession();
   const releaseKey = useMutationKey();
 
   const timezone = usableTimezone(club.data?.timezone);
@@ -41,17 +56,29 @@ export function BookingWizardScreen({ sport }: { sport: string }) {
   const [slots, setSlots] = useState<string[]>([]);
   const [pick, setPick] = useState<TimePick | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [confirmed, setConfirmed] = useState<Booking | null>(null);
+  const [confirmed, setConfirmed] = useState<{ booking: BookingFacts; charge: Charge | null } | null>(null);
   const [inviting, setInviting] = useState(false);
   const [paymentLocked, setPaymentLocked] = useState(false);
 
+  const userIdRef = useRef(userId);
+  userIdRef.current = userId;
   const [holdSession] = useState<HoldSession>(() =>
     createHoldSession({
       // Fire and forget: releasing early frees the court for others; the
-      // hold's own expiry is the backstop, so a failed cancel is fine.
+      // hold's own expiry is the backstop, so a failed release is fine. It
+      // never cancels a booking that may be confirmed (hold-release.ts: P4's
+      // pending-only release, else read-then-cancel).
       cancel: (id: BookingId) =>
-        void releaseKey
-          .run({ release: id }, (key) => clutch.bookings.cancel(id, { idempotencyKey: key }))
+        void releaseHoldIfPending(id, userIdRef.current, {
+          cancel: (bookingId) =>
+            releaseKey.run({ cancel: bookingId }, (key) =>
+              clutch.bookings.cancel(bookingId, { idempotencyKey: key }),
+            ),
+          release: (bookingId) =>
+            releaseKey.run({ release: bookingId }, (key) =>
+              clutch.bookings.release(bookingId, { idempotencyKey: key }),
+            ),
+        })
           .then(() => queryClient.invalidateQueries({ queryKey: ['availability'] }))
           .catch(() => undefined),
       onLockChange: setPaymentLocked,
@@ -91,25 +118,27 @@ export function BookingWizardScreen({ sport }: { sport: string }) {
   );
 
   const handleConfirmed = useCallback(
-    (booking: Booking) => {
+    (booking: BookingFacts, charge: Charge | null) => {
       holdSession.settle();
       void queryClient.invalidateQueries({ queryKey: queryKeys.bookings });
       void queryClient.invalidateQueries({ queryKey: queryKeys.home });
       void queryClient.invalidateQueries({ queryKey: queryKeys.availability(booking.date) });
-      setConfirmed(booking);
+      setConfirmed({ booking, charge });
     },
     [holdSession, queryClient],
   );
 
   const openBooking = useCallback(
-    (booking: Booking) => {
+    (bookingId: BookingId) => {
+      // Leaving to the booking screen hands the hold over without releasing
+      // it: a payment may be clearing, and the booking screen checks it.
       holdSession.settle();
-      router.replace(`/bookings/${booking.id}`);
+      router.replace(`/bookings/${bookingId}`);
     },
     [holdSession, router],
   );
 
-  if (club.isPending) {
+  if (club.isPending || membership.isPending || sportRules.isPending) {
     return (
       <WizardFrame onBack={leave} onClose={leave}>
         <View style={styles.center}>
@@ -120,14 +149,40 @@ export function BookingWizardScreen({ sport }: { sport: string }) {
     );
   }
 
-  if (club.isError) {
+  if (club.isError || membership.isError || !sportRules.rules) {
     return (
       <WizardFrame onBack={leave} onClose={leave}>
         <View style={styles.center}>
-          <Text style={styles.centerTitle}>We could not load the club.</Text>
+          <Text style={styles.centerTitle}>
+            {membership.isError ? 'We could not check your membership.' : 'We could not load the club.'}
+          </Text>
           <View style={styles.centerAction}>
-            <PrimaryButton label="Try again" variant="secondary" onPress={() => void club.refetch()} />
+            <PrimaryButton
+              label="Try again"
+              variant="secondary"
+              onPress={() => {
+                if (membership.isError) void membership.refetch();
+                sportRules.refetch();
+              }}
+            />
           </View>
+        </View>
+      </WizardFrame>
+    );
+  }
+
+  const access = entitlement(membership.data);
+  if (access !== 'entitled') {
+    const copy = membershipGateCopy(access);
+    return (
+      <WizardFrame onBack={leave} onClose={leave}>
+        <View style={styles.center}>
+          <MembershipInactiveState
+            title={copy.title}
+            description={copy.description}
+            actionLabel={copy.actionLabel}
+            href={copy.href}
+          />
         </View>
       </WizardFrame>
     );
@@ -150,7 +205,26 @@ export function BookingWizardScreen({ sport }: { sport: string }) {
     );
   }
 
-  const rules = bookingRulesOf(club.data);
+  const rules = sportRules.rules;
+  if (rules.bookable === false) {
+    const tier = rules.refusal === 'tier_required';
+    return (
+      <WizardFrame onBack={leave} onClose={leave}>
+        <View style={styles.center}>
+          <MembershipInactiveState
+            title={tier ? 'Membership tier needed' : 'Club membership needed'}
+            description={
+              tier
+                ? `${sportLabel(sport)} courts are kept for members of certain membership tiers.`
+                : `${sportLabel(sport)} courts are for club members.`
+            }
+            actionLabel={tier ? 'See membership tiers' : 'Choose a membership'}
+            href={tier ? '/account/billing' : '/onboarding/plan'}
+          />
+        </View>
+      </WizardFrame>
+    );
+  }
 
   // ── Confirmed: the success sheet, then invites ──
 
@@ -159,15 +233,15 @@ export function BookingWizardScreen({ sport }: { sport: string }) {
       return (
         <WizardFrame onBack={() => setInviting(false)} onClose={() => setInviting(false)}>
           <InvitePlayersStep
-            bookingId={confirmed.id}
-            subtitle={`${formatDateHeading(confirmed.date)} · ${formatTimeRangeCompact(
-              confirmed.start_time,
-              confirmed.end_time,
+            bookingId={confirmed.booking.id}
+            subtitle={`${formatDateHeading(confirmed.booking.date)} · ${formatTimeRangeCompact(
+              confirmed.booking.start_time,
+              confirmed.booking.end_time,
             )}`}
             onSent={() => {
               toast({ variant: 'success', message: 'Invites sent' });
               setInviting(false);
-              openBooking(confirmed);
+              openBooking(confirmed.booking.id);
             }}
           />
         </WizardFrame>
@@ -179,11 +253,12 @@ export function BookingWizardScreen({ sport }: { sport: string }) {
           <Ionicons name="checkmark" size={44} color={colors.accent} />
         </View>
         <ConfirmationSheet
-          booking={confirmed}
+          booking={confirmed.booking}
+          charge={confirmed.charge}
           sport={sport}
           courtName={pick?.court.court_name ?? null}
           onInvitePlayers={() => setInviting(true)}
-          onViewBooking={() => openBooking(confirmed)}
+          onViewBooking={() => openBooking(confirmed.booking.id)}
           onClose={leave}
         />
       </View>

@@ -1,10 +1,10 @@
 import type { ReactNode } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react-native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { asGroupId, asUserId, clutch, type PlayerSearchResult } from '../../../lib/clutch';
+import { asGroupId, asUserId, clutch } from '../../../lib/clutch';
 import type { MockClutch } from '../../../lib/clutch/testing';
 import { clutchError, networkError } from '../../../lib/clutch/testing';
-import { makeBooking, makeGroupSummary } from '../../../lib/clutch/fixtures';
+import { makeBooking, makeClubPlayer, makeGroupSummary } from '../../../lib/clutch/fixtures';
 import { useSendInvites, type SendInvitesProgress } from '../useSendInvites';
 import type { InviteSelection } from '../invites';
 
@@ -16,7 +16,7 @@ jest.mock('../../../lib/clutch', () => {
 
 const mockClutch = clutch as unknown as MockClutch;
 const BOOKING = makeBooking({ status: 'confirmed' });
-const SAM: PlayerSearchResult = { user_id: asUserId('u-sam'), full_name: 'Sam Lee' };
+const SAM = makeClubPlayer({ user_id: asUserId('u-sam'), full_name: 'Sam Lee' });
 const G1 = makeGroupSummary({ id: asGroupId('g1'), name: 'Tuesday' });
 const G2 = makeGroupSummary({ id: asGroupId('g2'), name: 'Weekend' });
 const SELECTION: InviteSelection = { players: [SAM], groups: [G1, G2] };

@@ -1,5 +1,4 @@
 import { StyleSheet, Text, View } from 'react-native';
-import type { Booking } from '../../lib/clutch';
 import { Badge, bookingStatusVariant, PrimaryButton, Sheet } from '../../components';
 import { colors, fonts, spacing } from '../../theme/tokens';
 import {
@@ -8,11 +7,16 @@ import {
   formatMoney,
   formatTimeRangeCompact,
   sportLabel,
+  type BookingStatus,
 } from './booking';
 import { BookingSummaryCard } from './BookingSummaryCard';
+import { chargeLines, type Charge } from './charge';
+import type { BookingFacts } from './useBookingPayment';
 
 export interface ConfirmationSheetProps {
-  booking: Booking;
+  booking: BookingFacts;
+  /** What checkout showed for this booking (Clutch's figures); null when free. */
+  charge: Charge | null;
   sport: string;
   courtName: string | null;
   onInvitePlayers: () => void;
@@ -21,19 +25,21 @@ export interface ConfirmationSheetProps {
 }
 
 /**
- * The success sheet after Clutch confirmed the booking: what was booked, what
- * Clutch recorded as paid, and the next steps (invite players, open the
- * booking).
+ * The success sheet after Clutch confirmed the booking: what was booked, the
+ * charge as checkout showed it (Clutch's own lines, tax included in any
+ * total), and the next steps (invite players, open the booking).
  */
 export function ConfirmationSheet({
   booking,
+  charge,
   sport,
   courtName,
   onInvitePlayers,
   onViewBooking,
   onClose,
 }: ConfirmationSheetProps) {
-  const paid = booking.paid_cents ?? 0;
+  const status = booking.status as BookingStatus;
+  const priceRows = paidRows(booking, charge);
   return (
     <Sheet open onClose={onClose} title="Booking confirmed">
       <View style={styles.body}>
@@ -43,14 +49,11 @@ export function ConfirmationSheet({
         <BookingSummaryCard
           sport={sport}
           courtName={courtName}
-          trailing={<Badge label={bookingStatusLabel(booking.status)} variant={bookingStatusVariant(booking.status)} />}
+          trailing={<Badge label={bookingStatusLabel(status)} variant={bookingStatusVariant(status)} />}
           rows={[
             { label: 'Date', value: formatDateFull(booking.date) },
             { label: 'Time', value: formatTimeRangeCompact(booking.start_time, booking.end_time) },
-            {
-              label: paid > 0 ? 'Amount paid' : 'Price',
-              value: formatMoney(paid > 0 ? paid : booking.price_cents, booking.currency),
-            },
+            ...priceRows,
           ]}
         />
 
@@ -61,6 +64,24 @@ export function ConfirmationSheet({
       </View>
     </Sheet>
   );
+}
+
+/**
+ * The money rows: the lines checkout showed when Clutch priced the tax (a
+ * quote, or the intent's subtotal and tax); otherwise just the court price,
+ * since the card statement is the only total we were not told.
+ */
+function paidRows(booking: BookingFacts, charge: Charge | null): { label: string; value: string }[] {
+  if (!charge) return [{ label: 'Price', value: 'Free' }];
+  const priced =
+    charge.kind === 'quoted' ||
+    charge.kind === 'checkout' ||
+    (charge.kind === 'split' && (charge.subtotal_cents !== null || charge.tax_cents !== null));
+  if (!priced) return [{ label: 'Court price', value: formatMoney(booking.price_cents, booking.currency) }];
+  return chargeLines(charge).map((line) => ({
+    label: line.label === 'Total due today' ? 'Total' : line.label,
+    value: line.value,
+  }));
 }
 
 const styles = StyleSheet.create({

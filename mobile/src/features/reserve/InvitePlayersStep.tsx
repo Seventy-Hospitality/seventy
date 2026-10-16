@@ -2,10 +2,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { clutch, type BookingId, type GroupSummary, type PlayerSearchResult } from '../../lib/clutch';
+import { clutch, type BookingId, type GroupSummary, type ClubPlayer } from '../../lib/clutch';
 import { groupsQuery } from '../../lib/queries';
 import { useSession } from '../../lib/session';
-import { Avatar, Chip, EmptyStateView, PrimaryButton, Skeleton } from '../../components';
+import { Avatar, Chip, EmptyStateView, FeatureUnavailable, PrimaryButton, Skeleton } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
 import { describeBookingFailure } from './booking-failures';
 import {
@@ -39,11 +39,19 @@ export interface InvitePlayersStepProps {
 
 /**
  * Invite players to a confirmed booking: search fellow members of the club
- * (GET /clubs/{club}/players, PENDING P4) and pick them, or add a whole group
+ * (GET /clubs/{club}/players, Clutch P4) and pick them, or add a whole group
  * of yours ("Add all" makes a removable group chip). Used from the
  * confirmation sheet and from "Invite more" on the booking screen.
+ *
+ * Without bookingParity there is no member search: the step says so and
+ * offers the member's groups (invite-group is live today).
  */
-export function InvitePlayersStep({ bookingId, subtitle, excludeUserIds = [], onSent }: InvitePlayersStepProps) {
+export function InvitePlayersStep({
+  bookingId,
+  subtitle,
+  excludeUserIds = [],
+  onSent,
+}: InvitePlayersStepProps) {
   const { userId } = useSession();
   const [query, setQuery] = useState('');
   const debounced = useDebouncedValue(query.trim(), SEARCH_DEBOUNCE_MS);
@@ -51,10 +59,12 @@ export function InvitePlayersStep({ bookingId, subtitle, excludeUserIds = [], on
   const [selection, setSelection] = useState<InviteSelection>(EMPTY_INVITE_SELECTION);
 
   const groups = useQuery(groupsQuery);
+  const canSearch = clutch.capabilities.bookingParity;
   const search = useQuery({
     queryKey: ['reserve', 'player-search', debounced],
     queryFn: () => clutch.club.searchPlayers(debounced),
     staleTime: 30_000,
+    enabled: canSearch,
   });
 
   const exclude = useMemo(
@@ -74,7 +84,9 @@ export function InvitePlayersStep({ bookingId, subtitle, excludeUserIds = [], on
   });
 
   const hasChips = inviteCount(selection) > 0;
-  const failure = send.isError ? describeBookingFailure(send.error) : null;
+  const failure = send.isError
+    ? describeBookingFailure(send.error, { bookingParity: clutch.capabilities.bookingParity })
+    : null;
 
   return (
     <StepShell
@@ -96,20 +108,29 @@ export function InvitePlayersStep({ bookingId, subtitle, excludeUserIds = [], on
         />
       }
     >
-      <View style={styles.searchBox}>
-        <Ionicons name="search" size={18} color={colors.textMuted} />
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search club members by name"
-          placeholderTextColor={colors.textSubtle}
-          accessibilityLabel="Search club members by name"
-          value={query}
-          onChangeText={setQuery}
-          autoCapitalize="none"
-          autoCorrect={false}
-          returnKeyType="search"
+      {canSearch ? (
+        <View style={styles.searchBox}>
+          <Ionicons name="search" size={18} color={colors.textMuted} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search club members by name"
+            placeholderTextColor={colors.textSubtle}
+            accessibilityLabel="Search club members by name"
+            value={query}
+            onChangeText={setQuery}
+            autoCapitalize="none"
+            autoCorrect={false}
+            returnKeyType="search"
+          />
+        </View>
+      ) : (
+        <FeatureUnavailable
+          capability="bookingParity"
+          title="Member search is not available in the app yet"
+          description="Searching club members is coming soon. You can invite one of your groups below."
+          compact
         />
-      </View>
+      )}
 
       {hasChips ? (
         <View style={styles.chipRow} accessibilityLabel="Selected invites">
@@ -146,9 +167,16 @@ export function InvitePlayersStep({ bookingId, subtitle, excludeUserIds = [], on
         </>
       ) : null}
 
-      <Text style={styles.sectionLabel}>Players</Text>
+      {canSearch ? <Text style={styles.sectionLabel}>Players</Text> : null}
 
-      {search.isPending ? (
+      {!canSearch ? (
+        groups.isSuccess && groups.data.length === 0 ? (
+          <EmptyStateView
+            title="No groups yet"
+            description="Create a group of the people you play with, then invite it in one tap."
+          />
+        ) : null
+      ) : search.isPending ? (
         <View style={styles.list} accessibilityLabel="Loading players">
           {[0, 1, 2].map((i) => (
             <Skeleton key={i} height={58} borderRadius={radius.md} />
@@ -221,7 +249,7 @@ function PlayerRow({
   selected,
   onToggle,
 }: {
-  player: PlayerSearchResult;
+  player: ClubPlayer;
   selected: boolean;
   onToggle: () => void;
 }) {

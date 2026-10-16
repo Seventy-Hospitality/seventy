@@ -1,4 +1,6 @@
 import {
+  endToMinutes,
+  rangeMinutes,
   buildDateStrip,
   clubNow,
   formatMoney,
@@ -75,5 +77,23 @@ describe('formatting', () => {
     expect(formatTimeRangeCompact('11:00', '13:00')).toBe('11:00AM-1:00PM');
     expect(sportLabel('pickleball')).toBe('Pickleball');
     expect(sportLabel('padel_tennis')).toBe('Padel tennis');
+  });
+});
+
+describe('midnight end times', () => {
+  it('reads an end of 00:00 or 00:00:00 as 24:00', () => {
+    expect(endToMinutes('00:00')).toBe(1440);
+    expect(endToMinutes('00:00:00')).toBe(1440);
+    expect(endToMinutes('23:30')).toBe(1410);
+    expect(rangeMinutes('23:00:00', '00:00:00')).toBe(60);
+    expect(rangeMinutes('18:00', '19:30')).toBe(90);
+  });
+
+  it('restores the slots of a booking that ends at midnight', () => {
+    expect(slotsInRange('23:00:00', '00:00:00', 30)).toEqual(['23:00', '23:30']);
+  });
+
+  it('formats a range ending at midnight', () => {
+    expect(formatTimeRangeCompact('23:00', '00:00')).toBe('11:00PM-12:00AM');
   });
 });

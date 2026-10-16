@@ -2,10 +2,14 @@
  * Who is looking at a booking and what they may do with it, from Clutch's
  * booking detail (GET /bookings/{id}) and the session's user id. Pure, so the
  * rules are testable. Clutch enforces every one of them again; these only
- * decide which actions the screen offers.
+ * decide which actions the screen offers. Whether an action's Clutch route
+ * is live (bookingParity) is the screen's call, not this one's.
  */
-import type { BookingDetail, BookingDue, BookingPlayer, UserId } from '../../lib/clutch';
+import type { BookingDetail, BookingDue, UserId } from '../../lib/clutch';
 import { hasStarted } from '../reserve/booking';
+
+/** One row of a booking's players: no names in the contract, only the user id. */
+export type BookingPlayer = BookingDetail['players'][number];
 
 /** How the viewer would pay what they owe, if anything. */
 export type PayMode =
@@ -13,7 +17,7 @@ export type PayMode =
   | 'hold'
   /** The booker's balance on a confirmed booking: pay, then confirm records it. */
   | 'balance'
-  /** A player's share: pay, then Clutch records it from the provider. */
+  /** A player's share (P4): shares/payment-intent, then shares/confirm. */
   | 'share';
 
 export interface BookingViewer {
@@ -69,7 +73,8 @@ export function viewerOf(
     started,
     holdEnded,
     canCancel: isBooker && open,
-    canReschedule: isBooker && booking.status === 'confirmed' && !started,
+    // One date of a standing weekly reservation can be cancelled, not moved.
+    canReschedule: isBooker && booking.status === 'confirmed' && !started && !booking.recurring_booking_id,
     canInvite: isBooker && booking.status === 'confirmed' && !started,
     canRemovePlayers: isBooker && open,
     canRespond: !isBooker && me?.status === 'invited' && open,
@@ -78,9 +83,13 @@ export function viewerOf(
   };
 }
 
-/** A player's name on the roster; "Player" until Clutch sends names (P3). */
-export function playerDisplayName(player: { full_name?: string | null }): string {
-  return player.full_name?.trim() || 'Player';
+/**
+ * A player's name on the roster. GET /bookings/{id} sends no names for
+ * players (only user ids), so every row reads "Player"; the viewer's own row
+ * adds "(you)" on screen.
+ */
+export function playerDisplayName(_player: BookingPlayer): string {
+  return 'Player';
 }
 
 /** Players still on the booking (declined rows are history, not the roster). */

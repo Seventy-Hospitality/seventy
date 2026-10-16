@@ -5,17 +5,20 @@ import { PrimaryButton } from '../../components';
 import { colors, fonts, spacing } from '../../theme/tokens';
 
 /**
- * Shown when Clutch refuses a booking for membership reasons
- * (not_club_member, members_only, tier_required). Only ever in answer to a
- * refusal: the app does not pre-judge membership from /me, which cannot yet
- * tell "no membership" from a failed read.
+ * Why the member cannot book, with the one place that fixes it: shown by the
+ * entitlement gate (membership-gate.ts) before booking, and when Clutch
+ * refuses a booking for membership reasons (not_club_member, tier_required).
  */
 export function MembershipInactiveState({
   title = 'Membership needed',
   description = 'This booking needs an active club membership. Check your membership in your account.',
+  actionLabel = 'Go to account',
+  href = '/(tabs)/account',
 }: {
   title?: string;
   description?: string;
+  actionLabel?: string;
+  href?: '/(tabs)/account' | '/onboarding/plan' | '/account/billing';
 }) {
   const router = useRouter();
   return (
@@ -26,7 +29,7 @@ export function MembershipInactiveState({
       <Text style={styles.title}>{title}</Text>
       <Text style={styles.description}>{description}</Text>
       <View style={styles.action}>
-        <PrimaryButton label="Go to account" onPress={() => router.replace('/(tabs)/account')} />
+        <PrimaryButton label={actionLabel} onPress={() => router.push(href)} />
       </View>
     </View>
   );

@@ -6,11 +6,9 @@ import {
   clutch,
   hasCode,
   useMutationKey,
-  type Booking,
   type BookingDetail,
   type BookingId,
-  type Club,
-  type RescheduleResult,
+  type BookingMove,
 } from '../../lib/clutch';
 import { useClub } from '../../lib/club';
 import { bookingQuery, queryKeys } from '../../lib/queries';
@@ -26,12 +24,14 @@ import {
 } from '../reserve/booking';
 import { describeBookingFailure } from '../reserve/booking-failures';
 import { BookingSummaryCard } from '../reserve/BookingSummaryCard';
+import { chargeTotal } from '../reserve/charge';
+import { ChargeSummary } from '../reserve/ChargeSummary';
 import { Notice } from '../reserve/CheckoutStep';
-import { bookingRulesOf, usableTimezone } from '../reserve/club-rules';
+import { usableTimezone, useSportRules, type SportRules } from '../reserve/club-rules';
 import { ProcessingOverlay } from '../reserve/ProcessingOverlay';
 import { SelectTimeStep, type TimePick } from '../reserve/SelectTimeStep';
 import { StepShell } from '../reserve/StepShell';
-import { useBookingPayment } from '../reserve/useBookingPayment';
+import { useMovePayment, type BookingFacts } from '../reserve/useBookingPayment';
 import { WizardFrame } from '../reserve/WizardFrame';
 import { viewerOf } from './booking-viewer';
 
@@ -41,16 +41,20 @@ const STEP_NAMES = { 1: 'Choose a new time', 2: 'Confirm the change' } as const;
  * Move a confirmed booking to a new date and range (the booker only). Step 1
  * is the booking wizard's time step with this booking's own slots counted as
  * free; pickCourt names the court for the new range. Step 2 shows old and new
- * and calls POST /bookings/{id}/reschedule.
+ * and makes the move.
  *
- * Money: Clutch decides. On main a dearer move is refused with
- * reschedule_costs_more, which sends the member back to pick another time.
- * Clutch P4 instead returns the difference as a payment_intent; the app pays
- * it through the one payment path and hands the completed intent to
- * POST /bookings/{id}/confirm. Confirm accepts a verified booker payment on a
- * confirmed booking as a payment to record (it does not need a pending hold),
- * so the difference is recorded the same way a balance is, and Clutch's
- * answer, not the sheet, is what the member sees.
+ * Money: Clutch decides, and a move is never priced with the new-booking
+ * quote.
+ * - With Clutch P4 (bookingParity): POST /bookings/{id}/reschedule/quote
+ *   prices the move (difference, tax, total). payment_required: pay through
+ *   /reschedule/payment-intent (the sheet), then /reschedule/confirm with the
+ *   completed intent. Otherwise POST /bookings/{id}/reschedule; a 402
+ *   reschedule_payment_required from it switches to the paid flow.
+ *   move_not_applied means the move was not made and the payment is being
+ *   returned; payment_processing stays locked on "check again".
+ * - Without P4: plain reschedule only. A dearer move is refused
+ *   (reschedule_costs_more / reschedule_payment_required), and the member is
+ *   told such a move is not available in the app yet.
  */
 export function RescheduleScreen({ bookingId }: { bookingId: BookingId }) {
   const router = useRouter();
@@ -123,30 +127,51 @@ export function RescheduleScreen({ bookingId }: { bookingId: BookingId }) {
   }
 
   return (
-    <RescheduleWizard
-      key={detail.data.id}
-      booking={detail.data}
-      club={club.data}
-      timezone={timezone}
-      onDone={backToDetail}
-    />
+    <RescheduleRules key={detail.data.id} booking={detail.data} timezone={timezone} onDone={backToDetail} />
   );
 }
 
-function RescheduleWizard({
+/** The sport's booking rules (P4 per sport, else the club's) before the wizard. */
+function RescheduleRules({
   booking,
-  club,
   timezone,
   onDone,
 }: {
   booking: BookingDetail;
-  club: Club;
+  timezone: string;
+  onDone: () => void;
+}) {
+  const sport = booking.court?.court_type ?? '';
+  const sportRules = useSportRules(sport);
+  if (sportRules.isPending || !sportRules.rules) {
+    return (
+      <WizardFrame onBack={onDone} onClose={onDone}>
+        <View style={styles.center}>
+          {sportRules.isError ? (
+            <PrimaryButton label="Try again" variant="secondary" onPress={sportRules.refetch} />
+          ) : (
+            <ActivityIndicator color={colors.accent} />
+          )}
+        </View>
+      </WizardFrame>
+    );
+  }
+  return <RescheduleWizard booking={booking} rules={sportRules.rules} timezone={timezone} onDone={onDone} />;
+}
+
+function RescheduleWizard({
+  booking,
+  rules,
+  timezone,
+  onDone,
+}: {
+  booking: BookingDetail;
+  rules: SportRules;
   timezone: string;
   onDone: () => void;
 }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
-  const rules = bookingRulesOf(club);
   const sport = booking.court?.court_type ?? '';
   const currentSlots = useMemo(
     () => slotsInRange(booking.start_time, booking.end_time, rules.slot_duration_minutes),
@@ -181,7 +206,8 @@ function RescheduleWizard({
   }, [locked]);
 
   const finish = useCallback(
-    (moved: Booking) => {
+    (moved: Pick<BookingFacts, 'date' | 'start_time' | 'end_time'>) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.booking(booking.id) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.bookings });
       void queryClient.invalidateQueries({ queryKey: queryKeys.home });
       void queryClient.invalidateQueries({ queryKey: queryKeys.availability(booking.date) });
@@ -192,7 +218,7 @@ function RescheduleWizard({
       });
       onDone();
     },
-    [queryClient, booking.date, toast, onDone],
+    [queryClient, booking.id, booking.date, toast, onDone],
   );
 
   const backToTimes = (message: string | null) => {
@@ -233,6 +259,7 @@ function RescheduleWizard({
           notice={notice}
           onDismissNotice={() => setNotice(null)}
           continueDisabled={unchanged}
+          showTotal={false}
           onContinue={(next) => {
             setPick(next);
             setStep(2);
@@ -264,70 +291,83 @@ function ConfirmMove({
   sport: string;
   pick: TimePick;
   onLockChange: (locked: boolean) => void;
-  onMoved: (booking: Booking) => void;
+  onMoved: (booking: Pick<BookingFacts, 'date' | 'start_time' | 'end_time'>) => void;
   onBackToTimes: (message: string | null) => void;
 }) {
+  const parity = clutch.capabilities.bookingParity;
   const key = useMutationKey();
-  const [moved, setMoved] = useState<RescheduleResult | null>(null);
-  const move = {
-    new_date: pick.date,
-    new_start_time: pick.range.start,
-    new_end_time: pick.range.end,
-    new_court_id: pick.court.court_id,
-  };
+  // A plain reschedule answered 402 reschedule_payment_required: the move
+  // costs more than the quote said, so take the paid flow.
+  const [paidFlow, setPaidFlow] = useState(false);
+  const move: BookingMove = useMemo(
+    () => ({
+      new_date: pick.date,
+      new_start_time: pick.range.start,
+      new_end_time: pick.range.end,
+      new_court_id: pick.court.court_id,
+    }),
+    [pick.date, pick.range.start, pick.range.end, pick.court.court_id],
+  );
 
+  // P4 only: the move's own price (never the new-booking quote).
   const quote = useQuery({
-    queryKey: ['reserve', 'quote', pick.court.court_id, pick.date, pick.range.start, pick.range.end],
-    queryFn: () =>
-      clutch.bookings.quote({
-        court_id: pick.court.court_id,
-        date: pick.date,
-        start_time: pick.range.start,
-        end_time: pick.range.end,
-      }),
+    queryKey: [...queryKeys.booking(booking.id), 'reschedule-quote', move] as const,
+    queryFn: () => clutch.bookings.rescheduleQuote(booking.id, move),
+    enabled: parity,
     retry: false,
   });
 
-  const payment = useBookingPayment(booking.id, {
-    onConfirmed: (confirmed) => onMoved(confirmed),
+  const payment = useMovePayment(booking.id, move, {
+    currency: booking.currency,
+    onMoved,
     onLockChange,
   });
 
   const reschedule = useMutation({
     mutationFn: () =>
       key.run(move, (idempotencyKey) => clutch.bookings.reschedule(booking.id, move, { idempotencyKey })),
-    onSuccess: (result) => {
-      setMoved(result);
-      if (result.payment_intent) {
-        // A dearer move (P4): Clutch issued the difference. Pay it and hand the
-        // completed intent back through confirm.
-        void payment.pay({
-          amountCents: result.difference_cents ?? 0,
-          intent: result.payment_intent,
-          settle: 'confirm',
-        });
+    onSuccess: (moved) => onMoved(moved),
+    onError: (error) => {
+      if (parity && hasCode(error, 'reschedule_payment_required', 'reschedule_costs_more')) {
+        setPaidFlow(true);
+        void quote.refetch();
         return;
       }
-      onMoved(result);
-    },
-    onError: (error) => {
-      const failure = describeBookingFailure(error);
+      const failure = describeBookingFailure(error, { bookingParity: parity });
       if (failure.action === 'pick-time') onBackToTimes(`${failure.title}. ${failure.message}`);
     },
   });
 
-  const failure = reschedule.isError ? describeBookingFailure(reschedule.error) : payment.failure;
-  const paying = payment.stage === 'preparing' || payment.stage === 'paying' || payment.stage === 'confirming';
-  const difference = moved?.difference_cents ?? null;
+  // A paid-move failure that ends the move (move_not_applied, the booking
+  // changed) goes back to times with what happened.
+  const paymentFailure = payment.failure;
+  useEffect(() => {
+    if (paymentFailure?.action === 'pick-time' && payment.stage === 'idle') {
+      onBackToTimes(`${paymentFailure.title}. ${paymentFailure.message}`);
+    }
+  }, [paymentFailure, payment.stage, onBackToTimes]);
+
+  const quoteFailure = quote.isError ? describeBookingFailure(quote.error, { bookingParity: parity }) : null;
+  useEffect(() => {
+    if (quoteFailure?.action === 'pick-time') onBackToTimes(`${quoteFailure.title}. ${quoteFailure.message}`);
+  }, [quoteFailure, onBackToTimes]);
+
+  const needsPayment = parity && (paidFlow || quote.data?.payment_required === true);
+  const failure =
+    reschedule.isError && !paidFlow
+      ? describeBookingFailure(reschedule.error, { bookingParity: parity })
+      : (paymentFailure ?? quoteFailure);
+  const paying =
+    payment.stage === 'preparing' || payment.stage === 'paying' || payment.stage === 'confirming';
 
   if (payment.stage === 'unconfirmed') {
     return (
       <StepShell title="Confirm the change">
         <Notice
-          title={payment.failure?.title ?? 'Your payment is clearing'}
+          title={paymentFailure?.title ?? 'Your payment is clearing'}
           message={
-            payment.failure?.message ??
-            'The club has not seen your payment settle yet. Check again in a moment; you will not be charged twice.'
+            paymentFailure?.message ??
+            'The club has not confirmed your payment yet. Check again in a moment; you will not be charged twice.'
           }
         >
           <PrimaryButton label="Check again" variant="secondary" onPress={() => void payment.checkAgain()} />
@@ -336,55 +376,78 @@ function ConfirmMove({
     );
   }
 
+  const quoted = quote.data;
+  const payTotal =
+    chargeTotal(payment.charge) ?? (quoted ? formatMoney(quoted.total_cents, quoted.currency) : null);
+
+  const footer = needsPayment ? (
+    <PrimaryButton
+      label={payTotal ? `Pay ${payTotal} and move` : 'Pay the difference and move'}
+      loading={paying}
+      onPress={() => void payment.pay()}
+    />
+  ) : (
+    <PrimaryButton
+      label="Save change"
+      loading={reschedule.isPending}
+      // With P4, wait for the quote: it says whether the move must be paid.
+      onPress={parity && quote.isPending ? undefined : () => reschedule.mutate()}
+    />
+  );
+
   return (
-    <StepShell
-      title="Confirm the change"
-      footer={
-        moved && moved.payment_intent ? (
-          <PrimaryButton
-            label={`Pay the difference${difference ? ` ${formatMoney(difference, booking.currency)}` : ''}`}
-            loading={paying}
-            onPress={() =>
-              void payment.pay({
-                amountCents: difference ?? 0,
-                intent: moved.payment_intent ?? undefined,
-                settle: 'confirm',
-              })
-            }
-          />
-        ) : (
-          <PrimaryButton label="Save change" loading={reschedule.isPending} onPress={() => reschedule.mutate()} />
-        )
-      }
-    >
+    <StepShell title="Confirm the change" footer={footer}>
       <BookingSummaryCard
         sport={sport}
         courtName={booking.court?.name ?? null}
         rows={[
-          { label: 'Now', value: `${formatDateLong(booking.date)}, ${formatTimeRangeCompact(booking.start_time, booking.end_time)}` },
-          { label: 'Price', value: formatMoney(booking.price_cents, booking.currency) },
+          {
+            label: 'Now',
+            value: `${formatDateLong(booking.date)}, ${formatTimeRangeCompact(booking.start_time, booking.end_time)}`,
+          },
         ]}
       />
       <BookingSummaryCard
         sport={sport}
         courtName={pick.court.court_name}
         rows={[
-          { label: 'New time', value: `${formatDateLong(pick.date)}, ${formatTimeRangeCompact(pick.range.start, pick.range.end)}` },
-          { label: 'Duration', value: formatDuration(pick.range.minutes) },
           {
-            label: 'New price',
-            value: quote.data
-              ? formatMoney(quote.data.total_cents, quote.data.currency)
-              : quote.isPending
-                ? 'Pricing...'
-                : 'Set by the club when you save',
+            label: 'New time',
+            value: `${formatDateLong(pick.date)}, ${formatTimeRangeCompact(pick.range.start, pick.range.end)}`,
           },
+          { label: 'Duration', value: formatDuration(pick.range.minutes) },
         ]}
       />
-      <Text style={styles.hint}>
-        Players already on the booking stay on it. The club prices the new time.
-      </Text>
-      {failure ? (
+
+      {parity ? (
+        quoted ? (
+          <View style={styles.priceBox} accessibilityLabel="Price of the move">
+            <Row label="Current price" value={formatMoney(quoted.current_price_cents, quoted.currency)} />
+            <Row label="New price" value={formatMoney(quoted.new_price_cents, quoted.currency)} />
+            {quoted.payment_required ? (
+              <>
+                <Row label="Difference" value={formatMoney(quoted.difference_cents, quoted.currency)} />
+                <Row label="Tax" value={formatMoney(quoted.tax_cents, quoted.currency)} />
+                <Row label="To pay now" value={formatMoney(quoted.total_cents, quoted.currency)} strong />
+              </>
+            ) : (
+              <Text style={styles.hint}>Nothing more to pay for this move.</Text>
+            )}
+          </View>
+        ) : quote.isPending ? (
+          <Text style={styles.hint}>Pricing the move...</Text>
+        ) : null
+      ) : (
+        <Text style={styles.hint}>
+          The club prices the new time when you save. A move to a time that costs more is not available in the
+          app yet.
+        </Text>
+      )}
+
+      {payment.charge ? <ChargeSummary charge={payment.charge} title="Payment" /> : null}
+
+      <Text style={styles.hint}>Players already on the booking stay on it.</Text>
+      {failure && failure.action !== 'pick-time' ? (
         <Text style={styles.error} accessibilityRole="alert">
           {failure.title}. {failure.message}
         </Text>
@@ -399,6 +462,15 @@ function ConfirmMove({
         body="We're recording the payment for your new time"
       />
     </StepShell>
+  );
+}
+
+function Row({ label, value, strong = false }: { label: string; value: string; strong?: boolean }) {
+  return (
+    <View style={styles.priceRow}>
+      <Text style={strong ? styles.priceStrongLabel : styles.priceLabel}>{label}</Text>
+      <Text style={strong ? styles.priceStrong : styles.priceValue}>{value}</Text>
+    </View>
   );
 }
 
@@ -433,4 +505,22 @@ const styles = StyleSheet.create({
     fontFamily: fonts.body,
     fontSize: 13,
   },
+  priceBox: {
+    gap: spacing.xs,
+    padding: spacing.md,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bgElevated,
+  },
+  priceRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+  priceLabel: { color: colors.textMuted, fontFamily: fonts.body, fontSize: 14 },
+  priceValue: { color: colors.text, fontFamily: fonts.bodySemibold, fontSize: 14 },
+  priceStrongLabel: { color: colors.text, fontFamily: fonts.bodySemibold, fontSize: 15 },
+  priceStrong: { color: colors.accent, fontFamily: fonts.displayBold, fontSize: 18 },
 });
