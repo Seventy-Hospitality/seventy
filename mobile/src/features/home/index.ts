@@ -1,8 +1,14 @@
 /**
- * Public surface of the home feature (M2). The Home tab route renders
- * HomeScreen; the query definition + club-invitation respond hook are exported
- * for cross-feature cache work.
+ * Public surface of the home feature. The Home tab route renders HomeScreen;
+ * its reads are the shared queries in lib/queries.ts.
  */
 export { HomeScreen } from './HomeScreen';
-export { homeQuery, deviceTimeZone, useRespondToClubInvitation, isClubInviteConflict } from './home-data';
-export { homeLayout, greetingEyebrow, playerCountLabel, type HomeLayout } from './home-sections';
+export { orderAnnouncements, orderInvitations, respondFailure, tierDetail } from './home-data';
+export {
+  firstNameOf,
+  greetingEyebrow,
+  homeLayout,
+  timeOfDay,
+  type HomeLayout,
+  type TimeOfDay,
+} from './home-sections';

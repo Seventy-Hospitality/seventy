@@ -5,7 +5,7 @@ export { Checkbox } from './Checkbox';
 export { ChoiceChip } from './ChoiceChip';
 export { EmptyStateView } from './EmptyStateView';
 export { BookingCard } from './BookingCard';
-export { EventSpotlightCard } from './EventSpotlightCard';
+export { AnnouncementCard, formatAnnouncementDate } from './AnnouncementCard';
 export { Avatar } from './Avatar';
 export {
   Badge,

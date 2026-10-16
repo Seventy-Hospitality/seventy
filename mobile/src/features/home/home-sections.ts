@@ -1,62 +1,63 @@
 /**
- * Pure home-layout selection (package M2). The backend drives which layout
- * the feed renders; this module reads that off the payload so the composition
- * and its tests agree. Mirrors member-web/src/pages/home/HomePage.tsx's
- * top-of-render derivation.
+ * Pure layout and greeting selection for the home feed, over Clutch's types,
+ * so the screen and its tests agree on what renders.
  */
-import type { HomeFeed, Reservation } from '../../lib/api';
+import type { BookingInvitation, BookingWithCourt } from '../../lib/clutch';
+
+export interface HomeLayoutInput {
+  upcoming: readonly BookingWithCourt[];
+  /** undefined while the invitations read has not answered (or failed). */
+  bookingInvitations: readonly BookingInvitation[] | undefined;
+}
 
 export interface HomeLayout {
   /**
-   * The first-session empty state. The backend sends `amenities` ONLY when
-   * nothing is upcoming and no reservation invitations are pending, so its
-   * presence (not null) selects the empty layout.
+   * The first-session state: nothing upcoming and no booking invitations.
+   * Only when the invitations read has answered, so a slow or failed read
+   * never flashes "book your first session" at a member who has an invite.
    */
   isEmpty: boolean;
-  /** There is at least one upcoming reservation or pending invitation to show. */
-  hasUpcoming: boolean;
-  /** Show the quick-book card (non-empty layout only, and only when present). */
-  showQuickBook: boolean;
-  /** Show the club-invitations section. */
-  showClubInvitations: boolean;
-  /** Show the spotlight-events rail. */
-  showSpotlight: boolean;
+  showBookingInvitations: boolean;
+  showUpcoming: boolean;
 }
 
-export function homeLayout(feed: HomeFeed): HomeLayout {
-  const isEmpty = feed.amenities !== null;
-  const hasUpcoming =
-    feed.pendingInvitations.length > 0 || feed.upcomingReservations.length > 0;
+export function homeLayout({ upcoming, bookingInvitations }: HomeLayoutInput): HomeLayout {
+  const invitationCount = bookingInvitations?.length ?? 0;
   return {
-    isEmpty,
-    hasUpcoming,
-    showQuickBook: !isEmpty && feed.quickBook !== null,
-    showClubInvitations: feed.clubInvitations.length > 0,
-    showSpotlight: feed.spotlightEvents.length > 0,
+    isEmpty: upcoming.length === 0 && bookingInvitations !== undefined && invitationCount === 0,
+    showBookingInvitations: invitationCount > 0,
+    showUpcoming: upcoming.length > 0,
   };
 }
 
-/** Confirmed + pending players, the count the Figma cards show. */
-export function playerCountLabel(reservation: Reservation): string {
-  const count = reservation.participants.filter(
-    (row) => row.status === 'confirmed' || row.status === 'pending',
-  ).length;
-  return count === 1 ? '1 player' : `${count} players`;
+export type TimeOfDay = 'morning' | 'afternoon' | 'evening';
+
+/**
+ * The member's own time of day, on the device clock: "Good evening" is about
+ * where the member is, and nothing depends on it.
+ */
+export function timeOfDay(now: Date): TimeOfDay {
+  const hour = now.getHours();
+  if (hour >= 5 && hour < 12) return 'morning';
+  if (hour >= 12 && hour < 17) return 'afternoon';
+  return 'evening';
 }
 
 /** The eyebrow above the member's first name in the greeting header. */
-export function greetingEyebrow(
-  timeOfDay: HomeFeed['greeting']['timeOfDay'],
-  isEmpty: boolean,
-): string {
+export function greetingEyebrow(when: TimeOfDay, isEmpty: boolean): string {
   if (isEmpty) return 'Welcome,';
-  switch (timeOfDay) {
+  switch (when) {
     case 'morning':
       return 'Good morning,';
     case 'afternoon':
       return 'Good afternoon,';
     case 'evening':
-    default:
       return 'Good evening,';
   }
+}
+
+/** The first word of the profile's full_name; null when Clutch has no name. */
+export function firstNameOf(fullName: string | null | undefined): string | null {
+  const first = fullName?.trim().split(/\s+/)[0];
+  return first ? first : null;
 }

@@ -1,143 +1,113 @@
 import { useCallback, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
-import type { ClubInvitation, QuickBookSuggestion, Reservation } from '../../lib/api';
+import type { BookingInvitation } from '../../lib/clutch';
 import {
+  bookingInvitationsQuery,
+  groupInvitationsQuery,
+  homeQuery,
+  membershipQuery,
+} from '../../lib/queries';
+import { useClub } from '../../lib/club';
+import {
+  AnnouncementCard,
   AppScreen,
-  EmptyStateView,
-  EventSpotlightCard,
+  Avatar,
+  BookingCard,
   MemberCardSheet,
   PrimaryButton,
   Skeleton,
   useToast,
 } from '../../components';
-import { dateKeyToDate } from '../reserve';
-import { isRespondConflict, useRespondToReservation } from '../reservations';
+import { useRespondToBooking } from '../bookings';
+import { GroupInvitationCard, useGroupInvitationResponder } from '../groups';
+import { dateKeyToDate, sportsFrom } from '../reserve';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
-import { homeQuery, isClubInviteConflict, useRespondToClubInvitation } from './home-data';
-import { greetingEyebrow, homeLayout } from './home-sections';
+import { orderAnnouncements, orderInvitations, respondFailure, tierDetail } from './home-data';
+import { firstNameOf, greetingEyebrow, homeLayout, timeOfDay } from './home-sections';
 import {
-  AmenityRow,
-  ClubInvitationCard,
+  BookingInvitationCard,
+  BookSportRow,
   FirstSessionBanner,
   HomeSection,
-  InvitationCard,
-  QuickBookCard,
-  UpcomingReservationCard,
+  SectionError,
   type RespondResponse,
 } from './HomeCards';
 
-/** "August 26" for the accept toast (no year, per the Figma). */
+/** "October 20" for the accept toast (no year). */
 function monthDayLabel(dateKey: string): string {
   return dateKeyToDate(dateKey).toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
 }
 
 /**
- * The home feed (package M2; Figma home/default 68:1105, home/empty-state
- * 174:16152, home-with-invitation 325:14393, member-card 107:9461): greeting +
- * member QR entry, the quick-book suggestion, upcoming reservations with inline
- * invitation cards, club invitations, spotlight events, and the first-session
- * empty state. One aggregated read (GET /api/me/home) feeds every section.
- * Mirrors member-web's HomePage, native.
+ * The home feed on Clutch: greeting + member card, pending booking
+ * invitations with inline Accept / Decline, upcoming bookings, pending group
+ * invitations, and the club's announcements. With nothing upcoming and no
+ * booking invitations it becomes a "Book a court" prompt per sport.
+ *
+ * GET /me/home answers the profile, upcoming bookings and announcements; the
+ * invitations are their own shared reads (their keys are what the respond
+ * mutations invalidate). The home read gates the screen; a failed invitation
+ * read shows an inline retry instead of taking the feed down.
  */
 export function HomeScreen() {
   const home = useQuery(homeQuery);
+  const bookingInvites = useQuery(bookingInvitationsQuery);
+  const groupInvites = useQuery(groupInvitationsQuery);
+  // Only the member card's tier line; never a reason to block or decide anything.
+  const membership = useQuery(membershipQuery);
+  const club = useClub();
   const router = useRouter();
   const { toast } = useToast();
   const [cardOpen, setCardOpen] = useState(false);
 
-  // Both respond mutations live at the screen level: the pressed card unmounts
-  // with the optimistic write (accepting moves the invitation into upcoming;
-  // declining removes it), and mutate-time callbacks (the outcome toasts) are
-  // dropped for unmounted callers.
-  const respond = useRespondToReservation();
-  const clubRespond = useRespondToClubInvitation();
+  // At screen level: the answered card leaves the list on refetch, and a
+  // card-level mutation would drop its outcome toast when it unmounts.
+  const respond = useRespondToBooking();
+  const groupResponder = useGroupInvitationResponder();
 
-  const openReservation = useCallback(
-    (id: string) => router.push(`/reservations/${id}` as never),
+  const refreshAll = useCallback(() => {
+    void home.refetch();
+    void bookingInvites.refetch();
+    void groupInvites.refetch();
+  }, [home, bookingInvites, groupInvites]);
+
+  const openInvitation = useCallback(
+    (invitation: BookingInvitation) => router.push(`/bookings/${invitation.booking_id}`),
     [router],
   );
 
-  // "Book now" / "Book" deep-link into M3's wizard for the suggested type. The
-  // wizard reads only `typeCode` today; date/start/end are forward-compatible
-  // (the wizard opens on that amenity with today selected). See the M3 prefill
-  // follow-up in docs/club70-mobile-plan.md.
-  const bookSuggestion = useCallback(
-    (suggestion: QuickBookSuggestion) => {
-      router.push({
-        pathname: '/reserve/[typeCode]',
-        params: {
-          typeCode: suggestion.typeCode,
-          date: suggestion.date,
-          start: suggestion.startTime,
-          end: suggestion.endTime,
-        },
-      });
-    },
+  const bookSport = useCallback(
+    (sport: string) => router.push(`/reserve/${encodeURIComponent(sport)}`),
     [router],
   );
 
-  const bookAmenity = useCallback(
-    (typeCode: string) => router.push({ pathname: '/reserve/[typeCode]', params: { typeCode } }),
-    [router],
-  );
-
-  const respondToInvitation = useCallback(
-    (reservation: Reservation, response: RespondResponse) => {
+  const respondTo = useCallback(
+    (invitation: BookingInvitation, response: RespondResponse) => {
+      const accept = response === 'accept';
       respond.mutate(
-        { reservationId: reservation.id, response },
+        { bookingId: invitation.booking_id, accept },
         {
-          onSuccess: ({ status }) => {
+          onSuccess: () => {
             toast({
               variant: 'success',
-              message:
-                status === 'confirmed'
-                  ? `Invite accepted! See you ${monthDayLabel(reservation.date)}.`
-                  : 'Invitation declined.',
+              message: accept
+                ? `Invite accepted! See you ${monthDayLabel(invitation.date)}.`
+                : 'Invitation declined.',
             });
           },
           onError: (error) => {
-            toast({
-              variant: 'error',
-              message: isRespondConflict(error)
-                ? 'This reservation changed before your response was saved.'
-                : 'We could not save your response. Try again.',
-            });
+            // A conflict needs no extra work here: useRespondToBooking
+            // invalidates every booking read and home when it settles, so the
+            // stale card is replaced by Clutch's truth.
+            toast({ variant: 'error', message: respondFailure(error).message });
           },
         },
       );
     },
     [respond, toast],
-  );
-
-  const respondToClub = useCallback(
-    (invitation: ClubInvitation, response: RespondResponse) => {
-      clubRespond.mutate(
-        { invitationId: invitation.id, response },
-        {
-          onSuccess: () => {
-            toast({
-              variant: 'success',
-              message:
-                response === 'accept'
-                  ? `You joined ${invitation.club.name}.`
-                  : 'Club invitation declined.',
-            });
-          },
-          onError: (error) => {
-            toast({
-              variant: 'error',
-              message: isClubInviteConflict(error)
-                ? 'This club invitation is no longer open.'
-                : 'We could not save your response. Try again.',
-            });
-          },
-        },
-      );
-    },
-    [clubRespond, toast],
   );
 
   if (home.isPending) {
@@ -146,7 +116,7 @@ export function HomeScreen() {
 
   if (home.isError) {
     return (
-      <AppScreen>
+      <AppScreen onRefresh={refreshAll} refreshing={home.isRefetching}>
         <View style={styles.errorBox} accessibilityRole="alert">
           <Text style={styles.errorText}>We could not load your home feed.</Text>
           <View style={styles.errorAction}>
@@ -158,110 +128,127 @@ export function HomeScreen() {
   }
 
   const feed = home.data;
-  const layout = homeLayout(feed);
+  const invitations = bookingInvites.data ? orderInvitations(bookingInvites.data) : undefined;
+  const layout = homeLayout({ upcoming: feed.upcoming_bookings, bookingInvitations: invitations });
+  const announcements = orderAnnouncements(feed.announcements);
+  const groupInvitations = groupInvites.data ?? [];
+  const fullName = feed.profile.full_name?.trim() || null;
+  const sports = sportsFrom(club.data?.courts ?? []);
 
-  const invitationPending = (id: string): RespondResponse | null =>
-    respond.isPending && respond.variables?.reservationId === id ? respond.variables.response : null;
-  const clubPending = (id: string): RespondResponse | null =>
-    clubRespond.isPending && clubRespond.variables?.invitationId === id
-      ? clubRespond.variables.response
+  const pendingFor = (invitation: BookingInvitation): RespondResponse | null =>
+    respond.isPending && respond.variables?.bookingId === invitation.booking_id
+      ? respond.variables.accept
+        ? 'accept'
+        : 'decline'
       : null;
 
   return (
-    <AppScreen onRefresh={() => void home.refetch()} refreshing={home.isRefetching}>
+    <AppScreen
+      onRefresh={refreshAll}
+      refreshing={home.isRefetching || bookingInvites.isRefetching || groupInvites.isRefetching}
+    >
       <GreetingHeader
-        eyebrow={greetingEyebrow(feed.greeting.timeOfDay, layout.isEmpty)}
-        name={feed.greeting.firstName}
+        eyebrow={greetingEyebrow(timeOfDay(new Date()), layout.isEmpty)}
+        name={firstNameOf(fullName) ?? 'Member'}
+        fullName={fullName ?? 'Member'}
+        avatarUrl={feed.profile.avatar_url ?? null}
         onOpenCard={() => setCardOpen(true)}
       />
 
-      {layout.isEmpty && feed.amenities ? (
-        <>
-          <FirstSessionBanner />
-          <HomeSection title="Reserve play">
-            <View style={styles.stack}>
-              {feed.amenities.map((amenity) => (
-                <AmenityRow key={amenity.typeCode} amenity={amenity} onBook={bookAmenity} />
-              ))}
-            </View>
-          </HomeSection>
-        </>
-      ) : (
-        <>
-          {layout.showQuickBook && feed.quickBook ? (
-            <HomeSection title="Quick book">
-              <QuickBookCard suggestion={feed.quickBook} onBook={bookSuggestion} />
-            </HomeSection>
-          ) : null}
+      {bookingInvites.isError ? (
+        <SectionError
+          message="We could not load your booking invitations."
+          onRetry={() => void bookingInvites.refetch()}
+        />
+      ) : null}
 
-          {layout.hasUpcoming ? (
-            <HomeSection title="Upcoming reservations">
-              <View style={styles.stack}>
-                {feed.pendingInvitations.map((reservation) => (
-                  <InvitationCard
-                    key={reservation.id}
-                    reservation={reservation}
-                    onRespond={respondToInvitation}
-                    pendingResponse={invitationPending(reservation.id)}
-                  />
-                ))}
-                {feed.upcomingReservations.map((reservation) => (
-                  <UpcomingReservationCard
-                    key={reservation.id}
-                    reservation={reservation}
-                    onPress={openReservation}
-                  />
-                ))}
-              </View>
-            </HomeSection>
-          ) : (
-            // Transient client-side gap only: the last invitation was just
-            // declined optimistically and the refetch (which brings the amenity
-            // empty state) has not landed yet.
-            <EmptyStateView
-              title="Nothing coming up"
-              description="Book a court or amenity to get back on the schedule."
-            />
-          )}
-        </>
-      )}
-
-      {layout.showClubInvitations ? (
-        <HomeSection title="Club invitations">
+      {layout.showBookingInvitations && invitations ? (
+        <HomeSection title="Invitations">
           <View style={styles.stack}>
-            {feed.clubInvitations.map((invitation) => (
-              <ClubInvitationCard
-                key={invitation.id}
+            {invitations.map((invitation) => (
+              <BookingInvitationCard
+                key={invitation.booking_player_id}
                 invitation={invitation}
-                onRespond={respondToClub}
-                pendingResponse={clubPending(invitation.id)}
+                onRespond={respondTo}
+                onOpen={openInvitation}
+                pendingResponse={pendingFor(invitation)}
+                disabled={respond.isPending}
               />
             ))}
           </View>
         </HomeSection>
       ) : null}
 
-      {layout.showSpotlight ? (
-        <HomeSection title="Spotlight events">
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            style={styles.railBleed}
-            contentContainerStyle={styles.railContent}
-            accessibilityLabel="Spotlight events"
-          >
-            {feed.spotlightEvents.map((event) => (
-              <EventSpotlightCard key={event.id} event={event} />
+      {layout.showUpcoming ? (
+        <HomeSection title="Upcoming bookings">
+          <View style={styles.stack}>
+            {feed.upcoming_bookings.map((booking) => (
+              <BookingCard key={booking.id} booking={booking} />
             ))}
-          </ScrollView>
+          </View>
+        </HomeSection>
+      ) : null}
+
+      {layout.isEmpty ? (
+        <>
+          <FirstSessionBanner />
+          <HomeSection title="Book a court">
+            {club.isPending ? (
+              <View style={styles.stack} accessibilityLabel="Loading sports">
+                <Skeleton height={72} borderRadius={radius.lg} />
+                <Skeleton height={72} borderRadius={radius.lg} />
+              </View>
+            ) : club.isError ? (
+              <SectionError message="We could not load the club's courts." onRetry={() => void club.refetch()} />
+            ) : sports.length === 0 ? (
+              <Text style={styles.muted}>The club has not opened any courts for booking yet.</Text>
+            ) : (
+              <View style={styles.stack}>
+                {sports.map((sport) => (
+                  <BookSportRow key={sport} sport={sport} onBook={bookSport} />
+                ))}
+              </View>
+            )}
+          </HomeSection>
+        </>
+      ) : null}
+
+      {groupInvites.isError ? (
+        <SectionError
+          message="We could not load your group invitations."
+          onRetry={() => void groupInvites.refetch()}
+        />
+      ) : null}
+
+      {groupInvitations.length > 0 ? (
+        <HomeSection title="Group invitations">
+          <View style={styles.stack}>
+            {groupInvitations.map((invitation) => (
+              <GroupInvitationCard key={invitation.id} {...groupResponder.cardProps(invitation)} />
+            ))}
+          </View>
+        </HomeSection>
+      ) : null}
+
+      {announcements.length > 0 ? (
+        <HomeSection title="Club news">
+          <View style={styles.stack}>
+            {announcements.map((announcement) => (
+              <AnnouncementCard
+                key={announcement.id}
+                announcement={announcement}
+                timeZone={club.data?.timezone}
+              />
+            ))}
+          </View>
         </HomeSection>
       ) : null}
 
       <MemberCardSheet
         open={cardOpen}
         onClose={() => setCardOpen(false)}
-        memberName={`${feed.member.firstName} ${feed.member.lastName}`}
-        memberNumber={feed.member.memberNumber}
+        memberName={fullName ?? 'Member'}
+        detail={tierDetail(membership.data)}
       />
     </AppScreen>
   );
@@ -270,14 +257,19 @@ export function HomeScreen() {
 function GreetingHeader({
   eyebrow,
   name,
+  fullName,
+  avatarUrl,
   onOpenCard,
 }: {
   eyebrow: string;
   name: string;
+  fullName: string;
+  avatarUrl: string | null;
   onOpenCard: () => void;
 }) {
   return (
     <View style={styles.greeting}>
+      <Avatar name={fullName} src={avatarUrl} size="md" />
       <View style={styles.greetingText}>
         <Text style={styles.eyebrow}>{eyebrow}</Text>
         <Text style={styles.name} accessibilityRole="header" numberOfLines={1}>
@@ -300,6 +292,7 @@ function HomeSkeleton() {
   return (
     <AppScreen>
       <View style={styles.greeting} accessibilityRole="progressbar" accessibilityLabel="Loading your home feed">
+        <Skeleton width={44} height={44} borderRadius={22} />
         <View style={styles.greetingText}>
           <Skeleton width={96} height={16} />
           <Skeleton width={168} height={34} />
@@ -316,7 +309,7 @@ function HomeSkeleton() {
 const styles = StyleSheet.create({
   greeting: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'space-between',
     gap: spacing.md,
   },
@@ -349,12 +342,10 @@ const styles = StyleSheet.create({
   stack: {
     gap: spacing.md,
   },
-  railBleed: {
-    marginHorizontal: -spacing.md,
-  },
-  railContent: {
-    paddingHorizontal: spacing.md,
-    gap: spacing.md,
+  muted: {
+    color: colors.textMuted,
+    fontFamily: fonts.body,
+    fontSize: 14,
   },
   errorBox: {
     backgroundColor: colors.bgElevated,

@@ -3,96 +3,93 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react-nativ
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import {
-  api,
-  ApiError,
-  type ClubInvitation,
-  type HomeAmenitySummary,
-  type HomeFeed,
-  type Reservation,
-} from '../../../lib/api';
+  asBookingId,
+  asCourtId,
+  asGroupId,
+  asGroupInvitationId,
+  type Announcement,
+  type BookingInvitation,
+  type GroupInvitation,
+  type Home,
+} from '../../../lib/clutch';
+import type { MockClutch } from '../../../lib/clutch/testing';
+import { clutchError, TEST_CLUB_ID } from '../../../lib/clutch/testing';
+import {
+  makeBookingWithCourt,
+  makeClub,
+  makeCourt,
+  makeProfile,
+  makeSubscription,
+} from '../../../lib/clutch/fixtures';
 import { ToastProvider } from '../../../components';
 import { HomeScreen } from '../HomeScreen';
 
-jest.mock('../../../lib/session', () => ({ useSession: () => ({ memberId: 'm_self' }) }));
+jest.mock('../../../lib/clutch', () => {
+  const { createMockClutch } = jest.requireActual('../../../lib/clutch/testing');
+  return { ...jest.requireActual('../../../lib/clutch'), clutch: createMockClutch() };
+});
+const mockClutch: MockClutch = jest.requireMock('../../../lib/clutch').clutch;
 
-const mockRouterPush = jest.fn();
+const mockPush = jest.fn();
 jest.mock('expo-router', () => ({
-  useRouter: () => ({ push: mockRouterPush, replace: jest.fn(), back: jest.fn(), canGoBack: () => true }),
+  useRouter: () => ({ push: mockPush, replace: jest.fn(), back: jest.fn(), canGoBack: () => true }),
 }));
 
-const MEMBER: HomeFeed['member'] = {
-  id: 'm_self',
-  email: 'alice@example.com',
-  firstName: 'Alice',
-  lastName: 'Chen',
-  phone: null,
-  memberNumber: 'U00578',
-  displayName: null,
-  avatarUrl: null,
-  memberSince: '2026-08-01T00:00:00.000Z',
-  membership: null,
+const INVITE_BOOKING = asBookingId('b0000000-0000-4000-8000-000000000009');
+
+function makeHome(over: Partial<Home> = {}): Home {
+  return {
+    profile: makeProfile({ full_name: 'Alice Chen' }),
+    upcoming_bookings: [],
+    announcements: [],
+    ...over,
+  };
+}
+
+function makeInvitation(over: Partial<BookingInvitation> = {}): BookingInvitation {
+  return {
+    booking_player_id: 'bp1',
+    booking_id: INVITE_BOOKING,
+    status: 'invited',
+    invited_at: '2026-10-15T12:00:00.000Z',
+    court_name: 'Court 2',
+    date: '2026-10-20',
+    start_time: '18:00:00',
+    end_time: '19:00:00',
+    inviter_name: 'Sarah Lee',
+    club_id: TEST_CLUB_ID,
+    ...over,
+  };
+}
+
+const groupInvitation: GroupInvitation = {
+  id: asGroupInvitationId('gi1'),
+  group_id: asGroupId('g2'),
+  group_name: 'Night Owls',
+  club_id: TEST_CLUB_ID,
+  status: 'pending',
+  created_at: '2026-10-10T00:00:00.000Z',
 };
 
-function invitationReservation(overrides: Partial<Reservation> = {}): Reservation {
+function announcement(over: Partial<Announcement> = {}): Announcement {
   return {
-    id: 'r1',
-    reference: 'BK-1',
-    typeCode: 'badminton_court',
-    typeName: 'Badminton Court',
-    resource: { id: 'court_1', name: 'Court 1' },
-    date: '2026-08-20',
-    startTime: '20:00',
-    endTime: '21:00',
-    startsAt: '2026-08-20T20:00:00.000Z',
-    endsAt: '2026-08-20T21:00:00.000Z',
-    durationMinutes: 60,
-    status: 'confirmed',
-    hourlyRateCents: 3000,
-    amountPaidCents: 0,
-    clubId: null,
-    seriesId: null,
-    weekly: false,
-    createdByAdmin: false,
-    participants: [
-      { memberId: 'org', firstName: 'Sarah', lastName: 'Z', role: 'organizer', status: 'confirmed', invitedById: null },
-      { memberId: 'm_self', firstName: 'Alice', lastName: 'C', role: 'guest', status: 'pending', invitedById: 'org' },
-    ],
-    pendingChange: null,
-    myParticipation: { role: 'guest', status: 'pending', invitedByName: 'Sarah Z', invitedByFirstName: 'Sarah' },
-    ...overrides,
+    id: 'a1',
+    title: 'Courts resurfaced',
+    body: 'Courts 1 to 4 are back.',
+    isPinned: false,
+    publishedAt: '2026-10-10T16:00:00.000Z',
+    authorName: null,
+    ...over,
   };
 }
 
-function acceptedReservation(): Reservation {
-  return invitationReservation({
-    participants: [
-      { memberId: 'org', firstName: 'Sarah', lastName: 'Z', role: 'organizer', status: 'confirmed', invitedById: null },
-      { memberId: 'm_self', firstName: 'Alice', lastName: 'C', role: 'guest', status: 'confirmed', invitedById: 'org' },
-    ],
-    myParticipation: { role: 'guest', status: 'confirmed', invitedByName: 'Sarah Z', invitedByFirstName: 'Sarah' },
-  });
-}
-
-function makeFeed(overrides: Partial<HomeFeed> = {}): HomeFeed {
-  return {
-    member: MEMBER,
-    greeting: { firstName: 'Alice', timeOfDay: 'evening', timezone: 'America/Los_Angeles' },
-    spotlightEvents: [],
-    upcomingReservations: [],
-    pendingInvitations: [],
-    clubInvitations: [],
-    quickBook: null,
-    amenities: null,
-    ...overrides,
-  };
-}
-
-function renderHome(initial: HomeFeed, getHomeResult: HomeFeed = initial) {
+function renderHome() {
   const client = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    defaultOptions: {
+      queries: { retry: false, gcTime: Infinity },
+      mutations: { retry: false, gcTime: Infinity },
+    },
   });
-  client.setQueryData(['home'], initial);
-  jest.spyOn(api, 'getHome').mockResolvedValue(getHomeResult);
   const wrapper = ({ children }: { children: ReactNode }) => (
     <SafeAreaProvider
       initialMetrics={{ frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 47, left: 0, right: 0, bottom: 34 } }}
@@ -102,103 +99,137 @@ function renderHome(initial: HomeFeed, getHomeResult: HomeFeed = initial) {
       </QueryClientProvider>
     </SafeAreaProvider>
   );
-  return render(<HomeScreen />, { wrapper });
+  return { client, ...render(<HomeScreen />, { wrapper }) };
 }
 
 beforeEach(() => {
-  jest.restoreAllMocks();
-  mockRouterPush.mockReset();
+  jest.clearAllMocks();
+  mockClutch.me.home.mockResolvedValue(makeHome());
+  mockClutch.me.bookingInvitations.mockResolvedValue([]);
+  mockClutch.groups.invitations.mockResolvedValue([]);
+  mockClutch.membership.get.mockResolvedValue({
+    membership: { role: 'player' },
+    subscription: makeSubscription({ tier_name: 'Pro' }),
+  });
+  mockClutch.club.verify.mockResolvedValue(
+    makeClub({
+      courts: [
+        makeCourt({ id: asCourtId('c1'), court_type: 'tennis', sort_order: 1 }),
+        makeCourt({ id: asCourtId('c2'), court_type: 'pickleball', sort_order: 2 }),
+      ],
+    }),
+  );
 });
 
-describe('HomeScreen composition', () => {
-  it('renders greeting, quick book and upcoming reservations in the populated layout', () => {
-    renderHome(
-      makeFeed({
-        upcomingReservations: [invitationReservation({ myParticipation: { role: 'organizer', status: 'confirmed', invitedByName: null, invitedByFirstName: null } })],
-        quickBook: {
-          typeCode: 'mahjong_table',
-          typeName: 'Mahjong Table',
-          date: '2026-08-12',
-          startTime: '07:00',
-          endTime: '08:00',
-          durationMinutes: 60,
-          hourlyRateCents: 1000,
-          reason: 'Mahjong Table has the most availability today',
-        },
+describe('HomeScreen', () => {
+  it('greets the member by first name and lists upcoming bookings and announcements', async () => {
+    mockClutch.me.home.mockResolvedValue(
+      makeHome({
+        upcoming_bookings: [makeBookingWithCourt({ court_name: 'Court 3', court_type: 'tennis' })],
+        announcements: [
+          announcement({ id: 'n', title: 'Open house', publishedAt: '2026-10-12T16:00:00.000Z' }),
+          announcement({ id: 'p', title: 'Holiday hours', isPinned: true }),
+        ],
       }),
     );
-    expect(screen.getByText('Good evening,')).toBeTruthy();
-    expect(screen.getByText('Alice')).toBeTruthy();
-    expect(screen.getByLabelText('Show membership card')).toBeTruthy();
-    expect(screen.getByText('Quick book')).toBeTruthy();
-    expect(screen.getByText('AI SUGGESTION')).toBeTruthy();
-    expect(screen.getByText('Upcoming reservations')).toBeTruthy();
+    renderHome();
+
+    expect(await screen.findByText('Alice')).toBeTruthy();
+    expect(screen.getByText(/^Good (morning|afternoon|evening),$/)).toBeTruthy();
+    expect(screen.getByText('Upcoming bookings')).toBeTruthy();
+    expect(screen.getByText('Tennis · Court 3')).toBeTruthy();
+    expect(screen.getByText('Club news')).toBeTruthy();
+    expect(screen.getByText('PINNED')).toBeTruthy();
+    // Pinned first, whatever order the list arrived in.
+    const titles = screen.getAllByText(/Holiday hours|Open house/).map((n) => n.props.children);
+    expect(titles).toEqual(['Holiday hours', 'Open house']);
+    expect(mockClutch.me.home).toHaveBeenCalledTimes(1);
   });
 
-  it('renders the first-session empty state (amenities present, nothing upcoming) instead of quick book', () => {
-    const amenity: HomeAmenitySummary = {
-      typeCode: 'badminton_court',
-      typeName: 'Badminton Court',
-      hourlyRateCents: 2000,
-      resourceCount: 4,
-      availableSlotsToday: 12,
-      locked: false,
-    };
-    renderHome(makeFeed({ amenities: [amenity] }));
-    expect(screen.getByText('Welcome,')).toBeTruthy();
-    expect(screen.getByText('Reserve play')).toBeTruthy();
-    expect(screen.getByLabelText('Book Badminton Court')).toBeTruthy();
-    expect(screen.queryByText('Quick book')).toBeNull();
+  it('shows a Book a court prompt per sport when nothing is upcoming and no invitations are pending', async () => {
+    renderHome();
+
+    expect(await screen.findByText('Welcome,')).toBeTruthy();
+    expect(screen.getByText('BOOK YOUR FIRST SESSION')).toBeTruthy();
+    fireEvent.press(await screen.findByLabelText('Book a Pickleball court'));
+    expect(mockPush).toHaveBeenCalledWith('/reserve/pickleball');
+    expect(screen.getByLabelText('Book a Tennis court')).toBeTruthy();
   });
 
-  it('renders distinct pending invitation cards with inline Accept / Decline', () => {
-    renderHome(makeFeed({ pendingInvitations: [invitationReservation()] }));
-    expect(screen.getByText('SARAH')).toBeTruthy();
-    expect(screen.getByLabelText('Accept invitation')).toBeTruthy();
-    expect(screen.getByLabelText('Decline invitation')).toBeTruthy();
-  });
+  it('accepts a booking invitation inline and tells the member', async () => {
+    mockClutch.me.bookingInvitations
+      .mockResolvedValueOnce([makeInvitation()])
+      .mockResolvedValue([]);
+    mockClutch.bookings.respond.mockResolvedValue(null);
+    renderHome();
 
-  it('renders club invitations', () => {
-    const invitation: ClubInvitation = {
-      id: 'c1',
-      club: { id: 'club-1', name: 'Baddies', description: null, coverImageUrl: null, memberCount: 6 },
-      invitedBy: { memberId: 'colin', firstName: 'Colin', lastName: 'Ng' },
-      createdAt: '2026-08-10T00:00:00.000Z',
-    };
-    renderHome(makeFeed({ pendingInvitations: [invitationReservation()], clubInvitations: [invitation] }));
-    expect(screen.getByText('Club invitations')).toBeTruthy();
-    expect(screen.getByText('Baddies')).toBeTruthy();
-    expect(screen.getByLabelText('Accept the Baddies invitation')).toBeTruthy();
-  });
-});
+    expect(await screen.findByText('SARAH LEE')).toBeTruthy();
+    fireEvent.press(screen.getByLabelText('Accept the invitation from Sarah Lee'));
 
-describe('HomeScreen inline invitation accept', () => {
-  it('optimistically moves an accepted invitation out of the pending list', async () => {
-    // While the request is in flight, the optimistic home write moves the card
-    // into upcoming, so the Accept control unmounts. The request is left pending
-    // (never resolves) so no settle refetch or success toast outlives the test.
-    jest.spyOn(api, 'respondReservation').mockReturnValue(new Promise(() => undefined));
-
-    renderHome(
-      makeFeed({ pendingInvitations: [invitationReservation()] }),
-      makeFeed({ upcomingReservations: [acceptedReservation()] }),
+    await waitFor(() =>
+      expect(mockClutch.bookings.respond).toHaveBeenCalledWith(INVITE_BOOKING, true, {
+        idempotencyKey: expect.any(String),
+      }),
     );
-
-    fireEvent.press(screen.getByLabelText('Accept invitation'));
-
-    await waitFor(() => expect(screen.queryByLabelText('Accept invitation')).toBeNull());
-    // The reservation now shows as an upcoming card (with its Date fact row).
-    expect(screen.getByText('Date')).toBeTruthy();
+    expect(await screen.findByText('Invite accepted! See you October 20.')).toBeTruthy();
+    // Settling refetches the invitations (and home), so the answered card goes.
+    await waitFor(() => expect(screen.queryByText('SARAH LEE')).toBeNull());
+    expect(mockClutch.me.home).toHaveBeenCalledTimes(2);
   });
 
-  it('rolls the pending invitation back when the response fails', async () => {
-    jest.spyOn(api, 'respondReservation').mockRejectedValue(new ApiError('SERVER', 'boom', 500));
+  it('refetches when the invitation moved on before the answer landed', async () => {
+    mockClutch.me.bookingInvitations
+      .mockResolvedValueOnce([makeInvitation()])
+      .mockResolvedValue([]);
+    mockClutch.bookings.respond.mockRejectedValue(clutchError('invite_not_pending'));
+    renderHome();
 
-    renderHome(makeFeed({ pendingInvitations: [invitationReservation()] }));
+    fireEvent.press(await screen.findByLabelText('Decline the invitation from Sarah Lee'));
 
-    fireEvent.press(screen.getByLabelText('Accept invitation'));
+    expect(await screen.findByText('This booking changed before your answer was saved.')).toBeTruthy();
+    await waitFor(() => expect(mockClutch.me.bookingInvitations).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText('SARAH LEE')).toBeNull());
+  });
 
-    // After the error rolls the optimistic write back, the Accept control returns.
-    await waitFor(() => expect(screen.getByLabelText('Accept invitation')).toBeTruthy());
+  it('answers a group invitation from home', async () => {
+    mockClutch.groups.invitations.mockResolvedValue([groupInvitation]);
+    mockClutch.groups.respondInvitation.mockResolvedValue({ group_id: asGroupId('g2') });
+    renderHome();
+
+    expect(await screen.findByText('Group invitations')).toBeTruthy();
+    fireEvent.press(screen.getByLabelText('Accept the Night Owls invitation'));
+    await waitFor(() =>
+      expect(mockClutch.groups.respondInvitation).toHaveBeenCalledWith(groupInvitation.id, true, {
+        idempotencyKey: expect.any(String),
+      }),
+    );
+    expect(await screen.findByText('You joined Night Owls.')).toBeTruthy();
+  });
+
+  it('keeps the feed when an invitations read fails, with an inline retry', async () => {
+    mockClutch.me.bookingInvitations.mockRejectedValue(clutchError('internal_error', 500));
+    renderHome();
+
+    expect(await screen.findByText('We could not load your booking invitations.')).toBeTruthy();
+    expect(screen.getByText('Alice')).toBeTruthy();
+    // An unknown invitation list never reads as "nothing scheduled".
+    expect(screen.queryByText('BOOK YOUR FIRST SESSION')).toBeNull();
+  });
+
+  it('shows a retry when the home read fails', async () => {
+    mockClutch.me.home.mockRejectedValueOnce(clutchError('internal_error', 500));
+    renderHome();
+
+    fireEvent.press(await screen.findByText('Try again'));
+    expect(await screen.findByText('Alice')).toBeTruthy();
+  });
+
+  it('opens the member card with the current tier', async () => {
+    mockClutch.me.checkinToken.mockReturnValue(new Promise(() => undefined));
+    renderHome();
+
+    fireEvent.press(await screen.findByLabelText('Show membership card'));
+    expect(await screen.findByText('Pro')).toBeTruthy();
+    expect(screen.getByText('ALICE CHEN')).toBeTruthy();
   });
 });
