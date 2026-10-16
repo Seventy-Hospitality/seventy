@@ -20,6 +20,8 @@ import {
   GetMeResponseSchema,
   GetMyClubMembershipResponseSchema,
   GetMyHomeResponseSchema,
+  GroupActivityItemSchema,
+  GroupInvitationSchema,
   GroupMemberSchema,
   GroupSchema,
   GroupSummarySchema,
@@ -36,6 +38,7 @@ import {
   BookingCheckoutSchema,
   BookingQuoteSchema,
   ClubBookingRulesSchema,
+  ClubPlayerSchema,
   CourtTypeRulesSchema,
   LegacyBookingCheckoutSchema,
   MyMembershipBillingSchema,
@@ -610,6 +613,56 @@ export function makeBookingRules(over: Over<typeof ClubBookingRulesSchema> = {})
       max_bookings_per_day: null,
       court_types: [makeCourtTypeRules()],
     } as z.input<typeof ClubBookingRulesSchema>,
+    over,
+  );
+}
+
+/** A row of GET /clubs/{club}/players (P4 member search). */
+export function makeClubPlayer(over: Over<typeof ClubPlayerSchema> = {}) {
+  return build(
+    ClubPlayerSchema,
+    {
+      user_id: OTHER_ID,
+      full_name: 'Sam Lee',
+      username: 'sam',
+      avatar_url: null,
+    } as z.input<typeof ClubPlayerSchema>,
+    over,
+  );
+}
+
+/** A row of GET /groups/{id}/activity. */
+export function makeGroupActivityItem(over: Over<typeof GroupActivityItemSchema> = {}) {
+  return build(
+    GroupActivityItemSchema,
+    {
+      booking_id: BOOKING_ID,
+      date: '2026-10-20',
+      start_time: '18:00:00',
+      end_time: '19:00:00',
+      status: 'confirmed',
+      court_name: 'Court 1',
+      court_type: 'badminton',
+      organizer_id: ME_ID,
+      participant_count: 3,
+      i_am_participant: true,
+    } as z.input<typeof GroupActivityItemSchema>,
+    over,
+  );
+}
+
+/** A row of GET /me/group-invitations. */
+export function makeGroupInvitation(over: Over<typeof GroupInvitationSchema> = {}) {
+  return build(
+    GroupInvitationSchema,
+    {
+      id: '91000000-0000-4000-8000-000000000001',
+      group_id: GROUP_ID,
+      group_name: 'Tuesday Doubles',
+      club_id: TEST_CLUB_ID,
+      status: 'pending',
+      created_at: '2026-10-10T00:00:00.000Z',
+    } as z.input<typeof GroupInvitationSchema>,
     over,
   );
 }

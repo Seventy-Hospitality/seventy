@@ -2,10 +2,10 @@
  * Pure layout and greeting selection for the home feed, over Clutch's types,
  * so the screen and its tests agree on what renders.
  */
-import type { BookingInvitation, BookingWithCourt } from '../../lib/clutch';
+import type { Booking, BookingInvitation } from '../../lib/clutch';
 
 export interface HomeLayoutInput {
-  upcoming: readonly BookingWithCourt[];
+  upcoming: readonly Booking[];
   /** undefined while the invitations read has not answered (or failed). */
   bookingInvitations: readonly BookingInvitation[] | undefined;
 }
@@ -56,7 +56,7 @@ export function greetingEyebrow(when: TimeOfDay, isEmpty: boolean): string {
   }
 }
 
-/** The first word of the profile's full_name; null when Clutch has no name. */
+/** The first word of the profile's full_name; null when it is empty (Clutch has no name yet). */
 export function firstNameOf(fullName: string | null | undefined): string | null {
   const first = fullName?.trim().split(/\s+/)[0];
   return first ? first : null;

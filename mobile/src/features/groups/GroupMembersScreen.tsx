@@ -7,7 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import {
   clutch,
   useMutationKey,
-  type GroupDetail,
+  type Group,
   type GroupId,
   type GroupMember,
 } from '../../lib/clutch';
@@ -16,7 +16,13 @@ import { useSession } from '../../lib/session';
 import { Avatar, Badge, EmptyStateView, PrimaryButton, Sheet, Skeleton, useToast } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
 import { invalidateGroups } from './groups-data';
-import { isGroupGone, memberActionErrorMessage, personHandle, personName } from './groups-lib';
+import {
+  isGroupGone,
+  personHandle,
+  personName,
+  removeMemberErrorMessage,
+  transferErrorMessage,
+} from './groups-lib';
 import { InviteToGroupSheet } from './InviteToGroupSheet';
 
 /**
@@ -96,7 +102,7 @@ function MembersFrame({ children, action }: { children: React.ReactNode; action?
   );
 }
 
-function MembersView({ group }: { group: GroupDetail }) {
+function MembersView({ group }: { group: Group }) {
   const { userId } = useSession();
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -123,7 +129,7 @@ function MembersView({ group }: { group: GroupDetail }) {
       setConfirm(null);
       toast({
         variant: 'error',
-        message: memberActionErrorMessage(error, 'We could not transfer ownership. Try again.'),
+        message: transferErrorMessage(error),
       });
     },
     onSettled: () => invalidateGroups(queryClient),
@@ -136,7 +142,7 @@ function MembersView({ group }: { group: GroupDetail }) {
       ),
     onSuccess: (_result, entry) => {
       setConfirm(null);
-      queryClient.setQueryData<GroupDetail>(queryKeys.group(group.id), (current) =>
+      queryClient.setQueryData<Group>(queryKeys.group(group.id), (current) =>
         current
           ? {
               ...current,
@@ -151,7 +157,7 @@ function MembersView({ group }: { group: GroupDetail }) {
       setConfirm(null);
       toast({
         variant: 'error',
-        message: memberActionErrorMessage(error, 'We could not remove that member. Try again.'),
+        message: removeMemberErrorMessage(error),
       });
     },
     onSettled: () => invalidateGroups(queryClient),

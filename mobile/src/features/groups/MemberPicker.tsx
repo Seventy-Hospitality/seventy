@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
-import type { PlayerSearchResult, UserId } from '../../lib/clutch';
-import { Avatar, Chip, EmptyStateView, PrimaryButton, Skeleton } from '../../components';
+import { clutch, type ClubPlayer, type UserId } from '../../lib/clutch';
+import { Avatar, Chip, EmptyStateView, FeatureUnavailable, PrimaryButton, Skeleton } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
 import { playerSearchQuery } from './groups-data';
 import {
@@ -28,10 +28,25 @@ interface MemberPickerProps {
  * Pick fellow club members to invite to a group (Figma invite-players 95:4294 /
  * invite modal 195:17988): search by name, removable chips for the picks, and
  * a check-toggle per row. Results come from Clutch's member-facing player
- * search (PENDING P4), which returns only fellow members of this club and only
- * what a member may see of them; the admin roster is never used.
+ * search (P4 feat/member-booking-parity), which returns only fellow members of
+ * this club and only what a member may see of them; the admin roster is never
+ * used. Until P4 is live the picker says so instead of searching, and the
+ * invite link (which needs no P4) stays the way to bring people in.
  */
-export function MemberPicker({
+export function MemberPicker(props: MemberPickerProps) {
+  if (!clutch.capabilities.bookingParity) {
+    return (
+      <FeatureUnavailable
+        capability="bookingParity"
+        title="Member search is not available in the app yet"
+        description="Searching for club members to invite is coming soon. For now, share the group's invite link from the group page."
+      />
+    );
+  }
+  return <MemberSearch {...props} />;
+}
+
+function MemberSearch({
   selection,
   onSelectionChange,
   excludeUserIds = [],
@@ -44,7 +59,7 @@ export function MemberPicker({
 
   const excluded = useMemo(() => new Set<UserId>(excludeUserIds), [excludeUserIds]);
 
-  const players: PlayerSearchResult[] = useMemo(
+  const players: ClubPlayer[] = useMemo(
     () => (directory.data ?? []).filter((player) => !excluded.has(player.user_id)),
     [directory.data, excluded],
   );
@@ -121,7 +136,7 @@ function PlayerRow({
   selected,
   onToggle,
 }: {
-  player: PlayerSearchResult;
+  player: ClubPlayer;
   selected: boolean;
   onToggle: () => void;
 }) {

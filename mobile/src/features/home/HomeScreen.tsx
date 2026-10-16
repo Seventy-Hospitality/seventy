@@ -3,7 +3,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
-import type { BookingInvitation } from '../../lib/clutch';
+import { clutch, currentTierName, type BookingInvitation } from '../../lib/clutch';
 import {
   bookingInvitationsQuery,
   groupInvitationsQuery,
@@ -25,7 +25,7 @@ import { useRespondToBooking } from '../bookings';
 import { GroupInvitationCard, useGroupInvitationResponder } from '../groups';
 import { dateKeyToDate, sportsFrom } from '../reserve';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
-import { orderAnnouncements, orderInvitations, respondFailure, tierDetail } from './home-data';
+import { orderAnnouncements, orderInvitations, respondFailure } from './home-data';
 import { firstNameOf, greetingEyebrow, homeLayout, timeOfDay } from './home-sections';
 import {
   BookingInvitationCard,
@@ -43,9 +43,13 @@ function monthDayLabel(dateKey: string): string {
 
 /**
  * The home feed on Clutch: greeting + member card, pending booking
- * invitations with inline Accept / Decline, upcoming bookings, pending group
- * invitations, and the club's announcements. With nothing upcoming and no
- * booking invitations it becomes a "Book a court" prompt per sport.
+ * invitations, upcoming bookings, pending group invitations, and the club's
+ * announcements. With nothing upcoming and no booking invitations it becomes
+ * a "Book a court" prompt per sport.
+ *
+ * Answering a booking invitation is P4 (bookingParity). Until it is live the
+ * invitation card says answering in the app is coming soon instead of
+ * offering Accept / Decline buttons that could only fail.
  *
  * GET /me/home answers the profile, upcoming bookings and announcements; the
  * invitations are their own shared reads (their keys are what the respond
@@ -62,6 +66,7 @@ export function HomeScreen() {
   const router = useRouter();
   const { toast } = useToast();
   const [cardOpen, setCardOpen] = useState(false);
+  const canRespond = clutch.capabilities.bookingParity;
 
   // At screen level: the answered card leaves the list on refetch, and a
   // card-level mutation would drop its outcome toast when it unmounts.
@@ -129,10 +134,17 @@ export function HomeScreen() {
 
   const feed = home.data;
   const invitations = bookingInvites.data ? orderInvitations(bookingInvites.data) : undefined;
-  const layout = homeLayout({ upcoming: feed.upcoming_bookings, bookingInvitations: invitations });
+  // TODO(lead): /me/home lists only bookings the member BOOKED. Bookings they
+  // play in (accepted invitations) belong under "Upcoming bookings" too, via
+  // the hook the bookings agent is adding (expected export from
+  // src/features/bookings/index.ts: `usePlayingBookings()`, answering
+  // `Booking` rows). It did not exist when this screen was moved.
+  const upcoming = feed.upcoming_bookings;
+  const layout = homeLayout({ upcoming, bookingInvitations: invitations });
   const announcements = orderAnnouncements(feed.announcements);
   const groupInvitations = groupInvites.data ?? [];
-  const fullName = feed.profile.full_name?.trim() || null;
+  // full_name is always a string; an empty one means Clutch has no name yet.
+  const fullName = feed.profile.full_name.trim() || null;
   const sports = sportsFrom(club.data?.courts ?? []);
 
   const pendingFor = (invitation: BookingInvitation): RespondResponse | null =>
@@ -169,6 +181,7 @@ export function HomeScreen() {
               <BookingInvitationCard
                 key={invitation.booking_player_id}
                 invitation={invitation}
+                canRespond={canRespond}
                 onRespond={respondTo}
                 onOpen={openInvitation}
                 pendingResponse={pendingFor(invitation)}
@@ -182,7 +195,7 @@ export function HomeScreen() {
       {layout.showUpcoming ? (
         <HomeSection title="Upcoming bookings">
           <View style={styles.stack}>
-            {feed.upcoming_bookings.map((booking) => (
+            {upcoming.map((booking) => (
               <BookingCard key={booking.id} booking={booking} />
             ))}
           </View>
@@ -248,7 +261,7 @@ export function HomeScreen() {
         open={cardOpen}
         onClose={() => setCardOpen(false)}
         memberName={fullName ?? 'Member'}
-        detail={tierDetail(membership.data)}
+        detail={membership.data ? currentTierName(membership.data) : null}
       />
     </AppScreen>
   );

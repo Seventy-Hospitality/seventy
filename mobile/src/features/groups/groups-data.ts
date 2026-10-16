@@ -40,9 +40,10 @@ export const invitePreviewQuery = (token: string) =>
   });
 
 /**
- * Fellow club members the caller may invite (PENDING P4: Clutch's member-facing
- * player search, never the admin roster). An empty query asks for the default
- * page the endpoint offers.
+ * Fellow club members the caller may invite (P4 bookingParity: Clutch's
+ * member-facing player search, never the admin roster). Only MemberPicker
+ * runs it, and only while the capability is on. An empty query asks for the
+ * default page the endpoint offers.
  */
 export const playerSearchQuery = (q: string) =>
   queryOptions({

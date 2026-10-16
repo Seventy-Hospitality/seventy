@@ -1,26 +1,34 @@
-import { asUserId } from '../../../lib/clutch/ids';
 import { clutchError, networkError } from '../../../lib/clutch/testing';
+import { makeClubPlayer, makeGroupMember, ME_ID, OTHER_ID } from '../../../lib/clutch/fixtures';
+import { asUserId, ClutchError } from '../../../lib/clutch';
 import {
   activityBadge,
   activityDayLabel,
   coverImageError,
   coverUploadErrorMessage,
+  createGroupErrorMessage,
+  createGroupInput,
+  deleteGroupErrorMessage,
   EMPTY_SELECTION,
-  groupFormErrorMessage,
+  inviteErrorMessage,
+  inviteLinkErrorMessage,
   inviteeIds,
   isDeadInviteLink,
   isGroupGone,
   isValidGroupName,
+  joinErrorMessage,
   leaveErrorMessage,
-  memberActionErrorMessage,
   memberCountLabel,
   parseInviteToken,
   personHandle,
   personName,
   removeInvitee,
+  removeMemberErrorMessage,
   respondErrorMessage,
   timeRangeLabel,
   toggleInvitee,
+  transferErrorMessage,
+  updateGroupErrorMessage,
 } from '../groups-lib';
 
 describe('labels', () => {
@@ -30,11 +38,12 @@ describe('labels', () => {
   });
 
   it('names a person by full name, then @username, then a fallback', () => {
-    expect(personName({ full_name: ' Alex Morgan ', username: 'alex' })).toBe('Alex Morgan');
-    expect(personName({ full_name: null, username: 'alex' })).toBe('@alex');
-    expect(personName({ full_name: '', username: null })).toBe('Member');
-    expect(personHandle({ full_name: 'Alex', username: 'alex' })).toBe('@alex');
-    expect(personHandle({ full_name: null, username: 'alex' })).toBeNull();
+    expect(personName(makeGroupMember({ full_name: ' Alex Morgan ', username: 'alex' }))).toBe('Alex Morgan');
+    expect(personName(makeGroupMember({ full_name: null, username: 'alex' }))).toBe('@alex');
+    expect(personName(makeGroupMember({ full_name: null, username: null }))).toBe('Member');
+    expect(personName(makeClubPlayer({ full_name: '', username: null }))).toBe('Member');
+    expect(personHandle(makeClubPlayer({ full_name: 'Sam', username: 'sam' }))).toBe('@sam');
+    expect(personHandle(makeGroupMember({ full_name: null, username: 'alex' }))).toBeNull();
   });
 
   it('labels the club-local day without device timezone drift', () => {
@@ -71,15 +80,31 @@ describe('validation', () => {
 });
 
 describe('invitee selection', () => {
-  const a = { user_id: asUserId('a'), full_name: 'A' };
-  const b = { user_id: asUserId('b'), full_name: 'B' };
+  const a = makeClubPlayer({ user_id: ME_ID, full_name: 'A' });
+  const b = makeClubPlayer({ user_id: OTHER_ID, full_name: 'B' });
 
   it('toggles, removes and lists user ids', () => {
     let sel = toggleInvitee(EMPTY_SELECTION, a);
     sel = toggleInvitee(sel, b);
-    expect(inviteeIds(sel)).toEqual(['a', 'b']);
-    expect(inviteeIds(toggleInvitee(sel, a))).toEqual(['b']);
-    expect(inviteeIds(removeInvitee(sel, asUserId('b')))).toEqual(['a']);
+    expect(inviteeIds(sel)).toEqual([ME_ID, OTHER_ID]);
+    expect(inviteeIds(toggleInvitee(sel, a))).toEqual([OTHER_ID]);
+    expect(inviteeIds(removeInvitee(sel, asUserId(OTHER_ID)))).toEqual([ME_ID]);
+  });
+});
+
+describe('createGroupInput', () => {
+  it('trims, nulls an empty description and omits an empty invitee list', () => {
+    const input = createGroupInput('  Baddies ', '   ', []);
+    expect(input).toEqual({ name: 'Baddies', description: null });
+    expect(input).not.toHaveProperty('invitee_user_ids');
+  });
+
+  it('sends the invitees when there are some', () => {
+    expect(createGroupInput('Baddies', ' Tuesdays ', [asUserId(OTHER_ID)])).toEqual({
+      name: 'Baddies',
+      description: 'Tuesdays',
+      invitee_user_ids: [OTHER_ID],
+    });
   });
 });
 
@@ -101,25 +126,72 @@ describe('error copy branches on codes', () => {
     expect(isGroupGone(null)).toBe(false);
   });
 
-  it('maps create / edit refusals', () => {
-    expect(groupFormErrorMessage(clutchError('name_required', 400), 'x')).toBe('Enter a group name.');
-    expect(groupFormErrorMessage(clutchError('name_too_long', 400), 'x')).toMatch(/80 characters/);
-    expect(groupFormErrorMessage(clutchError('field_too_long', 400), 'x')).toMatch(/500 characters/);
-    expect(groupFormErrorMessage(networkError(), 'fallback')).toBe('fallback');
+  it('create: each code says what happened; validation codes are not blamed on something else', () => {
+    expect(createGroupErrorMessage(clutchError('name_required', 400))).toBe('Enter a group name.');
+    expect(createGroupErrorMessage(clutchError('name_too_long', 400))).toMatch(/80 characters/);
+    const invalid = createGroupErrorMessage(clutchError('invalid_field', 400));
+    expect(invalid).toMatch(/did not accept these group details/);
+    expect(invalid).not.toMatch(/500 characters/);
+    expect(createGroupErrorMessage(clutchError('missing_field', 400))).toMatch(/did not reach the club complete/);
+    expect(createGroupErrorMessage(clutchError('not_club_member', 403))).toMatch(/active members/);
+    expect(createGroupErrorMessage(clutchError('auth_required', 401))).toMatch(/Sign in again/);
+  });
+
+  it('update: missing_field is "nothing to save", not_authorized is owner-only', () => {
+    expect(updateGroupErrorMessage(clutchError('missing_field', 400))).toBe('There were no changes to save.');
+    expect(updateGroupErrorMessage(clutchError('invalid_field', 400))).toMatch(/did not accept these changes/);
+    expect(updateGroupErrorMessage(clutchError('not_authorized', 403))).toMatch(/Only the group owner/);
+    expect(updateGroupErrorMessage(clutchError('name_required', 400))).toBe('Enter a group name.');
   });
 
   it('maps cover refusals', () => {
     expect(coverUploadErrorMessage(clutchError('unsupported_image_type', 400))).toMatch(/JPG/);
     expect(coverUploadErrorMessage(clutchError('file_too_large', 413))).toMatch(/5 MB/);
-    expect(coverUploadErrorMessage(networkError())).toBe('The cover photo could not be uploaded.');
+    expect(coverUploadErrorMessage(clutchError('invalid_content_type', 415))).toMatch(/not sent as an image upload/);
+    expect(coverUploadErrorMessage(clutchError('missing_field', 400))).toMatch(/did not reach the club/);
+    expect(coverUploadErrorMessage(clutchError('not_authorized', 403))).toMatch(/Only the group owner/);
   });
 
-  it('maps leave, member actions and invitation responses', () => {
+  it('maps leave and delete', () => {
     expect(leaveErrorMessage(clutchError('must_transfer_first'), 'G')).toMatch(/Transfer ownership/);
-    expect(leaveErrorMessage(networkError(), 'G')).toBe('We could not remove you from G. Try again.');
-    expect(memberActionErrorMessage(clutchError('cannot_remove_self'), 'x')).toMatch(/Leave the group/);
-    expect(respondErrorMessage(clutchError('invitation_not_pending'))).toMatch(/no longer open/);
+    expect(leaveErrorMessage(clutchError('not_authorized', 403), 'G')).toBe('You are no longer a member of G.');
+    expect(deleteGroupErrorMessage(clutchError('not_authorized', 403))).toMatch(/Only the group owner/);
+  });
+
+  it('maps transfer and remove separately', () => {
+    expect(transferErrorMessage(clutchError('target_not_member'))).toMatch(/no longer in the group/);
+    expect(transferErrorMessage(clutchError('invalid_field', 400))).toMatch(/did not accept that ownership change/);
+    expect(removeMemberErrorMessage(clutchError('member_not_found', 404))).toMatch(/no longer in the group/);
+    expect(removeMemberErrorMessage(clutchError('cannot_remove_self'))).toMatch(/Leave the group/);
+  });
+
+  it('maps invites, invite links, responses and joins', () => {
+    expect(inviteErrorMessage(clutchError('missing_field', 400))).toMatch(/at least one person/);
+    expect(inviteErrorMessage(clutchError('invalid_field', 400))).toMatch(/at most 100 people/);
+    expect(inviteErrorMessage(clutchError('not_authorized', 403))).toMatch(/Only members of this group/);
+    expect(inviteLinkErrorMessage(clutchError('not_authorized', 403), true)).toMatch(/Only the group owner can reset/);
+    expect(inviteLinkErrorMessage(clutchError('not_authorized', 403), false)).toMatch(/Only members/);
+    expect(respondErrorMessage(clutchError('invitation_not_pending'))).toMatch(/already answered or withdrawn/);
+    expect(respondErrorMessage(clutchError('invitation_not_found', 404))).toMatch(/no longer exists/);
+    expect(respondErrorMessage(clutchError('not_club_member', 403))).toMatch(/active members/);
+    expect(joinErrorMessage(clutchError('invite_link_invalid', 410))).toMatch(/no longer works/);
+    expect(joinErrorMessage(clutchError('not_club_member', 403))).toMatch(/active members/);
     expect(isDeadInviteLink(clutchError('invite_link_invalid', 410))).toBe(true);
     expect(isDeadInviteLink(networkError())).toBe(false);
+  });
+
+  it('an unknown code or a server failure gets the neutral message; offline says so', () => {
+    const unknown = new ClutchError({ code: 'brand_new_code', message: 'x', status: 409, kind: 'api' });
+    expect(unknown.code).toBe('unknown');
+    expect(createGroupErrorMessage(unknown)).toBe('We could not create the group. Try again.');
+    expect(updateGroupErrorMessage(clutchError('internal_error', 500))).toBe('We could not save your changes. Try again.');
+    expect(coverUploadErrorMessage(new Error('boom'))).toBe('The cover photo could not be uploaded.');
+    expect(leaveErrorMessage(networkError(), 'G')).toMatch(/Check your connection/);
+    expect(joinErrorMessage(networkError())).toMatch(/Check your connection/);
+  });
+
+  it('field_too_long says text is too long without naming a field Clutch did not name', () => {
+    expect(createGroupErrorMessage(clutchError('field_too_long', 400))).toMatch(/text is too long/);
+    expect(updateGroupErrorMessage(clutchError('field_too_long', 400))).toMatch(/text is too long/);
   });
 });

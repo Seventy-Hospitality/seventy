@@ -1,8 +1,7 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react-native';
 import type { MockClutch } from '../../../lib/clutch/testing';
-import { clutchError, TEST_CLUB_ID } from '../../../lib/clutch/testing';
-import { makeGroupSummary } from '../../../lib/clutch/fixtures';
-import { asGroupId, asGroupInvitationId, type GroupInvitation } from '../../../lib/clutch';
+import { clutchError } from '../../../lib/clutch/testing';
+import { makeGroupInvitation, makeGroupSummary } from '../../../lib/clutch/fixtures';
 import { GroupsScreen } from '../GroupsScreen';
 import { renderWithProviders } from './render';
 
@@ -18,14 +17,10 @@ jest.mock('expo-router', () => ({
   useRouter: () => ({ push: mockPush, replace: jest.fn(), back: jest.fn(), canGoBack: () => true }),
 }));
 
-const invitation: GroupInvitation = {
-  id: asGroupInvitationId('inv1'),
-  group_id: asGroupId('g2'),
+const invitation = makeGroupInvitation({
+  group_id: '92000000-0000-4000-8000-000000000002',
   group_name: 'Night Owls',
-  club_id: TEST_CLUB_ID,
-  status: 'pending',
-  created_at: '2026-10-10T00:00:00.000Z',
-};
+});
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -45,18 +40,25 @@ describe('GroupsScreen', () => {
     renderWithProviders(<GroupsScreen />);
     fireEvent.press(await screen.findByRole('button', { name: 'Accept the Night Owls invitation' }));
     await waitFor(() =>
-      expect(mockClutch.groups.respondInvitation).toHaveBeenCalledWith('inv1', true, {
+      expect(mockClutch.groups.respondInvitation).toHaveBeenCalledWith(invitation.id, true, {
         idempotencyKey: expect.any(String),
       }),
     );
-    await waitFor(() => expect(mockPush).toHaveBeenCalledWith('/groups/g2'));
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith(`/groups/${invitation.group_id}`));
   });
 
   it('a response to a closed invitation explains it', async () => {
     mockClutch.groups.respondInvitation.mockRejectedValue(clutchError('invitation_not_pending'));
     renderWithProviders(<GroupsScreen />);
     fireEvent.press(await screen.findByRole('button', { name: 'Decline the Night Owls invitation' }));
-    expect(await screen.findByText('This group invitation is no longer open.')).toBeTruthy();
+    expect(await screen.findByText('This group invitation was already answered or withdrawn.')).toBeTruthy();
+  });
+
+  it('a response from a lapsed club member says why', async () => {
+    mockClutch.groups.respondInvitation.mockRejectedValue(clutchError('not_club_member', 403));
+    renderWithProviders(<GroupsScreen />);
+    fireEvent.press(await screen.findByRole('button', { name: 'Accept the Night Owls invitation' }));
+    expect(await screen.findByText('Only active members of the club can join its groups.')).toBeTruthy();
   });
 
   it('join with a pasted link goes to the join screen with its token', async () => {

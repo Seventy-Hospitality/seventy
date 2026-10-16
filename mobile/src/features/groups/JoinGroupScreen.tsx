@@ -8,7 +8,7 @@ import { clutch, useMutationKey } from '../../lib/clutch';
 import { EmptyStateView, PrimaryButton, Skeleton, useToast } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
 import { invalidateGroups, invitePreviewQuery } from './groups-data';
-import { isDeadInviteLink, memberCountLabel } from './groups-lib';
+import { isDeadInviteLink, joinErrorMessage, memberCountLabel } from './groups-lib';
 
 /**
  * Join a group from an invite link (/groups/join?token=...). Previews the
@@ -48,12 +48,8 @@ function JoinPreview({ token }: { token: string }) {
       router.replace(`/groups/${group_id}`);
     },
     onError: (error) => {
-      const dead = isDeadInviteLink(error);
-      toast({
-        variant: 'error',
-        message: dead ? 'This invite link no longer works.' : 'We could not join the group. Try again.',
-      });
-      if (dead) void preview.refetch();
+      toast({ variant: 'error', message: joinErrorMessage(error) });
+      if (isDeadInviteLink(error)) void preview.refetch();
     },
   });
 

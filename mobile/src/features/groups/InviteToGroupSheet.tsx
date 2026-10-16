@@ -3,16 +3,22 @@ import { Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-nati
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import * as Clipboard from 'expo-clipboard';
 import { Ionicons } from '@expo/vector-icons';
-import { clutch, useMutationKey, type GroupDetail, type UserId } from '../../lib/clutch';
+import { clutch, useMutationKey, type Group, type UserId } from '../../lib/clutch';
 import { useSession } from '../../lib/session';
 import { PrimaryButton, QRCode, Sheet, useToast } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
 import { MemberPicker } from './MemberPicker';
 import { invalidateGroups, useGroupInviteLink } from './groups-data';
-import { EMPTY_SELECTION, inviteErrorMessage, inviteeIds, type InviteeSelection } from './groups-lib';
+import {
+  EMPTY_SELECTION,
+  inviteErrorMessage,
+  inviteLinkErrorMessage,
+  inviteeIds,
+  type InviteeSelection,
+} from './groups-lib';
 
 interface InviteToGroupSheetProps {
-  group: GroupDetail;
+  group: Group;
   open: boolean;
   onClose: () => void;
 }
@@ -23,6 +29,10 @@ interface InviteToGroupSheetProps {
  * "Add" that sends the invitations. The link is the app's own deep link (see
  * groupJoinUrl): Clutch has no web page for group links yet, so the QR only
  * works for someone who already has the app.
+ *
+ * Member search is P4 (bookingParity). Without it the picker explains that it
+ * is coming and "Add" is not offered; the link, QR and share keep working
+ * because minting a link needs nothing from P4.
  */
 export function InviteToGroupSheet({ group, open, onClose }: InviteToGroupSheetProps) {
   const { userId } = useSession();
@@ -35,6 +45,7 @@ export function InviteToGroupSheet({ group, open, onClose }: InviteToGroupSheetP
   const [qrOpen, setQrOpen] = useState(false);
   // Rotating revokes every shared link: Clutch lets only the owner do it.
   const canRotate = group.my_role === 'owner';
+  const canSearchMembers = clutch.capabilities.bookingParity;
 
   // Reset the picker and the QR panel each time the sheet opens.
   useEffect(() => {
@@ -79,8 +90,8 @@ export function InviteToGroupSheet({ group, open, onClose }: InviteToGroupSheetP
       setQrOpen(true);
       toast({ variant: 'success', message: 'New invite link created. Older links no longer work.' });
     },
-    onError: () => {
-      toast({ variant: 'error', message: 'We could not reset the invite link. Try again.' });
+    onError: (error) => {
+      toast({ variant: 'error', message: inviteLinkErrorMessage(error, true) });
     },
   });
 
@@ -88,8 +99,8 @@ export function InviteToGroupSheet({ group, open, onClose }: InviteToGroupSheetP
     try {
       const url = await link.ensureUrl();
       await action(url);
-    } catch {
-      toast({ variant: 'error', message: 'We could not create an invite link. Try again.' });
+    } catch (error) {
+      toast({ variant: 'error', message: inviteLinkErrorMessage(error, false) });
     }
   }
 
@@ -127,6 +138,7 @@ export function InviteToGroupSheet({ group, open, onClose }: InviteToGroupSheetP
           <Text style={styles.headerSide}>Close</Text>
         </Pressable>
         <Text style={styles.headerTitle}>Invite to Group</Text>
+        {canSearchMembers ? (
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={
@@ -143,6 +155,9 @@ export function InviteToGroupSheet({ group, open, onClose }: InviteToGroupSheetP
             {invite.isPending ? 'Adding…' : 'Add'}
           </Text>
         </Pressable>
+        ) : (
+          <View style={styles.headerSpacer} />
+        )}
       </View>
 
       {open ? (
@@ -274,6 +289,9 @@ const styles = StyleSheet.create({
     fontSize: 15,
     minWidth: 48,
     textAlign: 'right',
+  },
+  headerSpacer: {
+    minWidth: 48,
   },
   headerAddDisabled: {
     color: colors.textSubtle,

@@ -8,7 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 import {
   clutch,
   useMutationKey,
-  type GroupDetail,
+  type Group,
   type GroupId,
   type GroupSummary,
 } from '../../lib/clutch';
@@ -23,7 +23,14 @@ import {
   type SegmentedOption,
 } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
-import { isGroupGone, leaveErrorMessage, memberCountLabel, roleLabel } from './groups-lib';
+import {
+  deleteGroupErrorMessage,
+  inviteLinkErrorMessage,
+  isGroupGone,
+  leaveErrorMessage,
+  memberCountLabel,
+  roleLabel,
+} from './groups-lib';
 import { groupActivityQuery, invalidateGroups, useGroupInviteLink } from './groups-data';
 import { GroupActivityRow } from './GroupActivityRow';
 import { InviteToGroupSheet } from './InviteToGroupSheet';
@@ -118,7 +125,7 @@ function BackToGroupsButton() {
   );
 }
 
-function GroupDetailView({ group }: { group: GroupDetail }) {
+function GroupDetailView({ group }: { group: Group }) {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
@@ -149,8 +156,8 @@ function GroupDetailView({ group }: { group: GroupDetail }) {
     try {
       const url = await link.ensureUrl();
       await Share.share({ title: `Join ${group.name} on Club70`, message: url, url });
-    } catch {
-      toast({ variant: 'error', message: 'We could not share an invite link. Try again.' });
+    } catch (error) {
+      toast({ variant: 'error', message: inviteLinkErrorMessage(error, false) });
     }
   }, [link, group.name, toast]);
 
@@ -189,9 +196,9 @@ function GroupDetailView({ group }: { group: GroupDetail }) {
       toast({ variant: 'success', message: `${group.name} was deleted.` });
       goToGroups();
     },
-    onError: () => {
+    onError: (error) => {
       setDeleteOpen(false);
-      toast({ variant: 'error', message: 'We could not delete this group. Try again.' });
+      toast({ variant: 'error', message: deleteGroupErrorMessage(error) });
       invalidateGroups(queryClient);
     },
   });

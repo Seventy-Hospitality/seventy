@@ -4,21 +4,20 @@
  * shared queries in lib/queries.ts (homeQuery, bookingInvitationsQuery,
  * groupInvitationsQuery, membershipQuery).
  */
-import {
-  ClutchError,
-  type Announcement,
-  type BookingInvitation,
-  type MyMembership,
-} from '../../lib/clutch';
+import { ClutchError, type Announcement, type BookingInvitation } from '../../lib/clutch';
 
 /**
- * Pinned first, then newest first. Clutch already orders them this way; the
- * sort keeps the rule true on the client whatever order the list arrives in.
+ * Pinned first, then newest first, an undated one (published_at null) after
+ * the dated ones. Clutch already orders them this way; the sort keeps the
+ * rule true on the client whatever order the list arrives in.
  */
 export function orderAnnouncements(rows: readonly Announcement[]): Announcement[] {
   return [...rows].sort((a, b) => {
-    if (a.isPinned !== b.isPinned) return a.isPinned ? -1 : 1;
-    return b.publishedAt.localeCompare(a.publishedAt);
+    if (a.is_pinned !== b.is_pinned) return a.is_pinned ? -1 : 1;
+    if (a.published_at === b.published_at) return 0;
+    if (a.published_at === null) return 1;
+    if (b.published_at === null) return -1;
+    return b.published_at.localeCompare(a.published_at);
   });
 }
 
@@ -29,18 +28,16 @@ export function orderInvitations(rows: readonly BookingInvitation[]): BookingInv
   );
 }
 
-/** The member card's detail line: the current tier, when Clutch says there is one. */
-export function tierDetail(membership: MyMembership | undefined): string | null {
-  return membership?.subscription?.tier_name ?? null;
-}
-
 export interface RespondFailure {
   message: string;
   /** The invitation moved on under the member: the lists are refetched, not retried. */
   conflict: boolean;
 }
 
-/** What to tell the member when accepting or declining a booking invitation fails. */
+/**
+ * What to tell the member when accepting or declining a booking invitation
+ * fails. Only reachable once answering is live (P4 bookingParity).
+ */
 export function respondFailure(error: unknown): RespondFailure {
   if (error instanceof ClutchError && error.code !== 'unknown') {
     switch (error.code) {

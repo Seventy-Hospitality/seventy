@@ -4,7 +4,7 @@ import { useRouter } from 'expo-router';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
-import { clutch, useMutationKey, type GroupId, type UserId } from '../../lib/clutch';
+import { clutch, useMutationKey, type GroupId } from '../../lib/clutch';
 import { useSession } from '../../lib/session';
 import { FormField, Input, PrimaryButton, useToast } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
@@ -18,17 +18,13 @@ import {
   GROUP_DESCRIPTION_MAX,
   GROUP_NAME_MAX,
   coverUploadErrorMessage,
-  groupFormErrorMessage,
+  createGroupErrorMessage,
+  createGroupInput,
   inviteeIds,
   isValidGroupName,
+  type CreateGroupInput,
   type InviteeSelection,
 } from './groups-lib';
-
-interface CreateInput {
-  name: string;
-  description: string | null;
-  invitee_user_ids: UserId[];
-}
 
 /**
  * The two-step create-group wizard (Figma create-club 95:4384 / invite-players
@@ -44,7 +40,7 @@ export function CreateGroupScreen() {
   const { toast } = useToast();
   const { userId } = useSession();
   const createKey = useMutationKey();
-  const coverKey = useMutationKey();
+  const canSearchMembers = clutch.capabilities.bookingParity;
 
   const [step, setStep] = useState<1 | 2>(1);
   const [name, setName] = useState('');
@@ -60,10 +56,9 @@ export function CreateGroupScreen() {
 
   const uploadCover = async (groupId: GroupId, image: CoverImage): Promise<string | null> => {
     try {
-      const file = { uri: image.uri, name: image.name, type: image.type };
-      await coverKey.run({ groupId, uri: image.uri }, (k) =>
-        clutch.groups.uploadCover(groupId, file, { idempotencyKey: k }),
-      );
+      // A multipart upload carries no Idempotency-Key (the client mints one
+      // per send); replacing a cover twice is harmless.
+      await clutch.groups.uploadCover(groupId, { uri: image.uri, name: image.name, type: image.type });
       return null;
     } catch (error) {
       return coverUploadErrorMessage(error);
@@ -71,7 +66,7 @@ export function CreateGroupScreen() {
   };
 
   const create = useMutation({
-    mutationFn: async (input: CreateInput) => {
+    mutationFn: async (input: CreateGroupInput) => {
       const { group_id } = await createKey.run(input, (k) =>
         clutch.groups.create(input, { idempotencyKey: k }),
       );
@@ -80,7 +75,7 @@ export function CreateGroupScreen() {
     },
     onSuccess: ({ groupId, coverError }, input) => {
       invalidateGroups(queryClient);
-      const invited = input.invitee_user_ids.length;
+      const invited = input.invitee_user_ids?.length ?? 0;
       toast({
         variant: 'success',
         message:
@@ -94,17 +89,13 @@ export function CreateGroupScreen() {
       router.replace(`/groups/${groupId}`);
     },
     onError: (error) => {
-      setSubmitError(groupFormErrorMessage(error, 'We could not create the group. Try again.'));
+      setSubmitError(createGroupErrorMessage(error));
     },
   });
 
   const submit = () => {
     setSubmitError(null);
-    create.mutate({
-      name: name.trim(),
-      description: description.trim() || null,
-      invitee_user_ids: inviteeIds(selection),
-    });
+    create.mutate(createGroupInput(name, description, inviteeIds(selection)));
   };
 
   const onBack = () => {
@@ -167,7 +158,11 @@ export function CreateGroupScreen() {
       ) : (
         <StepShell
           title="Invite players"
-          subtitle={`Invited club members must accept before they join ${name.trim() || 'your group'}.`}
+          subtitle={
+            canSearchMembers
+              ? `Invited club members must accept before they join ${name.trim() || 'your group'}.`
+              : `Create ${name.trim() || 'your group'} now, then share its invite link from the group page.`
+          }
           footer={<PrimaryButton label="Create group" loading={create.isPending} onPress={submit} />}
         >
           <MemberPicker

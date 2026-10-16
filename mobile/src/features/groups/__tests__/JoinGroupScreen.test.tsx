@@ -56,9 +56,18 @@ describe('JoinGroupScreen', () => {
     expect(await screen.findByText('Invite link not usable')).toBeTruthy();
   });
 
+  it('a join refused for a lapsed club member says why', async () => {
+    mockClutch.groups.previewInvite.mockResolvedValue({ group, already_member: false });
+    mockClutch.groups.join.mockRejectedValue(clutchError('not_club_member', 403));
+    renderWithProviders(<JoinGroupScreen token="tok123" />);
+    fireEvent.press(await screen.findByRole('button', { name: 'Join group' }));
+    expect(await screen.findByText('Only active members of the club can join its groups.')).toBeTruthy();
+    expect(mockReplace).not.toHaveBeenCalled();
+  });
+
   it('refuses a group at another club', async () => {
     mockClutch.groups.previewInvite.mockResolvedValue({
-      group: { ...group, club_id: asClubId('elsewhere') },
+      group: makeGroupSummary({ name: 'Baddies', club_id: asClubId('a1000000-0000-4000-8000-0000000000ff') }),
       already_member: false,
     });
     renderWithProviders(<JoinGroupScreen token="tok123" />);

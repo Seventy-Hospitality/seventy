@@ -1,8 +1,7 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react-native';
 import type { MockClutch } from '../../../lib/clutch/testing';
 import { clutchError } from '../../../lib/clutch/testing';
-import { makeGroupDetail, ME_ID, OTHER_ID } from '../../../lib/clutch/fixtures';
-import type { GroupDetail, GroupMember } from '../../../lib/clutch';
+import { makeGroup, makeGroupMember, OTHER_ID } from '../../../lib/clutch/fixtures';
 import { GroupMembersScreen } from '../GroupMembersScreen';
 import { renderWithProviders } from './render';
 
@@ -20,25 +19,17 @@ jest.mock('expo-router', () => ({
   useRouter: () => ({ push: jest.fn(), replace: jest.fn(), back: jest.fn(), canGoBack: () => true }),
 }));
 
-const me: GroupMember = {
-  user_id: ME_ID,
-  role: 'owner',
-  joined_at: '2026-10-01T00:00:00.000Z',
-  full_name: 'Alex Morgan',
-  username: null,
-  avatar_url: null,
-};
-const sam: GroupMember = {
+const me = makeGroupMember();
+const sam = makeGroupMember({
   user_id: OTHER_ID,
   role: 'member',
   joined_at: '2026-10-02T00:00:00.000Z',
   full_name: 'Sam Lee',
   username: 'sam',
-  avatar_url: null,
-};
+});
 
-function renderMembers(over: Partial<GroupDetail> = {}) {
-  const detail = makeGroupDetail({ name: 'Baddies', members: [me, sam], member_count: 2, ...over });
+function renderMembers(over: Parameters<typeof makeGroup>[0] = {}) {
+  const detail = makeGroup({ name: 'Baddies', members: [me, sam], member_count: 2, ...over });
   mockClutch.groups.get.mockResolvedValue(detail);
   renderWithProviders(<GroupMembersScreen groupId={detail.id} />);
   return detail;
@@ -56,7 +47,7 @@ describe('GroupMembersScreen', () => {
   });
 
   it('owner transfers ownership (PATCH role owner) to a member', async () => {
-    mockClutch.groups.transferOwnership.mockResolvedValue(null as never);
+    mockClutch.groups.transferOwnership.mockResolvedValue(null);
     const detail = renderMembers();
     fireEvent.press(await screen.findByLabelText('Actions for Sam Lee'));
     fireEvent.press(screen.getByRole('button', { name: 'Transfer ownership' }));
@@ -69,8 +60,17 @@ describe('GroupMembersScreen', () => {
     expect(await screen.findByText('Sam Lee is now the group owner.')).toBeTruthy();
   });
 
+  it('a transfer refused with target_not_member says the person left', async () => {
+    mockClutch.groups.transferOwnership.mockRejectedValue(clutchError('target_not_member'));
+    renderMembers();
+    fireEvent.press(await screen.findByLabelText('Actions for Sam Lee'));
+    fireEvent.press(screen.getByRole('button', { name: 'Transfer ownership' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Make Sam Lee the owner' }));
+    expect(await screen.findByText('That person is no longer in the group.')).toBeTruthy();
+  });
+
   it('owner removes a member; a refusal shows the code-specific copy', async () => {
-    mockClutch.groups.removeMember.mockRejectedValue(clutchError('target_not_member'));
+    mockClutch.groups.removeMember.mockRejectedValue(clutchError('member_not_found', 404));
     const detail = renderMembers();
     fireEvent.press(await screen.findByLabelText('Actions for Sam Lee'));
     fireEvent.press(screen.getByRole('button', { name: 'Remove from group' }));

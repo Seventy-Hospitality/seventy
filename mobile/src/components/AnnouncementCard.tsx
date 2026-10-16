@@ -11,9 +11,11 @@ interface AnnouncementCardProps {
 
 /**
  * "Oct 12" for a published-at instant, on the club's calendar when its zone
- * is known. An unparseable timestamp shows nothing rather than "Invalid Date".
+ * is known. No timestamp (Clutch sends null for an undated one) or an
+ * unparseable one shows nothing rather than "Invalid Date".
  */
-export function formatAnnouncementDate(publishedAt: string, timeZone?: string): string {
+export function formatAnnouncementDate(publishedAt: string | null, timeZone?: string): string {
+  if (!publishedAt) return '';
   const at = new Date(publishedAt);
   if (Number.isNaN(at.getTime())) return '';
   try {
@@ -26,15 +28,16 @@ export function formatAnnouncementDate(publishedAt: string, timeZone?: string): 
 
 /** One club announcement (title, body, when, pinned marker) as Clutch publishes it. */
 export function AnnouncementCard({ announcement, timeZone }: AnnouncementCardProps) {
-  const date = formatAnnouncementDate(announcement.publishedAt, timeZone);
-  const meta = [date, announcement.authorName ?? null].filter(Boolean).join(' · ');
+  const date = formatAnnouncementDate(announcement.published_at, timeZone);
+  const author = announcement.author_name?.trim() || null;
+  const meta = [date, author].filter(Boolean).join(' · ');
   return (
     <View
       style={styles.card}
-      accessibilityLabel={`${announcement.isPinned ? 'Pinned announcement' : 'Announcement'}: ${announcement.title}`}
+      accessibilityLabel={`${announcement.is_pinned ? 'Pinned announcement' : 'Announcement'}: ${announcement.title}`}
     >
       <View style={styles.headRow}>
-        {announcement.isPinned ? (
+        {announcement.is_pinned ? (
           <View style={styles.pinned}>
             <Ionicons name="pin" size={12} color={colors.accent} />
             <Text style={styles.pinnedText}>PINNED</Text>

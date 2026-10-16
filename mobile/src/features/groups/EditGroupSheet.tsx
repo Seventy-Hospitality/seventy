@@ -3,7 +3,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
-import { clutch, useMutationKey, type GroupDetail } from '../../lib/clutch';
+import { clutch, useMutationKey, type Group } from '../../lib/clutch';
 import { FormField, Input, PrimaryButton, Sheet, useToast } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
 import { invalidateGroups } from './groups-data';
@@ -11,7 +11,7 @@ import {
   GROUP_DESCRIPTION_MAX,
   GROUP_NAME_MAX,
   coverUploadErrorMessage,
-  groupFormErrorMessage,
+  updateGroupErrorMessage,
   isValidGroupName,
 } from './groups-lib';
 import { useCoverPhoto } from './useCoverPhoto';
@@ -20,7 +20,7 @@ import { useCoverPhoto } from './useCoverPhoto';
 class CoverUploadFailed extends Error {}
 
 interface EditGroupSheetProps {
-  group: GroupDetail;
+  group: Group;
   open: boolean;
   onClose: () => void;
 }
@@ -40,7 +40,6 @@ export function EditGroupSheet({ group, open, onClose }: EditGroupSheetProps) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const patchKey = useMutationKey();
-  const coverKey = useMutationKey();
 
   const [name, setName] = useState(group.name);
   const [description, setDescription] = useState(group.description ?? '');
@@ -79,10 +78,8 @@ export function EditGroupSheet({ group, open, onClose }: EditGroupSheetProps) {
       const image = cover.image;
       if (image) {
         try {
-          const file = { uri: image.uri, name: image.name, type: image.type };
-          await coverKey.run({ id: group.id, uri: image.uri }, (k) =>
-            clutch.groups.uploadCover(group.id, file, { idempotencyKey: k }),
-          );
+          // Multipart: the client mints a fresh key per send (see client.ts).
+          await clutch.groups.uploadCover(group.id, { uri: image.uri, name: image.name, type: image.type });
         } catch (error) {
           throw new CoverUploadFailed(coverUploadErrorMessage(error));
         }
@@ -102,7 +99,7 @@ export function EditGroupSheet({ group, open, onClose }: EditGroupSheetProps) {
       }
       toast({
         variant: 'error',
-        message: groupFormErrorMessage(error, 'We could not save your changes. Try again.'),
+        message: updateGroupErrorMessage(error),
       });
     },
   });

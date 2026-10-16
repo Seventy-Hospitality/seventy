@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { BookingInvitation } from '../../lib/clutch';
-import { ListRow, PrimaryButton } from '../../components';
+import { FeatureUnavailable, ListRow, PrimaryButton } from '../../components';
 import { formatDateHeading, formatTimeRangeCompact, sportLabel, SportTile } from '../reserve';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
 
@@ -34,21 +34,26 @@ export function SectionError({ message, onRetry }: { message: string; onRetry: (
   );
 }
 
-// ── Booking invitation (inline Accept / Decline) ──
+// ── Booking invitation ──
 
 /**
  * Someone else's booking the member is invited to. Clutch's invitation row
  * carries the inviter, the court and the time (no sport, no roster), so the
- * card shows those; tapping through to the booking shows the rest.
+ * card shows those; tapping through to the booking shows the rest. Accept /
+ * Decline appear only when answering is live (`canRespond`, P4
+ * bookingParity); until then the card says so honestly.
  */
 export function BookingInvitationCard({
   invitation,
+  canRespond,
   onRespond,
   onOpen,
   pendingResponse,
   disabled,
 }: {
   invitation: BookingInvitation;
+  /** Clutch can take the answer (P4 bookingParity). */
+  canRespond: boolean;
   onRespond: (invitation: BookingInvitation, response: RespondResponse) => void;
   onOpen: (invitation: BookingInvitation) => void;
   /** Which response is in flight for THIS card (drives the spinner). */
@@ -81,6 +86,7 @@ export function BookingInvitationCard({
         </Text>
         <Text style={styles.inviteMeta}>{when}</Text>
       </Pressable>
+      {canRespond ? (
       <View style={styles.respondRow}>
         <View style={styles.respondButton}>
           <PrimaryButton
@@ -103,6 +109,14 @@ export function BookingInvitationCard({
           />
         </View>
       </View>
+      ) : (
+        <FeatureUnavailable
+          capability="bookingParity"
+          compact
+          title="Answering invitations in the app is coming soon"
+          description="For now, let the person who invited you know directly. Tap the invitation to see the booking."
+        />
+      )}
     </View>
   );
 }

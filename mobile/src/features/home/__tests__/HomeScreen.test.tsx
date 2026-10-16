@@ -2,24 +2,20 @@ import type { ReactNode } from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import {
-  asBookingId,
-  asCourtId,
-  asGroupId,
-  asGroupInvitationId,
-  type Announcement,
-  type BookingInvitation,
-  type GroupInvitation,
-  type Home,
-} from '../../../lib/clutch';
+import { asCourtId, InvitationAnswerSchema } from '../../../lib/clutch';
 import type { MockClutch } from '../../../lib/clutch/testing';
-import { clutchError, TEST_CLUB_ID } from '../../../lib/clutch/testing';
+import { clutchError } from '../../../lib/clutch/testing';
 import {
-  makeBookingWithCourt,
+  makeAnnouncement,
+  makeBooking,
+  makeBookingInvitation,
   makeClub,
   makeCourt,
+  makeGroupInvitation,
+  makeHome,
   makeProfile,
-  makeSubscription,
+  makeStandingMembership,
+  TIER_ID,
 } from '../../../lib/clutch/fixtures';
 import { ToastProvider } from '../../../components';
 import { HomeScreen } from '../HomeScreen';
@@ -29,59 +25,23 @@ jest.mock('../../../lib/clutch', () => {
   return { ...jest.requireActual('../../../lib/clutch'), clutch: createMockClutch() };
 });
 const mockClutch: MockClutch = jest.requireMock('../../../lib/clutch').clutch;
+const REAL_CAPABILITIES = { ...mockClutch.capabilities };
 
 const mockPush = jest.fn();
 jest.mock('expo-router', () => ({
   useRouter: () => ({ push: mockPush, replace: jest.fn(), back: jest.fn(), canGoBack: () => true }),
 }));
 
-const INVITE_BOOKING = asBookingId('b0000000-0000-4000-8000-000000000009');
+const home = (over: Parameters<typeof makeHome>[0] = {}) =>
+  makeHome({ profile: makeProfile({ full_name: 'Alice Chen' }), ...over });
 
-function makeHome(over: Partial<Home> = {}): Home {
-  return {
-    profile: makeProfile({ full_name: 'Alice Chen' }),
-    upcoming_bookings: [],
-    announcements: [],
-    ...over,
-  };
-}
+const invitation = makeBookingInvitation({
+  booking_id: 'b0000000-0000-4000-8000-000000000009',
+  court_name: 'Court 2',
+  inviter_name: 'Sarah Lee',
+});
 
-function makeInvitation(over: Partial<BookingInvitation> = {}): BookingInvitation {
-  return {
-    booking_player_id: 'bp1',
-    booking_id: INVITE_BOOKING,
-    status: 'invited',
-    invited_at: '2026-10-15T12:00:00.000Z',
-    court_name: 'Court 2',
-    date: '2026-10-20',
-    start_time: '18:00:00',
-    end_time: '19:00:00',
-    inviter_name: 'Sarah Lee',
-    club_id: TEST_CLUB_ID,
-    ...over,
-  };
-}
-
-const groupInvitation: GroupInvitation = {
-  id: asGroupInvitationId('gi1'),
-  group_id: asGroupId('g2'),
-  group_name: 'Night Owls',
-  club_id: TEST_CLUB_ID,
-  status: 'pending',
-  created_at: '2026-10-10T00:00:00.000Z',
-};
-
-function announcement(over: Partial<Announcement> = {}): Announcement {
-  return {
-    id: 'a1',
-    title: 'Courts resurfaced',
-    body: 'Courts 1 to 4 are back.',
-    isPinned: false,
-    publishedAt: '2026-10-10T16:00:00.000Z',
-    authorName: null,
-    ...over,
-  };
-}
+const groupInvitation = makeGroupInvitation({ group_name: 'Night Owls' });
 
 function renderHome() {
   const client = new QueryClient({
@@ -104,18 +64,20 @@ function renderHome() {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockClutch.me.home.mockResolvedValue(makeHome());
+  mockClutch.capabilities = { ...REAL_CAPABILITIES };
+  mockClutch.me.home.mockResolvedValue(home());
   mockClutch.me.bookingInvitations.mockResolvedValue([]);
   mockClutch.groups.invitations.mockResolvedValue([]);
-  mockClutch.membership.get.mockResolvedValue({
-    membership: { role: 'player' },
-    subscription: makeSubscription({ tier_name: 'Pro' }),
-  });
+  mockClutch.membership.get.mockResolvedValue(
+    makeStandingMembership({
+      membership: { role: 'player', skill_level: null, status: 'active', tier: { id: TIER_ID, name: 'Pro' } },
+    }),
+  );
   mockClutch.club.verify.mockResolvedValue(
     makeClub({
       courts: [
-        makeCourt({ id: asCourtId('c1'), court_type: 'tennis', sort_order: 1 }),
-        makeCourt({ id: asCourtId('c2'), court_type: 'pickleball', sort_order: 2 }),
+        makeCourt({ id: asCourtId('c0000000-0000-4000-8000-000000000011'), court_type: 'tennis', sort_order: 1 }),
+        makeCourt({ id: asCourtId('c0000000-0000-4000-8000-000000000012'), court_type: 'pickleball', sort_order: 2 }),
       ],
     }),
   );
@@ -124,11 +86,11 @@ beforeEach(() => {
 describe('HomeScreen', () => {
   it('greets the member by first name and lists upcoming bookings and announcements', async () => {
     mockClutch.me.home.mockResolvedValue(
-      makeHome({
-        upcoming_bookings: [makeBookingWithCourt({ court_name: 'Court 3', court_type: 'tennis' })],
+      home({
+        upcoming_bookings: [makeBooking({ court_name: 'Court 3', court_type: 'tennis', my_due_cents: null })],
         announcements: [
-          announcement({ id: 'n', title: 'Open house', publishedAt: '2026-10-12T16:00:00.000Z' }),
-          announcement({ id: 'p', title: 'Holiday hours', isPinned: true }),
+          makeAnnouncement({ id: 'n', title: 'Open house', published_at: '2026-10-12T16:00:00.000Z' }),
+          makeAnnouncement({ id: 'p', title: 'Holiday hours', is_pinned: true, published_at: null }),
         ],
       }),
     );
@@ -146,6 +108,12 @@ describe('HomeScreen', () => {
     expect(mockClutch.me.home).toHaveBeenCalledTimes(1);
   });
 
+  it('greets a member whose profile has no name yet (empty full_name)', async () => {
+    mockClutch.me.home.mockResolvedValue(home({ profile: makeProfile({ full_name: '' }) }));
+    renderHome();
+    expect(await screen.findByText('Member')).toBeTruthy();
+  });
+
   it('shows a Book a court prompt per sport when nothing is upcoming and no invitations are pending', async () => {
     renderHome();
 
@@ -156,44 +124,70 @@ describe('HomeScreen', () => {
     expect(screen.getByLabelText('Book a Tennis court')).toBeTruthy();
   });
 
-  it('accepts a booking invitation inline and tells the member', async () => {
-    mockClutch.me.bookingInvitations
-      .mockResolvedValueOnce([makeInvitation()])
-      .mockResolvedValue([]);
-    mockClutch.bookings.respond.mockResolvedValue(null);
-    renderHome();
+  describe('booking invitations without answering (P4 off, today)', () => {
+    beforeEach(() => {
+      mockClutch.capabilities = { ...REAL_CAPABILITIES, bookingParity: false };
+      mockClutch.me.bookingInvitations.mockResolvedValue([invitation]);
+    });
 
-    expect(await screen.findByText('SARAH LEE')).toBeTruthy();
-    fireEvent.press(screen.getByLabelText('Accept the invitation from Sarah Lee'));
+    it('shows the invitation and says answering is coming, with no buttons that would fail', async () => {
+      renderHome();
 
-    await waitFor(() =>
-      expect(mockClutch.bookings.respond).toHaveBeenCalledWith(INVITE_BOOKING, true, {
-        idempotencyKey: expect.any(String),
-      }),
-    );
-    expect(await screen.findByText('Invite accepted! See you October 20.')).toBeTruthy();
-    // Settling refetches the invitations (and home), so the answered card goes.
-    await waitFor(() => expect(screen.queryByText('SARAH LEE')).toBeNull());
-    expect(mockClutch.me.home).toHaveBeenCalledTimes(2);
+      expect(await screen.findByText('SARAH LEE')).toBeTruthy();
+      expect(screen.getByText('Answering invitations in the app is coming soon')).toBeTruthy();
+      expect(screen.queryByLabelText('Accept the invitation from Sarah Lee')).toBeNull();
+      expect(screen.queryByLabelText('Decline the invitation from Sarah Lee')).toBeNull();
+      // An invitation is something on the schedule: not the first-session prompt.
+      expect(screen.queryByText('BOOK YOUR FIRST SESSION')).toBeNull();
+
+      fireEvent.press(screen.getByLabelText(/^Sarah Lee invited you to Court 2/));
+      expect(mockPush).toHaveBeenCalledWith(`/bookings/${invitation.booking_id}`);
+      expect(mockClutch.bookings.respond).not.toHaveBeenCalled();
+    });
   });
 
-  it('refetches when the invitation moved on before the answer landed', async () => {
-    mockClutch.me.bookingInvitations
-      .mockResolvedValueOnce([makeInvitation()])
-      .mockResolvedValue([]);
-    mockClutch.bookings.respond.mockRejectedValue(clutchError('invite_not_pending'));
-    renderHome();
+  describe('booking invitations with answering (P4 on)', () => {
+    beforeEach(() => {
+      mockClutch.capabilities = { ...REAL_CAPABILITIES, bookingParity: true };
+    });
 
-    fireEvent.press(await screen.findByLabelText('Decline the invitation from Sarah Lee'));
+    it('accepts inline and tells the member', async () => {
+      mockClutch.me.bookingInvitations.mockResolvedValueOnce([invitation]).mockResolvedValue([]);
+      mockClutch.bookings.respond.mockResolvedValue(
+        InvitationAnswerSchema.parse({ booking_id: invitation.booking_id, status: 'accepted' }),
+      );
+      renderHome();
 
-    expect(await screen.findByText('This booking changed before your answer was saved.')).toBeTruthy();
-    await waitFor(() => expect(mockClutch.me.bookingInvitations).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(screen.queryByText('SARAH LEE')).toBeNull());
+      expect(await screen.findByText('SARAH LEE')).toBeTruthy();
+      fireEvent.press(screen.getByLabelText('Accept the invitation from Sarah Lee'));
+
+      await waitFor(() =>
+        expect(mockClutch.bookings.respond).toHaveBeenCalledWith(invitation.booking_id, true, {
+          idempotencyKey: expect.any(String),
+        }),
+      );
+      expect(await screen.findByText('Invite accepted! See you October 20.')).toBeTruthy();
+      // Settling refetches the invitations (and home), so the answered card goes.
+      await waitFor(() => expect(screen.queryByText('SARAH LEE')).toBeNull());
+      expect(mockClutch.me.home).toHaveBeenCalledTimes(2);
+    });
+
+    it('refetches when the invitation moved on before the answer landed', async () => {
+      mockClutch.me.bookingInvitations.mockResolvedValueOnce([invitation]).mockResolvedValue([]);
+      mockClutch.bookings.respond.mockRejectedValue(clutchError('invite_not_pending'));
+      renderHome();
+
+      fireEvent.press(await screen.findByLabelText('Decline the invitation from Sarah Lee'));
+
+      expect(await screen.findByText('This booking changed before your answer was saved.')).toBeTruthy();
+      await waitFor(() => expect(mockClutch.me.bookingInvitations).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(screen.queryByText('SARAH LEE')).toBeNull());
+    });
   });
 
   it('answers a group invitation from home', async () => {
     mockClutch.groups.invitations.mockResolvedValue([groupInvitation]);
-    mockClutch.groups.respondInvitation.mockResolvedValue({ group_id: asGroupId('g2') });
+    mockClutch.groups.respondInvitation.mockResolvedValue({ group_id: groupInvitation.group_id });
     renderHome();
 
     expect(await screen.findByText('Group invitations')).toBeTruthy();

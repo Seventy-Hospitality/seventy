@@ -1,8 +1,8 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react-native';
 import type { MockClutch } from '../../../lib/clutch/testing';
 import { clutchError } from '../../../lib/clutch/testing';
-import { makeGroupDetail, OTHER_ID } from '../../../lib/clutch/fixtures';
-import { asBookingId, asClubId, type GroupDetail } from '../../../lib/clutch';
+import { makeGroup, makeGroupActivityItem, OTHER_ID } from '../../../lib/clutch/fixtures';
+import { asClubId, type Group } from '../../../lib/clutch';
 import { GroupDetailScreen } from '../GroupDetailScreen';
 import { renderWithProviders } from './render';
 
@@ -26,14 +26,14 @@ jest.mock('expo-router', () => ({
   useRouter: () => ({ push: mockPush, replace: mockReplace, back: jest.fn(), canGoBack: () => true }),
 }));
 
-const OWNER_PERMS: GroupDetail['permissions'] = {
+const OWNER_PERMS: Group['permissions'] = {
   can_edit: true,
   can_delete: true,
   can_manage_members: true,
   can_invite: true,
   can_leave: false,
 };
-const MEMBER_PERMS: GroupDetail['permissions'] = {
+const MEMBER_PERMS: Group['permissions'] = {
   can_edit: false,
   can_delete: false,
   can_manage_members: false,
@@ -41,8 +41,8 @@ const MEMBER_PERMS: GroupDetail['permissions'] = {
   can_leave: true,
 };
 
-function group(permissions: GroupDetail['permissions'], over: Partial<GroupDetail> = {}): GroupDetail {
-  return makeGroupDetail({
+function group(permissions: Group['permissions'], over: Parameters<typeof makeGroup>[0] = {}): Group {
+  return makeGroup({
     name: 'Baddies',
     member_count: 6,
     my_role: permissions.can_edit ? 'owner' : 'member',
@@ -51,7 +51,7 @@ function group(permissions: GroupDetail['permissions'], over: Partial<GroupDetai
   });
 }
 
-function renderDetail(detail: GroupDetail) {
+function renderDetail(detail: Group) {
   mockClutch.groups.get.mockResolvedValue(detail);
   return renderWithProviders(<GroupDetailScreen groupId={detail.id} />);
 }
@@ -101,7 +101,7 @@ describe('GroupDetailScreen not found', () => {
 
 describe('GroupDetailScreen leave / delete', () => {
   it('leave: confirm then POST leave with an idempotency key', async () => {
-    mockClutch.groups.leave.mockResolvedValue(null as never);
+    mockClutch.groups.leave.mockResolvedValue(null);
     const detail = group(MEMBER_PERMS);
     renderDetail(detail);
     fireEvent.press(await screen.findByLabelText('Group actions'));
@@ -129,8 +129,17 @@ describe('GroupDetailScreen leave / delete', () => {
     ).toBeTruthy();
   });
 
+  it('delete refused for a non-owner says only the owner can delete', async () => {
+    mockClutch.groups.delete.mockRejectedValue(clutchError('not_authorized', 403));
+    renderDetail(group(OWNER_PERMS));
+    fireEvent.press(await screen.findByLabelText('Group actions'));
+    fireEvent.press(screen.getByRole('button', { name: 'Delete group' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Delete group' }));
+    expect(await screen.findByText('Only the group owner can delete this group.')).toBeTruthy();
+  });
+
   it('delete: confirm then DELETE', async () => {
-    mockClutch.groups.delete.mockResolvedValue(null as never);
+    mockClutch.groups.delete.mockResolvedValue(null);
     const detail = group(OWNER_PERMS);
     renderDetail(detail);
     fireEvent.press(await screen.findByLabelText('Group actions'));
@@ -146,18 +155,13 @@ describe('GroupDetailScreen leave / delete', () => {
 });
 
 describe('GroupDetailScreen activity', () => {
-  const row = {
-    booking_id: asBookingId('b1'),
-    date: '2026-10-20',
-    start_time: '18:00:00',
+  const row = makeGroupActivityItem({
     end_time: '19:30:00',
-    status: 'confirmed',
     court_name: 'Court 3',
     court_type: 'tennis',
     organizer_id: OTHER_ID,
     participant_count: 4,
-    i_am_participant: true,
-  };
+  });
 
   it('a participant row opens the booking; Past switches the filter', async () => {
     mockClutch.groups.activity.mockResolvedValue([row]);
@@ -165,7 +169,7 @@ describe('GroupDetailScreen activity', () => {
     renderDetail(detail);
     const button = await screen.findByLabelText('TUE 10/20, 6-7:30 PM, Court 3 · 4 players, Confirmed');
     fireEvent.press(button);
-    expect(mockPush).toHaveBeenCalledWith('/bookings/b1');
+    expect(mockPush).toHaveBeenCalledWith(`/bookings/${row.booking_id}`);
     expect(mockClutch.groups.activity).toHaveBeenCalledWith(detail.id, 'upcoming');
 
     fireEvent.press(screen.getByRole('tab', { name: 'Past' }));
@@ -173,9 +177,15 @@ describe('GroupDetailScreen activity', () => {
   });
 
   it('a row the viewer is not in does not open the booking', async () => {
-    mockClutch.groups.activity.mockResolvedValue([{ ...row, i_am_participant: false }]);
+    mockClutch.groups.activity.mockResolvedValue([makeGroupActivityItem({ ...row, i_am_participant: false })]);
     renderDetail(group(MEMBER_PERMS));
     await screen.findByText('Court 3 · 4 players');
     expect(screen.queryByRole('button', { name: /TUE 10\/20/ })).toBeNull();
+  });
+
+  it('renders a row whose organizer account is gone (organizer_id null)', async () => {
+    mockClutch.groups.activity.mockResolvedValue([makeGroupActivityItem({ organizer_id: null, court_name: null })]);
+    renderDetail(group(MEMBER_PERMS));
+    expect(await screen.findByText('Court · 3 players')).toBeTruthy();
   });
 });

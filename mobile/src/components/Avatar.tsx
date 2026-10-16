@@ -6,7 +6,7 @@ import { colors, fonts } from '../theme/tokens';
 type AvatarSize = 'sm' | 'md' | 'lg' | 'xl';
 
 interface AvatarProps {
-  /** Full name; drives the initials fallback. */
+  /** Full name; drives the initials fallback. Clutch may send an empty one (shown as "?"). */
   name: string;
   src?: string | null;
   size?: AvatarSize;
@@ -37,7 +37,7 @@ export function Avatar({ name, src, size = 'md', style }: AvatarProps) {
 
   return (
     <View
-      accessibilityLabel={name}
+      accessibilityLabel={name.trim() || 'Member'}
       style={[styles.avatar, { width: box, height: box, borderRadius: box / 2 }, style]}
     >
       {showImage ? (
