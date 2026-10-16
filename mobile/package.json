@@ -10,7 +10,10 @@
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
     "test": "jest",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "contract:pull": "scripts/pull-clutch-openapi.sh",
+    "contract:gen": "node scripts/gen-clutch-contract.mjs",
+    "contract:check": "node scripts/gen-clutch-contract.mjs --check"
   },
   "dependencies": {
     "@expo-google-fonts/inter": "^0.4.2",

@@ -15,13 +15,17 @@
  */
 import { useMemo, useRef } from 'react';
 import * as Crypto from 'expo-crypto';
-import { isTransient } from './errors';
+import { ClutchError, isTransient } from './errors';
 
 export interface MutationKey {
   /** The key for `input`, minting a new one when the input changed. */
   keyFor(input: unknown): string;
-  /** Run `fn` under the key for `input`; the key ends unless the failure was transient. */
-  run<T>(input: unknown, fn: (key: string) => Promise<T>): Promise<T>;
+  /**
+   * Run `fn` under the key for `input`; the key ends unless the failure was
+   * transient. `rerunnable` (confirm-style calls that only ask the server to
+   * re-check): a 5xx also ends the key, so the next attempt is a fresh ask.
+   */
+  run<T>(input: unknown, fn: (key: string) => Promise<T>, opts?: { rerunnable?: boolean }): Promise<T>;
   /** Forget the current key (the logical mutation is over). */
   reset(): void;
 }
@@ -42,14 +46,15 @@ export function createMutationKey(mint: () => string = () => Crypto.randomUUID()
       if (!current || current.print !== print) current = { key: mint(), print };
       return current.key;
     },
-    async run(input, fn) {
+    async run(input, fn, opts) {
       const key = api.keyFor(input);
       try {
         const result = await fn(key);
         current = null;
         return result;
       } catch (err) {
-        if (!isTransient(err)) current = null;
+        const serverFailed = err instanceof ClutchError && err.kind === 'api' && err.status >= 500;
+        if (!isTransient(err) || (opts?.rerunnable && serverFailed)) current = null;
         throw err;
       }
     },

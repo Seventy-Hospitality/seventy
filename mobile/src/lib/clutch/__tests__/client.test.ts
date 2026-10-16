@@ -1,7 +1,8 @@
 import { createClutchClient, ClubMismatchError, type AuthPort } from '../client';
 import { ClutchError } from '../errors';
 import { asBookingId, asClubId, asCourtId, asGroupId } from '../ids';
-import { makeBooking, makeClub, makeGroupSummary } from '../fixtures';
+import { makeBookingRecord, makeClub, makeGroupSummary, makeMyBooking, makeBookingInvitation } from '../fixtures';
+import { ClutchUnavailableError, CAPABILITIES } from '../capabilities';
 
 const CLUB = asClubId('15e24f5f-ee39-4154-8ad6-06942d06cb8a');
 
@@ -30,7 +31,11 @@ interface Call {
   body: unknown;
 }
 
-function setup(responses: FakeResponse[], auth?: Partial<AuthPort>) {
+function setup(
+  responses: FakeResponse[],
+  auth?: Partial<AuthPort>,
+  capabilities: Record<keyof typeof CAPABILITIES, boolean> = { ...CAPABILITIES },
+) {
   const calls: Call[] = [];
   const queue = [...responses];
   const fetchMock = jest.fn(async (url: string, init: RequestInit) => {
@@ -58,6 +63,7 @@ function setup(responses: FakeResponse[], auth?: Partial<AuthPort>) {
     newIdempotencyKey: () => `idem-${++keys}`,
     fetch: fetchMock as unknown as typeof fetch,
     sleep: async () => undefined,
+    capabilities,
   });
   return { client, calls, port };
 }
@@ -140,10 +146,10 @@ describe('transport', () => {
 });
 
 describe('auth', () => {
-  it('refreshes once after a 401 and retries with the new token and the same key', async () => {
+  it('refreshes once after a 401 and retries with the new token and a new key', async () => {
     const { client, calls, port } = setup([
       reply(401, { error: 'session_expired', message: 'Expired.' }),
-      reply(201, { data: makeBooking() }),
+      reply(201, { data: makeBookingRecord() }),
     ]);
     await client.bookings.create(
       { court_id: asCourtId('c1'), date: '2026-10-20', start_time: '18:00', end_time: '19:00' },
@@ -151,7 +157,9 @@ describe('auth', () => {
     );
     expect(port.refreshAccessToken).toHaveBeenCalledTimes(1);
     expect(calls[1].headers.Authorization).toBe('Bearer token-2');
-    expect(calls.map((c) => c.headers['Idempotency-Key'])).toEqual(['logical-1', 'logical-1']);
+    // Clutch cached the 401 under the first key; the retry is a new attempt.
+    expect(calls[0].headers['Idempotency-Key']).toBe('logical-1');
+    expect(calls[1].headers['Idempotency-Key']).toBe('idem-1');
   });
 
   it('shares one refresh between concurrent 401s', async () => {
@@ -204,7 +212,7 @@ describe('auth', () => {
 
 describe('idempotency', () => {
   it('gives every mutation a key and reads none', async () => {
-    const { client, calls } = setup([reply(200, { data: { joined: true } }), reply(200, { data: [] })]);
+    const { client, calls } = setup([reply(200, { data: { joined: true, status: 'active', role: 'player' } }), reply(200, { data: [] })]);
     await client.club.join();
     await client.club.courts();
     expect(calls[0].headers['Idempotency-Key']).toBe('idem-1');
@@ -215,7 +223,7 @@ describe('idempotency', () => {
     const { client, calls } = setup([
       reply(409, { error: 'request_in_flight', message: 'Still running.' }),
       reply(409, { error: 'request_in_flight', message: 'Still running.' }),
-      reply(200, { data: makeBooking({ status: 'confirmed' }) }),
+      reply(200, { data: makeBookingRecord({ status: 'confirmed' }) }),
     ]);
     const booking = await client.bookings.confirm(asBookingId('b1'), 'pi_1', { idempotencyKey: 'k' });
     expect(booking.status).toBe('confirmed');
@@ -253,7 +261,7 @@ describe('club binding', () => {
   });
 
   it('sends club_id in bodies of club-scoped mutations', async () => {
-    const { client, calls } = setup([reply(201, { data: makeBooking() })]);
+    const { client, calls } = setup([reply(201, { data: makeBookingRecord() })]);
     await client.bookings.create({
       court_id: asCourtId('c1'),
       date: '2026-10-20',
@@ -261,5 +269,70 @@ describe('club binding', () => {
       end_time: '19:00',
     });
     expect(calls[0].body).toMatchObject({ club_id: CLUB, court_id: 'c1' });
+  });
+});
+
+describe('lists', () => {
+  it('splits /me/bookings by kind', async () => {
+    const { client } = setup([
+      reply(200, { data: [makeMyBooking(), makeBookingInvitation()], count: 2 }),
+      reply(200, { data: [makeMyBooking(), makeBookingInvitation()], count: 2 }),
+    ]);
+    const page = await client.me.bookings();
+    expect(page.items.map((b) => b.kind)).toEqual(['booking']);
+    const invitations = await client.me.bookingInvitations();
+    expect(invitations.map((b) => b.kind)).toEqual(['invitation']);
+  });
+});
+
+describe('requests', () => {
+  it('omits an empty invitee list when creating a group', async () => {
+    const { client, calls } = setup([reply(201, { data: { group_id: '90000000-0000-4000-8000-000000000001' } })]);
+    await client.groups.create({ name: 'Doubles', invitee_user_ids: [] });
+    expect(calls[0].body).not.toHaveProperty('invitee_user_ids');
+  });
+
+  it('sends midnight as 00:00', async () => {
+    const { client, calls } = setup([reply(201, { data: makeBookingRecord() })]);
+    await client.bookings.create({ court_id: asCourtId('c1'), date: '2026-10-20', start_time: '23:00', end_time: '24:00' });
+    expect(calls[0].body).toMatchObject({ start_time: '23:00', end_time: '00:00' });
+  });
+
+  it('sends a multipart upload with a fresh key each time', async () => {
+    const { client, calls } = setup([
+      reply(500, { error: 'upload_failed', message: 'x' }),
+      reply(201, { data: 'https://cdn/avatar.png' }),
+    ]);
+    await client.me.uploadAvatar({ uri: 'file://a.png', name: 'a.png', type: 'image/png' }).catch(() => undefined);
+    await client.me.uploadAvatar({ uri: 'file://a.png', name: 'a.png', type: 'image/png' });
+    expect(calls[0].headers['Idempotency-Key']).not.toBe(calls[1].headers['Idempotency-Key']);
+  });
+
+  it('asks P2 checkouts for the sheet bundle', async () => {
+    const caps = { ...CAPABILITIES, nativePayments: true };
+    const bundle = {
+      clientSecret: 'pi_1_secret_x',
+      intentType: 'payment',
+      customerId: 'cus_1',
+      ephemeralKeySecret: 'ek_1',
+      stripeAccount: 'acct_1',
+      simulated: false,
+      paymentIntentId: 'pi_1',
+      subtotalCents: 3000,
+      taxAmountCents: 0,
+    };
+    const { client, calls } = setup([reply(200, { data: bundle })], undefined, caps);
+    await client.bookings.paymentIntent(asBookingId('b1'));
+    expect(calls[0].body).toEqual({ sheet: true });
+  });
+});
+
+describe('capabilities', () => {
+  it('refuses a gated call locally without reaching Clutch', async () => {
+    const { client, calls } = setup([], undefined, { ...CAPABILITIES, bookingParity: false });
+    expect(() =>
+      client.bookings.quote({ court_id: asCourtId('c1'), date: '2026-10-20', start_time: '18:00', end_time: '19:00' }),
+    ).toThrow(ClutchUnavailableError);
+    expect(calls).toHaveLength(0);
   });
 });

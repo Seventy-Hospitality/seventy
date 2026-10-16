@@ -21,7 +21,7 @@
 import { createContext, useCallback, useContext, type ReactNode } from 'react';
 import { initStripe, StripeProvider, useStripe } from '@stripe/stripe-react-native';
 import { STRIPE_MERCHANT_ID, STRIPE_PUBLISHABLE_KEY } from './env';
-import { intentIdFromClientSecret, type StripeSheetIntent } from './clutch/contract.gen';
+import type { StripeSheetIntent } from './clutch/contract.pending';
 
 interface PaymentsContextValue {
   configured: boolean;
@@ -61,16 +61,31 @@ export type SheetResult =
   /** The sheet finished; hand `intentId` to Clutch to confirm. Not proof of payment. */
   | { status: 'completed'; intentId: string }
   | { status: 'canceled' }
+  /** A sheet is already up (a double tap): this call presented nothing. */
+  | { status: 'busy' }
   | { status: 'unconfigured' }
   | { status: 'failed'; message: string };
 
-/** Serialises presentations: the SDK's connected account is process-global. */
-let sheetLock: Promise<unknown> = Promise.resolve();
+/**
+ * One sheet at a time: the SDK's connected account is process-global, and a
+ * second presentation while one is up (a double tap) must not charge twice.
+ * A call made while a sheet is up resolves `busy` without presenting.
+ */
+let sheetUp = false;
 
-function withSheetLock<T>(task: () => Promise<T>): Promise<T> {
-  const run = sheetLock.then(task, task);
-  sheetLock = run.catch(() => undefined);
-  return run;
+async function withSheetLock(task: () => Promise<SheetResult>): Promise<SheetResult> {
+  if (sheetUp) return { status: 'busy' };
+  sheetUp = true;
+  try {
+    return await task();
+  } finally {
+    sheetUp = false;
+  }
+}
+
+/** Test seam: whether a sheet is being presented. */
+export function isSheetUp(): boolean {
+  return sheetUp;
 }
 
 /**
@@ -88,7 +103,7 @@ export function usePresentConnectedSheet() {
       }
       const publishableKey = STRIPE_PUBLISHABLE_KEY;
 
-      return withSheetLock(async (): Promise<SheetResult> => {
+      return withSheetLock(async () => {
         try {
           await initStripe({
             publishableKey,
@@ -103,10 +118,17 @@ export function usePresentConnectedSheet() {
           };
         }
 
+        // A customer is passed only together with its ephemeral key (the
+        // sheet refuses one without the other); without both the sheet
+        // still takes a new card, it just cannot list saved ones.
         const common = {
           merchantDisplayName: options.merchantDisplayName ?? 'Club70',
-          customerId: intent.customerId,
-          customerEphemeralKeySecret: intent.ephemeralKeySecret,
+          ...(intent.customer
+            ? {
+                customerId: intent.customer.id,
+                customerEphemeralKeySecret: intent.customer.ephemeralKeySecret,
+              }
+            : {}),
           returnURL: 'seventy://stripe-redirect',
           defaultBillingDetails: options.billingName ? { name: options.billingName } : undefined,
         };
@@ -121,7 +143,7 @@ export function usePresentConnectedSheet() {
           if (presented.error.code === 'Canceled') return { status: 'canceled' };
           return { status: 'failed', message: presented.error.message };
         }
-        return { status: 'completed', intentId: intentIdFromClientSecret(intent.clientSecret) };
+        return { status: 'completed', intentId: intent.intentId };
       });
     },
     [configured, initPaymentSheet, presentPaymentSheet],

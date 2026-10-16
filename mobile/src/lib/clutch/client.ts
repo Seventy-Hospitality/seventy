@@ -1,73 +1,110 @@
 /**
  * The Clutch API client: transport plus one typed function per endpoint.
  *
+ * Response shapes come only from contract.gen.ts (generated from Clutch's
+ * OpenAPI document) and contract.pending.ts (hand-written for operations of
+ * branches not in that document yet). Calls whose server route is not
+ * available are gated by capabilities.ts and refuse locally.
+ *
  * Transport rules (each one is a test in __tests__/client.test.ts):
  * - Every request carries the Supabase access token (AuthPort) as Bearer.
- * - Strict envelope: a success body is exactly `{data, count?}`, a failure is
- *   exactly `{error, message, details?, request_id?}`. `data` is parsed with
- *   the endpoint's schema from contract.gen.ts. Anything else is a ClutchError
- *   of kind 'contract' (Clutch drifted from what the app was built against).
+ * - Strict envelope: success is `{data, count?}`, failure `{error, message,
+ *   details?, request_id?}`; `data` is parsed with the endpoint's schema
+ *   (unknown fields are ignored, missing or mistyped ones fail as a
+ *   ClutchError of kind 'contract').
  * - Errors are ClutchError with `code: ErrorCode | 'unknown'`.
- * - 401 -> ONE refresh (shared by concurrent callers) -> retry once. A refresh
- *   that finds the session definitively gone surfaces the 401 (supabase-js has
- *   already signed out, which clears the cache); a transient refresh failure
- *   surfaces a network error and keeps the session.
- * - Every mutation (POST/PUT/PATCH/DELETE) carries an Idempotency-Key. The
- *   caller passes the key of the LOGICAL mutation (useMutationKey) so a user
- *   retry replays instead of acting twice; the client reuses it across its own
- *   retries (after a refresh, and on 409 request_in_flight, which means "the
- *   first attempt is still running": wait and ask again with the same key).
- * - The club is bound at construction: every club-scoped call uses `clubId`,
- *   and `club.verify()` checks at startup that the id is the expected club.
+ * - 401 -> ONE refresh (shared by concurrent callers) -> retry once with a
+ *   NEW Idempotency-Key: Clutch caches every answer below 500 under a key,
+ *   the 401 included, so retrying with the same key would replay the 401.
+ * - Every mutation carries an Idempotency-Key: the caller's (one per logical
+ *   mutation, useMutationKey) or a fresh one. 409 request_in_flight waits and
+ *   retries with the same key. A multipart upload gets a fresh key per send
+ *   (its body boundary changes, so the same key would be "reused").
+ * - The club is bound at construction; `club.verify()` checks its slug.
  */
 import { z } from 'zod';
 import {
-  AvailabilityGridSchema,
-  AvatarUrlSchema,
-  BookingDetailSchema,
-  BookingInvitationsSchema,
-  BookingListSchema,
-  BookingPaymentIntentSchema,
-  BookingQuoteSchema,
-  BookingSchema,
-  ChangeTierResultSchema,
-  CheckinTokenSchema,
-  ClubSchema,
-  CourtListSchema,
-  CoverUrlSchema,
-  AccountDeletionPreviewSchema,
-  DeleteAccountResultSchema,
-  EligibleChangeTiersSchema,
-  ErrorEnvelopeSchema,
-  GroupActivitySchema,
-  GroupDetailSchema,
-  GroupIdResultSchema,
-  GroupInvitationsSchema,
-  GroupInviteLinkSchema,
-  GroupInvitePreviewSchema,
-  GroupMembersSchema,
-  GroupSummariesSchema,
-  HomeSchema,
-  InvitedResultSchema,
-  JoinClubResultSchema,
-  MeSchema,
-  MembershipTiersPageSchema,
-  MyMembershipSchema,
-  NoContentSchema,
-  NotificationPreferencesSchema,
-  PaymentHistorySchema,
-  PlayerSearchResultsSchema,
-  ProfileSchema,
-  RegisteredDeviceSchema,
-  RescheduleResultSchema,
-  SavedPaymentMethodsSchema,
-  SheetBundleSchema,
-  SubscribeResultSchema,
-  SuccessEnvelopeSchema,
-  type Club,
+  AddBookingPlayersResponseSchema,
+  CancelBookingResponseSchema,
+  ConfirmBookingResponseSchema,
+  CreateBookingResponseSchema,
+  CreateGroupInviteLinkResponseSchema,
+  CreateGroupResponseSchema,
+  DeleteGroupResponseSchema,
+  ErrorSchema,
+  GetBookingResponseSchema,
+  GetClubAvailabilityResponseSchema,
+  GetClubResponseSchema,
+  GetGroupActivityResponseSchema,
+  GetGroupMembersResponseSchema,
+  GetGroupResponseSchema,
+  GetMeResponseSchema,
+  GetMyClubMembershipResponseSchema,
+  GetMyGroupInvitationsResponseSchema,
+  GetMyGroupsResponseSchema,
+  GetMyHomeResponseSchema,
+  GetMyPreferencesResponseSchema,
+  GetMyProfileResponseSchema,
+  InviteGroupToBookingResponseSchema,
+  InviteToGroupResponseSchema,
+  JoinClubResponseSchema,
+  JoinGroupResponseSchema,
+  LeaveGroupResponseSchema,
+  ListClubCourtsResponseSchema,
+  ListClubMembershipTiersResponseSchema,
+  ListMyBookingsResponseSchema,
+  ListMyPaymentsResponseSchema,
+  PreviewGroupInviteResponseSchema,
+  RemoveGroupMemberResponseSchema,
+  ReplaceMyPreferencesResponseSchema,
+  RescheduleBookingResponseSchema,
+  RespondToGroupInvitationResponseSchema,
+  UpdateGroupMemberResponseSchema,
+  UpdateGroupResponseSchema,
+  UpdateMyProfileResponseSchema,
+  UploadGroupCoverResponseSchema,
+  UploadMyAvatarResponseSchema,
+  type BookingInvitation,
+  type ClubDetail,
+  type MyBooking,
   type NotificationPreferences,
 } from './contract.gen';
+import {
+  AccountDeletionPreviewSchema,
+  BookingCheckoutSchema,
+  BookingQuoteSchema,
+  CancelSubscriptionResultSchema,
+  ChangeTierResultSchema,
+  CheckinTokenSchema,
+  ClubBookingRulesSchema,
+  ClubPlayersSchema,
+  DeleteAccountResultSchema,
+  EligibleChangeTiersSchema,
+  InvitationAnswerSchema,
+  LegacyBookingCheckoutSchema,
+  MembershipConfirmSchema,
+  MoveCheckoutSchema,
+  MyMembershipBillingSchema,
+  ParityBookingSchema,
+  PlayerRemovalSchema,
+  RegisteredDeviceSchema,
+  RemovedCardSchema,
+  RemovedDeviceSchema,
+  RescheduleQuoteSchema,
+  ResumeSubscriptionResultSchema,
+  SavedCardSchema,
+  SavedCardsSchema,
+  SetupIntentSchema,
+  ShareCheckoutSchema,
+  ShareSettledSchema,
+  SimulatedPaySchema,
+  SubscribeResultSchema,
+  type BookingCheckout,
+  type LegacyBookingCheckout,
+} from './contract.pending';
+import { CAPABILITIES, ClutchUnavailableError, type Capabilities, type Capability } from './capabilities';
 import { ClutchError } from './errors';
+import type { MembershipView } from './membership-view';
 import type {
   BookingId,
   CardId,
@@ -101,6 +138,7 @@ export interface ClutchClientOptions {
   expectedClubSlug: string;
   auth: AuthPort;
   newIdempotencyKey: () => string;
+  capabilities?: Capabilities;
   fetch?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   timeoutMs?: number;
@@ -147,8 +185,46 @@ interface RequestSpec<S extends z.ZodType> {
 
 const IN_FLIGHT_RETRY_DELAYS_MS = [400, 800, 1600, 3200];
 
+/** The `data` schema of a generated `{ data }` response schema. */
+function dataOf<S extends z.ZodObject<{ data: z.ZodType }>>(schema: S): S['shape']['data'] {
+  return schema.shape.data;
+}
+
 function enc(segment: string): string {
   return encodeURIComponent(segment);
+}
+
+/** A time the API accepts: "HH:MM" (Clutch's grid also says 24:00 for midnight). */
+function wireTime(time: string): string {
+  const hm = time.slice(0, 5);
+  return hm === '24:00' ? '00:00' : hm;
+}
+
+export interface BookingRange {
+  court_id: CourtId;
+  date: string;
+  start_time: string;
+  end_time: string;
+  discount_code?: string;
+}
+
+export interface BookingMove {
+  new_date: string;
+  new_start_time: string;
+  new_end_time: string;
+  new_court_id?: CourtId;
+}
+
+function rangeBody(range: BookingRange) {
+  return { ...range, start_time: wireTime(range.start_time), end_time: wireTime(range.end_time) };
+}
+
+function moveBody(move: BookingMove) {
+  return {
+    ...move,
+    new_start_time: wireTime(move.new_start_time),
+    new_end_time: wireTime(move.new_end_time),
+  };
 }
 
 // ─── Client ──────────────────────────────────────────────────────────────────
@@ -160,6 +236,7 @@ export function createClutchClient(options: ClutchClientOptions) {
     expectedClubSlug,
     auth,
     newIdempotencyKey,
+    capabilities = CAPABILITIES,
     timeoutMs = 30_000,
   } = options;
   const doFetch: typeof fetch = options.fetch ?? ((...args) => fetch(...args));
@@ -168,12 +245,15 @@ export function createClutchClient(options: ClutchClientOptions) {
 
   let refreshInFlight: Promise<string | null> | null = null;
 
-  /** Single-flight refresh: concurrent 401s share one refresh and its outcome. */
   function refreshOnce(): Promise<string | null> {
     refreshInFlight ??= auth.refreshAccessToken().finally(() => {
       refreshInFlight = null;
     });
     return refreshInFlight;
+  }
+
+  function need(capability: Capability): void {
+    if (!capabilities[capability]) throw new ClutchUnavailableError(capability);
   }
 
   function buildUrl(path: string, query?: RequestSpec<z.ZodType>['query']): string {
@@ -195,7 +275,7 @@ export function createClutchClient(options: ClutchClientOptions) {
     if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
     let body: BodyInit | undefined;
     if (spec.form) {
-      body = spec.form; // fetch sets the multipart boundary itself
+      body = spec.form;
     } else if (spec.method !== 'GET') {
       headers['Content-Type'] = 'application/json';
       body = JSON.stringify(spec.body ?? {});
@@ -244,11 +324,15 @@ export function createClutchClient(options: ClutchClientOptions) {
     });
   }
 
+  const SuccessEnvelope = z.object({ data: z.unknown(), count: z.number().int().optional() }).strict();
+
   async function request<S extends z.ZodType>(
     spec: RequestSpec<S>,
   ): Promise<{ data: z.infer<S>; count?: number }> {
     const mutating = spec.method !== 'GET';
-    const key = mutating ? (spec.idempotencyKey ?? newIdempotencyKey()) : undefined;
+    const keyFor = (): string | undefined =>
+      mutating ? (spec.form ? newIdempotencyKey() : (spec.idempotencyKey ?? newIdempotencyKey())) : undefined;
+    let key = keyFor();
 
     let token = await auth.getAccessToken();
     let res = await send(spec, token, key);
@@ -267,13 +351,15 @@ export function createClutchClient(options: ClutchClientOptions) {
       }
       if (refreshed) {
         token = refreshed;
+        // The 401 is cached under the first key; this is a new attempt.
+        key = mutating ? newIdempotencyKey() : undefined;
         res = await send(spec, token, key);
       }
     }
 
     for (const delay of IN_FLIGHT_RETRY_DELAYS_MS) {
       if (res.status !== 409) break;
-      const peek = ErrorEnvelopeSchema.safeParse(await readJson(res.clone()));
+      const peek = ErrorSchema.safeParse(await readJson(res.clone()));
       if (!peek.success || peek.data.error !== 'request_in_flight') break;
       await sleep(delay);
       res = await send(spec, token, key);
@@ -281,7 +367,7 @@ export function createClutchClient(options: ClutchClientOptions) {
 
     const json = await readJson(res);
     if (!res.ok) {
-      const parsed = ErrorEnvelopeSchema.safeParse(json);
+      const parsed = ErrorSchema.safeParse(json);
       if (!parsed.success) throw contractError(res.status, 'an error');
       throw new ClutchError({
         code: parsed.data.error,
@@ -292,7 +378,7 @@ export function createClutchClient(options: ClutchClientOptions) {
       });
     }
 
-    const envelope = SuccessEnvelopeSchema.safeParse(json);
+    const envelope = SuccessEnvelope.safeParse(json);
     if (!envelope.success) throw contractError(res.status, 'a body');
     const data = spec.schema.safeParse(envelope.data.data);
     if (!data.success) {
@@ -308,12 +394,6 @@ export function createClutchClient(options: ClutchClientOptions) {
     return (await request(spec)).data;
   }
 
-  async function page<T>(spec: RequestSpec<z.ZodType<T[]>>): Promise<Page<T>> {
-    const { data, count } = await request(spec);
-    const items = data as T[];
-    return { items, count: count ?? items.length };
-  }
-
   function uploadForm(file: UploadFile): FormData {
     const form = new FormData();
     form.append('file', file as unknown as Blob);
@@ -323,94 +403,113 @@ export function createClutchClient(options: ClutchClientOptions) {
   // ── The venue ──
 
   const club = {
-    get: () => call({ method: 'GET', path: `/clubs/${enc(clubId)}`, schema: ClubSchema }),
+    get: () => call({ method: 'GET', path: `/clubs/${enc(clubId)}`, schema: dataOf(GetClubResponseSchema) }),
 
     /** Startup check: the bound id must be the expected club. */
-    async verify(): Promise<Club> {
+    async verify(): Promise<ClubDetail> {
       const row = await club.get();
       if (row.slug !== expectedClubSlug) throw new ClubMismatchError(expectedClubSlug, row.slug);
       return row;
     },
 
     courts: () =>
-      call({ method: 'GET', path: `/clubs/${enc(clubId)}/courts`, schema: CourtListSchema }),
+      call({ method: 'GET', path: `/clubs/${enc(clubId)}/courts`, schema: dataOf(ListClubCourtsResponseSchema) }),
 
     availability: (date: string) =>
       call({
         method: 'GET',
         path: `/clubs/${enc(clubId)}/availability`,
         query: { date },
-        schema: AvailabilityGridSchema,
+        schema: dataOf(GetClubAvailabilityResponseSchema),
       }),
 
     tiers: () =>
       call({
         method: 'GET',
         path: `/clubs/${enc(clubId)}/membership-tiers`,
-        schema: MembershipTiersPageSchema,
+        schema: dataOf(ListClubMembershipTiersResponseSchema),
       }),
 
     join: (opts?: MutationOptions) =>
       call({
         method: 'POST',
         path: `/clubs/${enc(clubId)}/join`,
-        schema: JoinClubResultSchema,
+        schema: dataOf(JoinClubResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       }),
 
-    /** PENDING P4: fellow members a member may invite (never the admin roster). */
-    searchPlayers: (q: string, limit = 20) =>
-      call({
+    /** P4: booking rules per court type, with whether the caller may book each. */
+    bookingRules: () => {
+      need('bookingParity');
+      return call({ method: 'GET', path: `/clubs/${enc(clubId)}/booking-rules`, schema: ClubBookingRulesSchema });
+    },
+
+    /** P4: fellow members a member may invite (never the admin roster). */
+    searchPlayers: (q: string, limit = 20) => {
+      need('bookingParity');
+      return call({
         method: 'GET',
         path: `/clubs/${enc(clubId)}/players`,
         query: { q: q.trim() || undefined, limit },
-        schema: PlayerSearchResultsSchema,
-      }),
+        schema: ClubPlayersSchema,
+      });
+    },
   };
 
   // ── Bookings ──
 
-  interface BookingRange {
-    court_id: CourtId;
-    date: string;
-    start_time: string;
-    end_time: string;
-    discount_code?: string;
-  }
-
   const bookings = {
-    /** PENDING P4: what createBooking will charge for this range. */
-    quote: (range: BookingRange) =>
-      call({
+    /** P4: what booking this range would charge, tax included (`total_cents`). */
+    quote: (range: BookingRange) => {
+      need('bookingParity');
+      return call({
         method: 'POST',
         path: '/bookings/quote',
-        body: { club_id: clubId, ...range },
+        body: { club_id: clubId, ...rangeBody(range) },
         schema: BookingQuoteSchema,
-        // A quote changes nothing; a fresh key per call is correct.
-      }),
+      });
+    },
 
     /** Hold a court: a `pending` booking with a 15-minute hold. */
     create: (range: BookingRange, opts?: MutationOptions) =>
       call({
         method: 'POST',
         path: '/bookings',
-        body: { club_id: clubId, ...range },
-        schema: BookingSchema,
+        body: { club_id: clubId, ...rangeBody(range) },
+        schema: dataOf(CreateBookingResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       }),
 
     get: (id: BookingId) =>
-      call({ method: 'GET', path: `/bookings/${enc(id)}`, schema: BookingDetailSchema }),
+      call({ method: 'GET', path: `/bookings/${enc(id)}`, schema: dataOf(GetBookingResponseSchema) }),
 
-    /** The payment for a pending booking (or a balance due on a confirmed one). */
-    paymentIntent: (id: BookingId, opts?: MutationOptions & { shareCents?: number }) =>
-      call({
+    /**
+     * The booker's checkout for what they owe on their booking. With P2 it
+     * asks for the sheet bundle (customer + ephemeral key); before P2 it is
+     * main's shape, which has neither.
+     */
+    paymentIntent: (
+      id: BookingId,
+      opts?: MutationOptions & { shareCents?: number },
+    ): Promise<BookingCheckout | LegacyBookingCheckout> => {
+      const body: Record<string, unknown> = opts?.shareCents === undefined ? {} : { share_cents: opts.shareCents };
+      if (capabilities.nativePayments) {
+        return call({
+          method: 'POST',
+          path: `/bookings/${enc(id)}/payment-intent`,
+          body: { ...body, sheet: true },
+          schema: BookingCheckoutSchema,
+          idempotencyKey: opts?.idempotencyKey,
+        });
+      }
+      return call({
         method: 'POST',
         path: `/bookings/${enc(id)}/payment-intent`,
-        body: opts?.shareCents === undefined ? {} : { share_cents: opts.shareCents },
-        schema: BookingPaymentIntentSchema,
+        body,
+        schema: LegacyBookingCheckoutSchema,
         idempotencyKey: opts?.idempotencyKey,
-      }),
+      });
+    },
 
     /** Simulated deployments only: complete the simulated checkout. */
     paySimulated: (id: BookingId, paymentIntentId: string, opts?: MutationOptions) =>
@@ -418,7 +517,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'POST',
         path: `/bookings/${enc(id)}/payment-intent/pay`,
         body: { payment_intent_id: paymentIntentId },
-        schema: z.object({ status: z.string() }),
+        schema: SimulatedPaySchema,
         idempotencyKey: opts?.idempotencyKey,
       }),
 
@@ -428,7 +527,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'POST',
         path: `/bookings/${enc(id)}/confirm`,
         body: paymentIntentId ? { payment_intent_id: paymentIntentId } : {},
-        schema: BookingSchema,
+        schema: dataOf(ConfirmBookingResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       }),
 
@@ -437,22 +536,77 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'POST',
         path: `/bookings/${enc(id)}/cancel`,
         body: opts?.reason ? { reason: opts.reason } : {},
-        schema: BookingSchema,
+        schema: dataOf(CancelBookingResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       }),
 
-    reschedule: (
-      id: BookingId,
-      move: { new_date: string; new_start_time: string; new_end_time: string; new_court_id?: CourtId },
-      opts?: MutationOptions,
-    ) =>
+    /** A move that costs no more (P4: 402 reschedule_payment_required when it does). */
+    reschedule: (id: BookingId, move: BookingMove, opts?: MutationOptions) =>
       call({
         method: 'POST',
         path: `/bookings/${enc(id)}/reschedule`,
-        body: move,
-        schema: RescheduleResultSchema,
+        body: moveBody(move),
+        schema: dataOf(RescheduleBookingResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       }),
+
+    /** P4: what moving would cost; `payment_required` means pay the difference first. */
+    rescheduleQuote: (id: BookingId, move: BookingMove) => {
+      need('bookingParity');
+      return call({
+        method: 'POST',
+        path: `/bookings/${enc(id)}/reschedule/quote`,
+        body: moveBody(move),
+        schema: RescheduleQuoteSchema,
+      });
+    },
+
+    /** P4: a move order and the intent for the difference plus tax. */
+    reschedulePaymentIntent: (id: BookingId, move: BookingMove, opts?: MutationOptions) => {
+      need('bookingParity');
+      return call({
+        method: 'POST',
+        path: `/bookings/${enc(id)}/reschedule/payment-intent`,
+        body: moveBody(move),
+        schema: MoveCheckoutSchema,
+        idempotencyKey: opts?.idempotencyKey,
+      });
+    },
+
+    /** P4: make the paid move with its payment. */
+    rescheduleConfirm: (id: BookingId, paymentIntentId: string, opts?: MutationOptions) => {
+      need('bookingParity');
+      return call({
+        method: 'POST',
+        path: `/bookings/${enc(id)}/reschedule/confirm`,
+        body: { payment_intent_id: paymentIntentId },
+        schema: ParityBookingSchema,
+        idempotencyKey: opts?.idempotencyKey,
+      });
+    },
+
+    /** P4: a player's checkout for their share of someone else's booking. */
+    sharePaymentIntent: (id: BookingId, opts?: MutationOptions) => {
+      need('bookingParity');
+      return call({
+        method: 'POST',
+        path: `/bookings/${enc(id)}/shares/payment-intent`,
+        schema: ShareCheckoutSchema,
+        idempotencyKey: opts?.idempotencyKey,
+      });
+    },
+
+    /** P4: record the player's share payment. */
+    shareConfirm: (id: BookingId, paymentIntentId: string, opts?: MutationOptions) => {
+      need('bookingParity');
+      return call({
+        method: 'POST',
+        path: `/bookings/${enc(id)}/shares/confirm`,
+        body: { payment_intent_id: paymentIntentId },
+        schema: ShareSettledSchema,
+        idempotencyKey: opts?.idempotencyKey,
+      });
+    },
 
     invitePlayers: (
       id: BookingId,
@@ -463,7 +617,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'POST',
         path: `/bookings/${enc(id)}/players`,
         body: { player_ids: playerIds, ...(opts?.shares ? { shares: opts.shares } : {}) },
-        schema: NoContentSchema,
+        schema: dataOf(AddBookingPlayersResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       }),
 
@@ -472,28 +626,32 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'POST',
         path: `/bookings/${enc(id)}/invite-group`,
         body: { group_id: groupId },
-        schema: InvitedResultSchema,
+        schema: dataOf(InviteGroupToBookingResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       }),
 
-    /** PENDING P4: accept or decline an invitation to someone else's booking. */
-    respond: (id: BookingId, accept: boolean, opts?: MutationOptions) =>
-      call({
+    /** P4: accept or decline an invitation to someone else's booking. */
+    respond: (id: BookingId, accept: boolean, opts?: MutationOptions) => {
+      need('bookingParity');
+      return call({
         method: 'POST',
         path: `/bookings/${enc(id)}/respond`,
         body: { accept },
-        schema: NoContentSchema,
+        schema: InvitationAnswerSchema,
         idempotencyKey: opts?.idempotencyKey,
-      }),
+      });
+    },
 
-    /** PENDING P4: the booker removes a player (or a player leaves: their own id). */
-    removePlayer: (id: BookingId, userId: UserId, opts?: MutationOptions) =>
-      call({
+    /** P4: the booker removes a player, or a player leaves (their own id). */
+    removePlayer: (id: BookingId, userId: UserId, opts?: MutationOptions) => {
+      need('bookingParity');
+      return call({
         method: 'DELETE',
         path: `/bookings/${enc(id)}/players/${enc(userId)}`,
-        schema: NoContentSchema,
+        schema: PlayerRemovalSchema,
         idempotencyKey: opts?.idempotencyKey,
-      }),
+      });
+    },
   };
 
   // ── Groups ──
@@ -501,7 +659,7 @@ export function createClutchClient(options: ClutchClientOptions) {
   const groups = {
     /** The caller's groups AT THIS CLUB (/me/groups spans every club). */
     async list() {
-      const all = await call({ method: 'GET', path: '/me/groups', schema: GroupSummariesSchema });
+      const all = await call({ method: 'GET', path: '/me/groups', schema: dataOf(GetMyGroupsResponseSchema) });
       return all.filter((g) => g.club_id === clubId);
     },
 
@@ -510,28 +668,34 @@ export function createClutchClient(options: ClutchClientOptions) {
       const all = await call({
         method: 'GET',
         path: '/me/group-invitations',
-        schema: GroupInvitationsSchema,
+        schema: dataOf(GetMyGroupInvitationsResponseSchema),
       });
       return all.filter((i) => i.club_id === clubId);
     },
 
+    /** `invitee_user_ids` is sent only when non-empty (Clutch refuses []). */
     create: (
       input: { name: string; description?: string | null; invitee_user_ids?: UserId[] },
       opts?: MutationOptions,
-    ) =>
-      call({
+    ) => {
+      const { invitee_user_ids, ...rest } = input;
+      return call({
         method: 'POST',
         path: '/me/groups',
-        body: { club_id: clubId, ...input },
-        schema: GroupIdResultSchema,
+        body: {
+          club_id: clubId,
+          ...rest,
+          ...(invitee_user_ids && invitee_user_ids.length > 0 ? { invitee_user_ids } : {}),
+        },
+        schema: dataOf(CreateGroupResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
-      }),
+      });
+    },
 
-    get: (id: GroupId) =>
-      call({ method: 'GET', path: `/groups/${enc(id)}`, schema: GroupDetailSchema }),
+    get: (id: GroupId) => call({ method: 'GET', path: `/groups/${enc(id)}`, schema: dataOf(GetGroupResponseSchema) }),
 
     members: (id: GroupId) =>
-      call({ method: 'GET', path: `/groups/${enc(id)}/members`, schema: GroupMembersSchema }),
+      call({ method: 'GET', path: `/groups/${enc(id)}/members`, schema: dataOf(GetGroupMembersResponseSchema) }),
 
     update: (
       id: GroupId,
@@ -542,7 +706,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'PATCH',
         path: `/groups/${enc(id)}`,
         body: input,
-        schema: NoContentSchema,
+        schema: dataOf(UpdateGroupResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       }),
 
@@ -550,7 +714,7 @@ export function createClutchClient(options: ClutchClientOptions) {
       call({
         method: 'DELETE',
         path: `/groups/${enc(id)}`,
-        schema: NoContentSchema,
+        schema: dataOf(DeleteGroupResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       }),
 
@@ -558,7 +722,7 @@ export function createClutchClient(options: ClutchClientOptions) {
       call({
         method: 'POST',
         path: `/groups/${enc(id)}/leave`,
-        schema: NoContentSchema,
+        schema: dataOf(LeaveGroupResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       }),
 
@@ -567,7 +731,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'PATCH',
         path: `/groups/${enc(id)}/members/${enc(userId)}`,
         body: { role: 'owner' },
-        schema: NoContentSchema,
+        schema: dataOf(UpdateGroupMemberResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       }),
 
@@ -575,7 +739,7 @@ export function createClutchClient(options: ClutchClientOptions) {
       call({
         method: 'DELETE',
         path: `/groups/${enc(id)}/members/${enc(userId)}`,
-        schema: NoContentSchema,
+        schema: dataOf(RemoveGroupMemberResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       }),
 
@@ -584,7 +748,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'POST',
         path: `/groups/${enc(id)}/invitations`,
         body: { user_ids: userIds },
-        schema: InvitedResultSchema,
+        schema: dataOf(InviteToGroupResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       }),
 
@@ -597,17 +761,17 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'POST',
         path: `/groups/${enc(id)}/invite-link`,
         body: input,
-        schema: GroupInviteLinkSchema,
+        schema: dataOf(CreateGroupInviteLinkResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       }),
 
-    uploadCover: (id: GroupId, file: UploadFile, opts?: MutationOptions) =>
+    /** Multipart: each send gets a fresh key (the body boundary changes). */
+    uploadCover: (id: GroupId, file: UploadFile) =>
       call({
         method: 'POST',
         path: `/groups/${enc(id)}/cover-image`,
         form: uploadForm(file),
-        schema: CoverUrlSchema,
-        idempotencyKey: opts?.idempotencyKey,
+        schema: dataOf(UploadGroupCoverResponseSchema),
       }),
 
     activity: (id: GroupId, filter: 'upcoming' | 'past' = 'upcoming') =>
@@ -615,7 +779,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'GET',
         path: `/groups/${enc(id)}/activity`,
         query: { filter },
-        schema: GroupActivitySchema,
+        schema: dataOf(GetGroupActivityResponseSchema),
       }),
 
     previewInvite: (token: string) =>
@@ -623,7 +787,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'POST',
         path: '/groups/invite-preview',
         body: { token },
-        schema: GroupInvitePreviewSchema,
+        schema: dataOf(PreviewGroupInviteResponseSchema),
       }),
 
     join: (token: string, opts?: MutationOptions) =>
@@ -631,7 +795,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'POST',
         path: '/groups/join',
         body: { token },
-        schema: GroupIdResultSchema,
+        schema: dataOf(JoinGroupResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       }),
 
@@ -640,7 +804,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'POST',
         path: `/group-invitations/${enc(invitationId)}/respond`,
         body: { accept },
-        schema: GroupIdResultSchema,
+        schema: dataOf(RespondToGroupInvitationResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       }),
   };
@@ -648,173 +812,217 @@ export function createClutchClient(options: ClutchClientOptions) {
   // ── Membership + billing ──
 
   const membership = {
-    get: () =>
-      call({
+    /** The caller's membership here: the billing view with P2, club standing before it. */
+    async get(): Promise<MembershipView> {
+      if (capabilities.nativePayments) {
+        const data = await call({
+          method: 'GET',
+          path: '/me/membership',
+          query: { club_id: clubId },
+          schema: MyMembershipBillingSchema,
+        });
+        return { kind: 'billing', data };
+      }
+      const data = await call({
         method: 'GET',
         path: '/me/membership',
         query: { club_id: clubId },
-        schema: MyMembershipSchema,
-      }),
+        schema: dataOf(GetMyClubMembershipResponseSchema),
+      });
+      return { kind: 'standing', data };
+    },
 
-    eligibleChanges: () =>
-      call({
+    /** P2: tiers on the same interval, each an upgrade or a downgrade. */
+    eligibleChanges: () => {
+      need('nativePayments');
+      return call({
         method: 'GET',
         path: '/me/membership/change',
         query: { club_id: clubId },
         schema: EligibleChangeTiersSchema,
-      }),
+      });
+    },
 
-    /** PENDING P2: start (or resume) a subscription attempt; returns its sheet. */
-    subscribe: (tierId: TierId, termsVersion: string, opts?: MutationOptions) =>
-      call({
+    /** P2: start (or resume) a subscription attempt; answers its sheet bundle. */
+    subscribe: (tierId: TierId, termsVersion: string, opts?: MutationOptions) => {
+      need('nativePayments');
+      return call({
         method: 'POST',
         path: '/me/membership/subscribe',
-        body: { club_id: clubId, tier_id: tierId, terms_version: termsVersion },
+        body: { club_id: clubId, tier_id: tierId, terms_version: termsVersion, sheet: true },
         schema: SubscribeResultSchema,
         idempotencyKey: opts?.idempotencyKey,
-      }),
+      });
+    },
 
-    /** PENDING P2: "re-read Stripe now" through Clutch's one state function. */
-    confirm: (opts?: MutationOptions) =>
-      call({
+    /** P2: "ask Stripe now" through Clutch's one state function. */
+    confirm: (opts?: MutationOptions) => {
+      need('nativePayments');
+      return call({
         method: 'POST',
         path: '/me/membership/confirm',
         body: { club_id: clubId },
-        schema: MyMembershipSchema,
+        schema: MembershipConfirmSchema,
         idempotencyKey: opts?.idempotencyKey,
-      }),
+      });
+    },
 
-    /** PENDING P2: upgrade now (may need a sheet) or schedule a downgrade. */
-    change: (tierId: TierId, opts?: MutationOptions) =>
-      call({
+    /** P2: upgrade now (may need a sheet), schedule a downgrade, or cancel a scheduled one. */
+    change: (tierId: TierId, opts?: MutationOptions) => {
+      need('nativePayments');
+      return call({
         method: 'POST',
         path: '/me/membership/change',
-        body: { club_id: clubId, tier_id: tierId },
+        body: { club_id: clubId, tier_id: tierId, sheet: true },
         schema: ChangeTierResultSchema,
         idempotencyKey: opts?.idempotencyKey,
-      }),
+      });
+    },
 
-    /** PENDING P2: cancel at period end, or now. */
-    cancel: (at: 'period_end' | 'now', opts?: MutationOptions) =>
-      call({
+    /** P2: cancel at period end, or now. */
+    cancel: (at: 'period_end' | 'now', opts?: MutationOptions) => {
+      need('nativePayments');
+      return call({
         method: 'DELETE',
         path: '/me/membership/subscription',
         query: { club_id: clubId, at },
-        schema: NoContentSchema,
+        schema: CancelSubscriptionResultSchema,
         idempotencyKey: opts?.idempotencyKey,
-      }),
+      });
+    },
 
-    /** PENDING P2: undo a scheduled cancellation. */
-    resume: (opts?: MutationOptions) =>
-      call({
+    /** P2: undo a cancellation at period end. */
+    resume: (opts?: MutationOptions) => {
+      need('nativePayments');
+      return call({
         method: 'POST',
         path: '/me/membership/subscription/resume',
         body: { club_id: clubId },
-        schema: NoContentSchema,
+        schema: ResumeSubscriptionResultSchema,
         idempotencyKey: opts?.idempotencyKey,
-      }),
+      });
+    },
   };
 
   const paymentMethods = {
+    /** Cards on file here (main has this route; P2 projects it). */
     list: () =>
       call({
         method: 'GET',
         path: '/me/payment-methods',
         query: { club_id: clubId },
-        schema: SavedPaymentMethodsSchema,
+        schema: SavedCardsSchema,
       }),
 
-    /** PENDING P2: a SetupIntent sheet bundle on the club's account. */
-    setupIntent: (opts?: MutationOptions) =>
-      call({
+    /** P2: a SetupIntent sheet bundle (with the ephemeral key) on the club's account. */
+    setupIntent: (opts?: MutationOptions) => {
+      need('nativePayments');
+      return call({
         method: 'POST',
         path: '/me/payment-methods/setup-intent',
-        body: { club_id: clubId },
-        schema: SheetBundleSchema,
+        body: { club_id: clubId, sheet: true },
+        schema: SetupIntentSchema,
         idempotencyKey: opts?.idempotencyKey,
-      }),
+      });
+    },
 
-    /** PENDING P2: Clutch retrieves the SetupIntent and stores the card it holds. */
-    save: (setupIntentId: string, opts?: MutationOptions) =>
-      call({
+    /** P2: Clutch retrieves the SetupIntent and stores the card it holds. */
+    save: (setupIntentId: string, opts?: MutationOptions) => {
+      need('nativePayments');
+      return call({
         method: 'POST',
         path: '/me/payment-methods',
         body: { club_id: clubId, setup_intent_id: setupIntentId },
-        schema: NoContentSchema,
+        schema: SavedCardSchema,
         idempotencyKey: opts?.idempotencyKey,
-      }),
+      });
+    },
 
-    setDefault: (cardId: CardId, opts?: MutationOptions) =>
-      call({
+    /** P2: the default moves on Stripe too (customer and live subscription). */
+    setDefault: (cardId: CardId, opts?: MutationOptions) => {
+      need('nativePayments');
+      return call({
         method: 'PATCH',
         path: `/me/payment-methods/${enc(cardId)}`,
-        schema: NoContentSchema,
+        schema: SavedCardSchema,
         idempotencyKey: opts?.idempotencyKey,
-      }),
+      });
+    },
 
-    remove: (cardId: CardId, opts?: MutationOptions) =>
-      call({
+    /** P2: refuses (card_in_use_by_subscription) or re-points a live subscription's card. */
+    remove: (cardId: CardId, opts?: MutationOptions) => {
+      need('nativePayments');
+      return call({
         method: 'DELETE',
         path: `/me/payment-methods/${enc(cardId)}`,
-        schema: NoContentSchema,
+        schema: RemovedCardSchema,
         idempotencyKey: opts?.idempotencyKey,
-      }),
+      });
+    },
   };
 
   // ── Me ──
 
   const me = {
-    get: () => call({ method: 'GET', path: '/me', schema: MeSchema }),
+    get: () => call({ method: 'GET', path: '/me', schema: dataOf(GetMeResponseSchema) }),
 
     home: () =>
-      call({ method: 'GET', path: '/me/home', query: { club_id: clubId }, schema: HomeSchema }),
+      call({ method: 'GET', path: '/me/home', query: { club_id: clubId }, schema: dataOf(GetMyHomeResponseSchema) }),
 
-    bookings: (q: { status?: string; from?: string; limit?: number; offset?: number } = {}) =>
-      page({
+    /** The caller's own bookings here (those they booked). */
+    async bookings(q: { status?: string; from?: string; limit?: number; offset?: number } = {}): Promise<Page<MyBooking>> {
+      const { data, count } = await request({
         method: 'GET',
         path: '/me/bookings',
         query: { club_id: clubId, ...q },
-        schema: BookingListSchema,
-      }),
+        schema: dataOf(ListMyBookingsResponseSchema),
+      });
+      const items = data.filter((row): row is MyBooking => row.kind === 'booking');
+      return { items, count: count ?? items.length };
+    },
 
-    bookingInvitations: () =>
-      call({
+    /** Pending invitations to other people's bookings here. */
+    async bookingInvitations(): Promise<BookingInvitation[]> {
+      const data = await call({
         method: 'GET',
         path: '/me/bookings',
         query: { club_id: clubId, include: 'invitations' },
-        schema: BookingInvitationsSchema,
-      }),
+        schema: dataOf(ListMyBookingsResponseSchema),
+      });
+      return data.filter((row): row is BookingInvitation => row.kind === 'invitation');
+    },
 
-    payments: (q: { type?: string; status?: string; limit?: number; offset?: number } = {}) =>
-      page({
+    async payments(q: { type?: string; status?: string; limit?: number; offset?: number } = {}) {
+      const { data, count } = await request({
         method: 'GET',
         path: '/me/payments',
         query: { club_id: clubId, ...q },
-        schema: PaymentHistorySchema,
-      }),
+        schema: dataOf(ListMyPaymentsResponseSchema),
+      });
+      return { items: data, count: count ?? data.length };
+    },
 
-    profile: () => call({ method: 'GET', path: '/me/profile', schema: ProfileSchema }),
+    profile: () => call({ method: 'GET', path: '/me/profile', schema: dataOf(GetMyProfileResponseSchema) }),
 
     updateProfile: (input: { full_name?: string; username?: string }, opts?: MutationOptions) =>
       call({
         method: 'PATCH',
         path: '/me/profile',
         body: input,
-        schema: ProfileSchema,
+        schema: dataOf(UpdateMyProfileResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       }),
 
-    uploadAvatar: (file: UploadFile, opts?: MutationOptions) =>
+    /** Multipart: each send gets a fresh key (the body boundary changes). */
+    uploadAvatar: (file: UploadFile) =>
       call({
         method: 'POST',
         path: '/me/avatar',
         form: uploadForm(file),
-        schema: AvatarUrlSchema,
-        idempotencyKey: opts?.idempotencyKey,
+        schema: dataOf(UploadMyAvatarResponseSchema),
       }),
 
-    preferences: () =>
-      call({ method: 'GET', path: '/me/preferences', schema: NotificationPreferencesSchema }),
+    preferences: () => call({ method: 'GET', path: '/me/preferences', schema: dataOf(GetMyPreferencesResponseSchema) }),
 
     /** A full replace: every category with push, email and sms. */
     putPreferences: (prefs: NotificationPreferences, opts?: MutationOptions) =>
@@ -822,58 +1030,66 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'PUT',
         path: '/me/preferences',
         body: prefs,
-        schema: NoContentSchema,
+        schema: dataOf(ReplaceMyPreferencesResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       }),
 
-    /** P1 (pushed on feat/expo-push): register this install's Expo push token; idempotent. */
-    registerDevice: (input: { token: string; platform: 'ios' | 'android' }, opts?: MutationOptions) =>
-      call({
+    /** P1: register this install's Expo push token (idempotent; call on every launch and sign-in). */
+    registerDevice: (
+      input: { token: string; platform: 'ios' | 'android'; device_secret: string },
+      opts?: MutationOptions,
+    ) => {
+      need('pushDevices');
+      return call({
         method: 'POST',
         path: '/me/devices',
         body: input,
         schema: RegisteredDeviceSchema,
         idempotencyKey: opts?.idempotencyKey,
-      }),
+      });
+    },
 
-    /** P1 (pushed): call on sign-out. */
-    unregisterDevice: (token: string, opts?: MutationOptions) =>
-      call({
+    /** P1: stop pushing to this install; the token travels in the body. */
+    unregisterDevice: (token: string, opts?: MutationOptions) => {
+      need('pushDevices');
+      return call({
         method: 'DELETE',
-        path: `/me/devices/${enc(token)}`,
-        schema: NoContentSchema,
+        path: '/me/devices',
+        body: { token },
+        schema: RemovedDeviceSchema,
         idempotencyKey: opts?.idempotencyKey,
-      }),
+      });
+    },
 
-    /** P5 (pushed): signed, short-lived member check-in token for the QR card. */
-    checkinToken: () =>
-      call({
-        method: 'GET',
-        path: '/me/checkin-token',
-        query: { club_id: clubId },
-        schema: CheckinTokenSchema,
-      }),
+    /** P5: signed, short-lived member check-in token for the QR card. */
+    checkinToken: () => {
+      need('checkinToken');
+      return call({ method: 'GET', path: '/me/checkin-token', query: { club_id: clubId }, schema: CheckinTokenSchema });
+    },
 
-    /** P5 (pushed): blockers + step-up state, before asking for a fresh sign-in. */
-    accountDeletion: () =>
-      call({ method: 'GET', path: '/me/account/deletion', schema: AccountDeletionPreviewSchema }),
+    /** P5: blockers + step-up state, before asking for a fresh sign-in. */
+    accountDeletion: () => {
+      need('accountDeletion');
+      return call({ method: 'GET', path: '/me/account/deletion', schema: AccountDeletionPreviewSchema });
+    },
 
     /**
-     * P5 (pushed): delete the account for good. Needs a recent sign-in:
-     * 403 step_up_required (details: StepUpState) asks for one; 409
-     * account_deletion_blocked (details: DeletionBlockers) or refunds_pending
-     * say what to deal with first; 500 account_deletion_failed deleted nothing.
+     * P5: delete the account for good. 403 step_up_required (details:
+     * StepUpState), 409 account_deletion_blocked (details: DeletionBlockers)
+     * or refunds_pending, 500 account_deletion_failed (nothing deleted).
      */
-    deleteAccount: (opts?: MutationOptions) =>
-      call({
+    deleteAccount: (opts?: MutationOptions) => {
+      need('accountDeletion');
+      return call({
         method: 'DELETE',
         path: '/me/account',
         schema: DeleteAccountResultSchema,
         idempotencyKey: opts?.idempotencyKey,
-      }),
+      });
+    },
   };
 
-  return { clubId, club, bookings, groups, membership, paymentMethods, me };
+  return { clubId, capabilities, club, bookings, groups, membership, paymentMethods, me };
 }
 
 export type ClutchClient = ReturnType<typeof createClutchClient>;

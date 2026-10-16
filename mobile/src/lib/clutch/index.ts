@@ -12,6 +12,9 @@ import { asClubId } from './ids';
 
 export * from './client';
 export * from './contract.gen';
+export * from './contract.pending';
+export * from './capabilities';
+export * from './membership-view';
 export * from './errors';
 export * from './ids';
 export { createMutationKey, useMutationKey, type MutationKey } from './mutation-key';

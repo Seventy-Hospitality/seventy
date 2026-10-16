@@ -23,3 +23,4 @@ export { QRCode } from './QRCode';
 export { MemberCardSheet, type MemberCardSheetProps } from './MemberCardSheet';
 export { ToastProvider } from './Toast';
 export { useToast, type ToastOptions, type ToastVariant } from './toast-context';
+export { FeatureUnavailable } from './FeatureUnavailable';
