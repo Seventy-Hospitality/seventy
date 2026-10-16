@@ -21,7 +21,7 @@ import {
   Skeleton,
   useToast,
 } from '../../components';
-import { useRespondToBooking } from '../bookings';
+import { PlayingBookingsSection, useRespondToBooking } from '../bookings';
 import { GroupInvitationCard, useGroupInvitationResponder } from '../groups';
 import { dateKeyToDate, sportsFrom } from '../reserve';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
@@ -134,11 +134,8 @@ export function HomeScreen() {
 
   const feed = home.data;
   const invitations = bookingInvites.data ? orderInvitations(bookingInvites.data) : undefined;
-  // TODO(lead): /me/home lists only bookings the member BOOKED. Bookings they
-  // play in (accepted invitations) belong under "Upcoming bookings" too, via
-  // the hook the bookings agent is adding (expected export from
-  // src/features/bookings/index.ts: `usePlayingBookings()`, answering
-  // `Booking` rows). It did not exist when this screen was moved.
+  // /me/home lists only bookings the member BOOKED; the ones they play in
+  // (accepted invitations) render below from PlayingBookingsSection.
   const upcoming = feed.upcoming_bookings;
   const layout = homeLayout({ upcoming, bookingInvitations: invitations });
   const announcements = orderAnnouncements(feed.announcements);
@@ -201,6 +198,8 @@ export function HomeScreen() {
           </View>
         </HomeSection>
       ) : null}
+
+      <PlayingBookingsSection />
 
       {layout.isEmpty ? (
         <>
