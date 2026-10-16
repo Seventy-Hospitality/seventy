@@ -608,7 +608,12 @@ export const NotificationPreferencesSchema = z.object({
 });
 export type NotificationPreferences = z.infer<typeof NotificationPreferencesSchema>;
 
-/** GET /me/checkin-token?club_id= (PENDING P5): signed, short-lived member QR. */
+/**
+ * GET /me/checkin-token?club_id= (P5, origin/feat/account-deletion-and-checkin):
+ * the signed, short-lived member QR. Shown as is; refetched before expiresAt.
+ * 409 not_club_member for a non-member, 503 checkin_unavailable when the
+ * deployment has no signing key.
+ */
 export const CheckinTokenSchema = z.object({
   token: z.string(),
   expiresAt: z.string(),
@@ -616,20 +621,44 @@ export const CheckinTokenSchema = z.object({
 });
 export type CheckinToken = z.infer<typeof CheckinTokenSchema>;
 
-/** DELETE /me/account (PENDING P5). A 409 deletion_blocked carries `details.blockers`. */
-export const DeleteAccountResultSchema = z.object({
-  status: z.enum(['deleted', 'scheduled']),
-});
+/** DELETE /me/account (P5): every token of the account is dead afterwards. */
+export const DeleteAccountResultSchema = z.object({ deleted: z.literal(true) });
 export type DeleteAccountResult = z.infer<typeof DeleteAccountResultSchema>;
 
-export const DeletionBlockerSchema = z.object({
-  code: z.string(),
-  message: z.string(),
-  club_id: ClubIdSchema.nullish(),
+/**
+ * What stands in the way of deleting the account: clubs the caller owns and
+ * managed children whose only guardian they are. The `details` of a 409
+ * account_deletion_blocked, and `blockers` of GET /me/account/deletion.
+ */
+export const DeletionBlockersSchema = z.object({
+  owned_clubs: z.array(z.object({ club_id: ClubIdSchema, club_name: z.string() })),
+  managed_children: z.array(z.object({ link_id: z.string(), name: z.string() })),
 });
-export type DeletionBlocker = z.infer<typeof DeletionBlockerSchema>;
+export type DeletionBlockers = z.infer<typeof DeletionBlockersSchema>;
 
-/** POST /me/devices (PENDING P1). */
+/**
+ * Whether the session signed in recently enough for an irreversible act.
+ * The `details` of a 403 step_up_required. `reason` is null when satisfied,
+ * else stale_sign_in | unknown_sign_in_time | second_factor_required.
+ */
+export const StepUpStateSchema = z.object({
+  satisfied: z.boolean(),
+  reason: NullableString,
+  authenticated_at: NullableString,
+  fresh_until: NullableString,
+  max_age_seconds: z.number(),
+  second_factor_required: z.boolean(),
+});
+export type StepUpState = z.infer<typeof StepUpStateSchema>;
+
+/** GET /me/account/deletion (P5): what deleting would meet, before asking for a sign-in. */
+export const AccountDeletionPreviewSchema = z.object({
+  blockers: DeletionBlockersSchema,
+  step_up: StepUpStateSchema,
+});
+export type AccountDeletionPreview = z.infer<typeof AccountDeletionPreviewSchema>;
+
+/** POST /me/devices (P1, pushed on feat/expo-push): answers the stored registration. */
 export const RegisteredDeviceSchema = z.object({
   token: z.string(),
   platform: z.enum(['ios', 'android']),

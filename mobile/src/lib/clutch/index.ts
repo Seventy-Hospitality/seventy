@@ -14,7 +14,7 @@ export * from './client';
 export * from './contract.gen';
 export * from './errors';
 export * from './ids';
-export { useMutationKey, type MutationKey } from './mutation-key';
+export { createMutationKey, useMutationKey, type MutationKey } from './mutation-key';
 
 /**
  * supabase-js owns the session. getSession() returns the stored session and

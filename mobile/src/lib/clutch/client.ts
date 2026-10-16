@@ -35,6 +35,7 @@ import {
   ClubSchema,
   CourtListSchema,
   CoverUrlSchema,
+  AccountDeletionPreviewSchema,
   DeleteAccountResultSchema,
   EligibleChangeTiersSchema,
   ErrorEnvelopeSchema,
@@ -825,7 +826,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         idempotencyKey: opts?.idempotencyKey,
       }),
 
-    /** PENDING P1: register this device's Expo push token. */
+    /** P1 (pushed on feat/expo-push): register this install's Expo push token; idempotent. */
     registerDevice: (input: { token: string; platform: 'ios' | 'android' }, opts?: MutationOptions) =>
       call({
         method: 'POST',
@@ -835,7 +836,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         idempotencyKey: opts?.idempotencyKey,
       }),
 
-    /** PENDING P1 */
+    /** P1 (pushed): call on sign-out. */
     unregisterDevice: (token: string, opts?: MutationOptions) =>
       call({
         method: 'DELETE',
@@ -844,7 +845,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         idempotencyKey: opts?.idempotencyKey,
       }),
 
-    /** PENDING P5: signed, short-lived member check-in token for the QR card. */
+    /** P5 (pushed): signed, short-lived member check-in token for the QR card. */
     checkinToken: () =>
       call({
         method: 'GET',
@@ -853,9 +854,15 @@ export function createClutchClient(options: ClutchClientOptions) {
         schema: CheckinTokenSchema,
       }),
 
+    /** P5 (pushed): blockers + step-up state, before asking for a fresh sign-in. */
+    accountDeletion: () =>
+      call({ method: 'GET', path: '/me/account/deletion', schema: AccountDeletionPreviewSchema }),
+
     /**
-     * PENDING P5: delete the account. Needs a recent sign-in (step-up);
-     * 403 step_up_required asks for one, 409 deletion_blocked lists blockers.
+     * P5 (pushed): delete the account for good. Needs a recent sign-in:
+     * 403 step_up_required (details: StepUpState) asks for one; 409
+     * account_deletion_blocked (details: DeletionBlockers) or refunds_pending
+     * say what to deal with first; 500 account_deletion_failed deleted nothing.
      */
     deleteAccount: (opts?: MutationOptions) =>
       call({

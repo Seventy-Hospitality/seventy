@@ -170,9 +170,12 @@ export const ERROR_CODES = [
   'payment_processing',
   'members_only',
   'tier_required',
-  // Pending: feat/account-deletion-and-checkin (P5)
+  // feat/account-deletion-and-checkin (P5, pushed, not merged)
   'step_up_required',
-  'deletion_blocked',
+  'account_deletion_blocked',
+  'refunds_pending',
+  'account_deletion_failed',
+  'checkin_unavailable',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
