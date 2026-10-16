@@ -51,13 +51,14 @@ export const STRIPE_PUBLISHABLE_KEY = optional(process.env.EXPO_PUBLIC_STRIPE_PU
 /** Apple merchant identifier for Apple Pay in PaymentSheet (optional). */
 export const STRIPE_MERCHANT_ID = optional(process.env.EXPO_PUBLIC_STRIPE_MERCHANT_ID);
 
-/** Google OAuth client IDs (native ID-token flow). Any absent = degraded. */
+/**
+ * Google OAuth client ids of the iOS and Android apps. Each one's reversed
+ * id is registered as a URL scheme by app.config.js, and each must be listed
+ * as an authorized client id on the Supabase Google provider. Absent: the
+ * Google button on that platform shows "not configured".
+ */
 export const GOOGLE_IOS_CLIENT_ID = optional(process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID);
 export const GOOGLE_ANDROID_CLIENT_ID = optional(process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID);
-export const GOOGLE_WEB_CLIENT_ID = optional(process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID);
-
-/** Sign in with Apple services ID (used for the web audience / Android). */
-export const APPLE_CLIENT_ID = optional(process.env.EXPO_PUBLIC_APPLE_CLIENT_ID);
 
 /** The deep link GoTrue redirects auth emails to (magic link, signup, recovery). */
 export const AUTH_CALLBACK_URL = 'seventy://auth/callback';

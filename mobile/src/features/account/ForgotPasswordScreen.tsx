@@ -3,6 +3,7 @@ import { Link } from 'expo-router';
 import { Controller } from 'react-hook-form';
 import { Text, View } from 'react-native';
 import { useSession } from '../../lib/session';
+import { authErrorMessage } from '../../lib/auth-errors';
 import { emailOnlySchema, useZodForm } from '../../lib/forms';
 import { AppScreen } from '../../components/AppScreen';
 import { PrimaryButton } from '../../components/PrimaryButton';
@@ -22,10 +23,15 @@ export function ForgotPasswordScreen() {
   const form = useZodForm(emailOnlySchema, { defaultValues: { email: '' } });
 
   // GoTrue answers the same whether or not the address exists (no
-  // enumeration), so the confirmation is shown either way.
+  // enumeration), so success says "if an account exists". A failure (no
+  // network, rate limit) is a real failure: say so and stay on the form.
   const onSubmit = form.handleSubmit(async ({ email }) => {
-    await requestPasswordReset(email).catch(() => undefined);
-    setSentTo(email.trim());
+    try {
+      await requestPasswordReset(email);
+      setSentTo(email.trim());
+    } catch (err) {
+      form.setError('email', { message: authErrorMessage(err, 'We could not send the email. Try again.') });
+    }
   });
 
   return (

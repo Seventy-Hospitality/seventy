@@ -3,7 +3,7 @@ import { Link, Redirect } from 'expo-router';
 import { Controller } from 'react-hook-form';
 import { Text, View } from 'react-native';
 import { useSession } from '../../lib/session';
-import { authErrorMessage } from '../../lib/auth-errors';
+import { authErrorCode, authErrorMessage } from '../../lib/auth-errors';
 import { signInSchema, emailOnlySchema, useZodForm } from '../../lib/forms';
 import { AppScreen } from '../../components/AppScreen';
 import { PrimaryButton } from '../../components/PrimaryButton';
@@ -17,9 +17,18 @@ import { authStyles as styles } from './auth-styles';
 type Mode = 'password' | 'email';
 
 export function SignInScreen() {
-  const { status, configured, signInWithPassword, sendEmailSignIn, verifyEmailCode } = useSession();
+  const {
+    status,
+    configured,
+    signInWithPassword,
+    sendEmailSignIn,
+    verifyEmailCode,
+    resendSignupConfirmation,
+  } = useSession();
   const [mode, setMode] = useState<Mode>('password');
   const [emailSentTo, setEmailSentTo] = useState<string | null>(null);
+  /** A password sign-in GoTrue refused because the address is not confirmed yet. */
+  const [unconfirmed, setUnconfirmed] = useState<string | null>(null);
 
   const passwordForm = useZodForm(signInSchema, { defaultValues: { email: '', password: '' } });
   const emailForm = useZodForm(emailOnlySchema, { defaultValues: { email: '' } });
@@ -33,6 +42,10 @@ export function SignInScreen() {
     try {
       await signInWithPassword(values);
     } catch (err) {
+      if (authErrorCode(err) === 'email_not_confirmed') {
+        setUnconfirmed(values.email.trim());
+        return;
+      }
       passwordForm.setError('password', { message: authErrorMessage(err, 'Unable to sign in right now.') });
     }
   });
@@ -67,6 +80,7 @@ export function SignInScreen() {
           onChange={(next) => {
             setMode(next);
             setEmailSentTo(null);
+            setUnconfirmed(null);
           }}
           options={[
             { value: 'password', label: 'Password' },
@@ -74,7 +88,18 @@ export function SignInScreen() {
           ]}
         />
 
-        {mode === 'password' ? (
+        {mode === 'password' && unconfirmed ? (
+          <View style={styles.form}>
+            <EmailCodeForm
+              email={unconfirmed}
+              intro="Confirm your email first. Tap the link we sent on this phone, or enter the code sent to"
+              submitLabel="Confirm and sign in"
+              onSubmitCode={(code) => verifyEmailCode(unconfirmed, code)}
+              onResend={() => resendSignupConfirmation(unconfirmed)}
+            />
+            <PrimaryButton label="Back" variant="ghost" onPress={() => setUnconfirmed(null)} />
+          </View>
+        ) : mode === 'password' ? (
           <View style={styles.form}>
             <Controller
               control={passwordForm.control}

@@ -45,3 +45,13 @@ describe('chunkedSecureStorage', () => {
     expect(await SecureStore.getItemAsync(`${KEY}.chunks`)).toBeNull();
   });
 });
+
+describe('per-key serialisation', () => {
+  it('never lets a read see a half-written value', async () => {
+    const long = 'z'.repeat(CHUNK_SIZE * 3);
+    const write = chunkedSecureStorage.setItem(KEY, long);
+    const read = chunkedSecureStorage.getItem(KEY);
+    await write;
+    expect(await read).toBe(long);
+  });
+});

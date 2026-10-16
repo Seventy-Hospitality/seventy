@@ -5,10 +5,16 @@
 import { isAuthApiError, isAuthRetryableFetchError } from '@supabase/supabase-js';
 import { OAuthCancelledError, OAuthNotConfiguredError } from './oauth';
 import { SupabaseNotConfiguredError } from './supabase';
-import { AuthRedirectError } from './session';
+import { AuthRedirectError, EmailAlreadyRegisteredError } from './session';
 
 export function authErrorCode(err: unknown): string | null {
-  if (isAuthApiError(err)) return err.code ?? null;
+  if (err instanceof EmailAlreadyRegisteredError) return err.code;
+  if (err && typeof err === 'object' && 'code' in err && typeof (err as { code: unknown }).code === 'string') {
+    // AuthApiError and AuthPKCECodeVerifierMissingError both carry `code`.
+    if (isAuthApiError(err) || (err as { name?: string }).name?.startsWith('Auth')) {
+      return (err as { code: string }).code;
+    }
+  }
   if (err instanceof AuthRedirectError) return err.code;
   return null;
 }
@@ -37,6 +43,7 @@ export function authErrorMessage(err: unknown, fallback = 'Something went wrong.
       return 'Choose a password different from your current one.';
     case 'signup_disabled':
       return 'New accounts are not open right now.';
+    case 'pkce_code_verifier_not_found':
     case 'bad_code_verifier':
     case 'flow_state_not_found':
     case 'flow_state_expired':

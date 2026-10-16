@@ -8,7 +8,7 @@
  *   device holds the code verifier, so a link opened elsewhere (or a forged
  *   deep link) cannot complete a sign-in here.
  * - detectSessionInUrl false: there is no browser URL; the callback screen
- *   calls exchangeCodeForSession itself.
+ *   calls exchangeCodeForSession itself, with the link's `sb_flow_id`.
  * - autoRefreshToken is driven by AppState (SessionProvider starts it in the
  *   foreground and stops it in the background), as supabase-js recommends for
  *   React Native.
@@ -28,6 +28,12 @@ export class SupabaseNotConfiguredError extends Error {
   }
 }
 
+/**
+ * Where supabase-js keeps the session (and, suffixed, the PKCE verifiers).
+ * Fixed so a sign-out that cannot reach GoTrue can still forget it locally.
+ */
+export const AUTH_STORAGE_KEY = 'club70-auth';
+
 let client: SupabaseClient | null = null;
 
 export function isSupabaseConfigured(): boolean {
@@ -44,6 +50,10 @@ export function getSupabase(): SupabaseClient {
       persistSession: true,
       autoRefreshToken: true,
       detectSessionInUrl: false,
+      storageKey: AUTH_STORAGE_KEY,
+      // Each emailed link carries `sb_flow_id`, naming the verifier its flow
+      // stored, so asking for a second email does not orphan the first link.
+      experimental: { appendPkceFlowIdToRedirects: true },
     },
   });
   return client;

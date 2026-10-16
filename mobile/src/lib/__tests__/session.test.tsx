@@ -13,7 +13,10 @@ const mockAuth = {
   startAutoRefresh: jest.fn(async () => undefined),
   stopAutoRefresh: jest.fn(async () => undefined),
   signInWithPassword: jest.fn(async () => ({ data: {}, error: null })),
-  signUp: jest.fn(async () => ({ data: { session: null }, error: null })),
+  signUp: jest.fn(async () => ({
+    data: { session: null, user: { id: 'new', identities: [{ id: 'i1' }] } },
+    error: null,
+  })),
   signInWithOtp: jest.fn(async () => ({ data: {}, error: null })),
   verifyOtp: jest.fn(async () => ({ data: {}, error: null })),
   exchangeCodeForSession: jest.fn(async () => ({ data: {}, error: null })),
@@ -22,12 +25,15 @@ const mockAuth = {
   signOut: jest.fn(async () => ({ error: null })),
 };
 jest.mock('../supabase', () => ({
+  AUTH_STORAGE_KEY: 'club70-auth',
   isSupabaseConfigured: () => true,
   getSupabase: () => ({ auth: mockAuth }),
   SupabaseNotConfiguredError: class extends Error {},
 }));
 
-import { SessionProvider, useSession, AuthRedirectError } from '../session';
+import * as SecureStore from 'expo-secure-store';
+import { SessionProvider, useSession, AuthRedirectError, EmailAlreadyRegisteredError } from '../session';
+import { chunkedSecureStorage } from '../secure-storage';
 import { queryClient } from '../query-client';
 import { AUTH_CALLBACK_URL } from '../env';
 
@@ -146,7 +152,9 @@ describe('auth actions', () => {
   it('exchanges the callback code, and surfaces an error redirect without exchanging', async () => {
     const { result } = renderHook(() => useSession(), { wrapper });
     await act(() => result.current.completeAuthRedirect({ code: 'pkce-code' }));
-    expect(mockAuth.exchangeCodeForSession).toHaveBeenCalledWith('pkce-code');
+    expect(mockAuth.exchangeCodeForSession).toHaveBeenCalledWith('pkce-code', undefined);
+    await act(() => result.current.completeAuthRedirect({ code: 'pkce-2', flowId: 'flow-2' }));
+    expect(mockAuth.exchangeCodeForSession).toHaveBeenLastCalledWith('pkce-2', { flowId: 'flow-2' });
 
     mockAuth.exchangeCodeForSession.mockClear();
     await expect(
@@ -174,5 +182,48 @@ describe('auth actions', () => {
     const { result } = renderHook(() => useSession(), { wrapper });
     await act(() => result.current.signOut());
     expect(mockAuth.signOut).toHaveBeenCalledWith({ scope: 'local' });
+  });
+});
+
+describe('review fixes', () => {
+  it('refuses a sign-up for an address that already has an account', async () => {
+    mockAuth.signUp.mockResolvedValueOnce({
+      data: { session: null, user: { id: 'fake', identities: [] } },
+      error: null,
+    } as never);
+    const { result } = renderHook(() => useSession(), { wrapper });
+    await expect(
+      result.current.signUpWithPassword({ name: 'A', email: 'a@b.com', password: 'pw-12345678' }),
+    ).rejects.toBeInstanceOf(EmailAlreadyRegisteredError);
+  });
+
+  it('signs out locally when GoTrue cannot be reached', async () => {
+    mockAuth.signOut.mockResolvedValueOnce({ error: new Error('offline') } as never);
+    await chunkedSecureStorage.setItem('club70-auth', '{"access_token":"x"}');
+    const clear = jest.spyOn(queryClient, 'clear');
+    const { result } = renderHook(() => useSession(), { wrapper });
+    emit('INITIAL_SESSION', session('u1'));
+    await waitFor(() => expect(result.current.status).toBe('authenticated'));
+    await act(() => result.current.signOut());
+    expect(result.current.status).toBe('anonymous');
+    expect(clear).toHaveBeenCalled();
+    expect(await chunkedSecureStorage.getItem('club70-auth')).toBeNull();
+    clear.mockRestore();
+  });
+
+  it('keeps password recovery mode across an app restart', async () => {
+    const first = renderHook(() => useSession(), { wrapper });
+    emit('PASSWORD_RECOVERY', session('u1'));
+    await waitFor(() => expect(SecureStore.setItemAsync).toHaveBeenCalledWith('club70.passwordRecovery', 'u1'));
+    first.unmount();
+    mockListeners.length = 0;
+
+    const second = renderHook(() => useSession(), { wrapper });
+    emit('INITIAL_SESSION', session('u1'));
+    await waitFor(() => expect(second.result.current.passwordRecovery).toBe(true));
+
+    await act(() => second.result.current.updatePassword('new-password-1'));
+    expect(second.result.current.passwordRecovery).toBe(false);
+    expect(await SecureStore.getItemAsync('club70.passwordRecovery')).toBeNull();
   });
 });

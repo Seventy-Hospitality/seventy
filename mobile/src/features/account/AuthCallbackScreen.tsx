@@ -23,26 +23,37 @@ export function AuthCallbackScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{
     code?: string;
+    sb_flow_id?: string;
     error?: string;
     error_code?: string;
     error_description?: string;
   }>();
-  const { completeAuthRedirect } = useSession();
+  const { completeAuthRedirect, status } = useSession();
+  const signedIn = status === 'authenticated';
   const [failure, setFailure] = useState<string | null>(null);
   const started = useRef(false);
 
   const code = single(params.code);
+  const flowId = single(params.sb_flow_id);
   const error = single(params.error_code) ?? single(params.error);
   const errorDescription = single(params.error_description);
 
   useEffect(() => {
     // A code is single-use: never exchange it twice (re-render, remount).
-    if (started.current) return;
+    if (started.current || status === 'loading') return;
     started.current = true;
-    completeAuthRedirect({ code, error, errorDescription })
+    completeAuthRedirect({ code, flowId, error, errorDescription })
       .then(() => router.replace('/'))
-      .catch((err: unknown) => setFailure(authErrorMessage(err, 'This link could not sign you in.')));
-  }, [code, completeAuthRedirect, error, errorDescription, router]);
+      .catch((err: unknown) => {
+        // Already signed in (the link was opened twice, or after signing in
+        // another way): nothing went wrong for this person, carry on.
+        if (signedIn) {
+          router.replace('/');
+          return;
+        }
+        setFailure(authErrorMessage(err, 'This link could not sign you in.'));
+      });
+  }, [code, completeAuthRedirect, error, errorDescription, flowId, router, signedIn, status]);
 
   return (
     <AppScreen scroll={false}>

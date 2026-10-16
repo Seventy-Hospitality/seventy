@@ -34,7 +34,25 @@ async function readCount(key: string): Promise<number> {
   return Number.isInteger(count) && count > 0 ? count : 0;
 }
 
-export const chunkedSecureStorage = {
+/**
+ * One operation per key at a time: a read interleaved with a write (an
+ * auto refresh racing a sign-out, say) would otherwise see a header from
+ * one value and chunks from another.
+ */
+const queues = new Map<string, Promise<unknown>>();
+
+function serial<T>(key: string, task: () => Promise<T>): Promise<T> {
+  const previous = queues.get(key) ?? Promise.resolve();
+  const run = previous.then(task, task);
+  const settled = run.catch(() => undefined);
+  queues.set(key, settled);
+  void settled.then(() => {
+    if (queues.get(key) === settled) queues.delete(key);
+  });
+  return run;
+}
+
+const unsafe = {
   async getItem(key: string): Promise<string | null> {
     const count = await readCount(key);
     if (count === 0) return null;
@@ -69,4 +87,10 @@ export const chunkedSecureStorage = {
       await SecureStore.deleteItemAsync(chunkKey(key, i));
     }
   },
+};
+
+export const chunkedSecureStorage = {
+  getItem: (key: string) => serial(key, () => unsafe.getItem(key)),
+  setItem: (key: string, value: string) => serial(key, () => unsafe.setItem(key, value)),
+  removeItem: (key: string) => serial(key, () => unsafe.removeItem(key)),
 };

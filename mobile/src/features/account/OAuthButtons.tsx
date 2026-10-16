@@ -37,10 +37,7 @@ export function OAuthButtons() {
     }
   };
 
-  const unavailable = [
-    !oauth.googleConfigured && 'Google',
-    !oauth.appleConfigured && 'Apple',
-  ].filter(Boolean) as string[];
+  const unavailable = [!oauth.googleConfigured && 'Google'].filter(Boolean) as string[];
 
   return (
     <View style={styles.stack}>
@@ -51,13 +48,16 @@ export function OAuthButtons() {
         loading={pending === 'google'}
         onPress={() => run('google', signInWithGoogle)}
       />
-      <ProviderButton
-        icon="logo-apple"
-        label="Continue with Apple"
-        disabled={!oauth.appleConfigured}
-        loading={pending === 'apple'}
-        onPress={() => run('apple', signInWithApple)}
-      />
+      {/* Apple sign-in is native to iOS; elsewhere it is not offered at all. */}
+      {oauth.appleConfigured ? (
+        <ProviderButton
+          icon="logo-apple"
+          label="Continue with Apple"
+          disabled={false}
+          loading={pending === 'apple'}
+          onPress={() => run('apple', signInWithApple)}
+        />
+      ) : null}
       {unavailable.length > 0 ? (
         <Text style={styles.note}>
           {unavailable.join(' and ')} sign-in {unavailable.length > 1 ? 'are' : 'is'} not configured

@@ -3,6 +3,8 @@ import {
   createRawNonce,
   getFederatedCredential,
   googleAdapter,
+  appleAdapter,
+  reversedClientIdScheme,
   OAuthNotConfiguredError,
   sha256Hex,
   type FederatedAdapter,
@@ -67,5 +69,16 @@ describe('createRawNonce', () => {
 describe('adapter degradation', () => {
   it('reports Google as not configured when no client IDs are set', () => {
     expect(googleAdapter.isConfigured()).toBe(false);
+  });
+});
+
+describe('native client wiring', () => {
+  it('reverses a Google client id into its redirect scheme', () => {
+    expect(reversedClientIdScheme('123-abc.apps.googleusercontent.com')).toBe('com.googleusercontent.apps.123-abc');
+  });
+
+  it('offers Apple only where it is native (not on the test platform unless iOS)', () => {
+    const { Platform } = require('react-native');
+    expect(appleAdapter.isConfigured()).toBe(Platform.OS === 'ios');
   });
 });

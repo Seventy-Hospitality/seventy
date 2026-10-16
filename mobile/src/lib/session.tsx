@@ -41,7 +41,10 @@ import {
   type FederatedAdapter,
 } from './oauth';
 import { queryClient } from './query-client';
-import { getSupabase, isSupabaseConfigured } from './supabase';
+import * as SecureStore from 'expo-secure-store';
+import { AUTH_STORAGE_KEY, getSupabase, isSupabaseConfigured } from './supabase';
+import { chunkedSecureStorage } from './secure-storage';
+import { clutch } from './clutch';
 
 export type SessionStatus = 'loading' | 'anonymous' | 'authenticated';
 
@@ -69,7 +72,11 @@ export interface SessionContextValue {
   oauth: OAuthConfig;
 
   signInWithPassword(input: { email: string; password: string }): Promise<void>;
-  /** `confirmationRequired`: GoTrue sent a confirmation email; no session yet. */
+  /**
+   * `confirmationRequired`: GoTrue sent a confirmation email; no session yet.
+   * Throws EmailAlreadyRegisteredError when the address already has an
+   * account (GoTrue answers a fake user with no identities, sends nothing).
+   */
   signUpWithPassword(input: SignUpInput): Promise<{ confirmationRequired: boolean }>;
   /** Email a sign-in link plus a 6-digit code (creates the account if new). */
   sendEmailSignIn(email: string): Promise<void>;
@@ -77,7 +84,13 @@ export interface SessionContextValue {
   verifyEmailCode(email: string, code: string): Promise<void>;
   resendSignupConfirmation(email: string): Promise<void>;
   /** The deep-link callback: exchange the PKCE code (or surface the error). */
-  completeAuthRedirect(params: { code?: string; error?: string; errorDescription?: string }): Promise<void>;
+  completeAuthRedirect(params: {
+    code?: string;
+    /** `sb_flow_id` from the link: which stored verifier this flow uses. */
+    flowId?: string;
+    error?: string;
+    errorDescription?: string;
+  }): Promise<void>;
   signInWithGoogle(): Promise<void>;
   signInWithApple(): Promise<void>;
   requestPasswordReset(email: string): Promise<void>;
@@ -101,8 +114,46 @@ export class AuthRedirectError extends Error {
   }
 }
 
+export class EmailAlreadyRegisteredError extends Error {
+  readonly code = 'user_already_exists';
+  constructor() {
+    super('That email already has an account.');
+    this.name = 'EmailAlreadyRegisteredError';
+  }
+}
+
 function raise(error: unknown): void {
   if (error) throw error;
+}
+
+/**
+ * Recovery mode outlives an app kill: the recovery session is persisted by
+ * supabase-js, so without this flag a restart would drop the user straight
+ * into the app with the old password still set. Keyed by user id.
+ */
+const RECOVERY_KEY = 'club70.passwordRecovery';
+
+async function rememberRecovery(userId: string | null): Promise<void> {
+  try {
+    if (userId) await SecureStore.setItemAsync(RECOVERY_KEY, userId);
+    else await SecureStore.deleteItemAsync(RECOVERY_KEY);
+  } catch {
+    // Best effort: the in-memory flag still holds for this run.
+  }
+}
+
+async function recoveryPendingFor(userId: string): Promise<boolean> {
+  try {
+    return (await SecureStore.getItemAsync(RECOVERY_KEY)) === userId;
+  } catch {
+    return false;
+  }
+}
+
+/** Forget the session on this device without asking GoTrue (it may be unreachable). */
+async function forgetLocalSession(): Promise<void> {
+  await chunkedSecureStorage.removeItem(AUTH_STORAGE_KEY);
+  await chunkedSecureStorage.removeItem(`${AUTH_STORAGE_KEY}-user`);
 }
 
 export function SessionProvider({ children }: { children: ReactNode }) {
@@ -123,8 +174,21 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         queryClient.clear();
       }
       lastUserId.current = nextUserId;
-      if (event === 'PASSWORD_RECOVERY') setPasswordRecovery(true);
-      if (event === 'SIGNED_OUT') setPasswordRecovery(false);
+      if (event === 'PASSWORD_RECOVERY') {
+        setPasswordRecovery(true);
+        void rememberRecovery(nextUserId);
+      }
+      if (event === 'SIGNED_OUT') {
+        setPasswordRecovery(false);
+        void rememberRecovery(null);
+      }
+      if (event === 'INITIAL_SESSION' && nextUserId) {
+        // Restore recovery mode across an app kill (no auth calls in here:
+        // supabase-js forbids awaiting its own API inside this callback).
+        void recoveryPendingFor(nextUserId).then((pending) => {
+          if (pending) setPasswordRecovery(true);
+        });
+      }
       setSession(next);
       setStatus(next ? 'authenticated' : 'anonymous');
     });
@@ -155,11 +219,31 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       nonce: credential.nonce,
     });
     raise(error);
-    // Apple shares the name only on the first authorization; keep it.
+    // Apple shares the name only on the first authorization: put it on the
+    // Clutch profile (which Clutch created empty) and on the auth user. The
+    // sign-in already succeeded; failing to save the name must not undo it
+    // (onboarding asks for a name whenever the profile has none).
     const name = [credential.fullName?.givenName, credential.fullName?.familyName]
       .filter(Boolean)
-      .join(' ');
-    if (name) await auth.updateUser({ data: { full_name: name } });
+      .join(' ')
+      .trim();
+    if (name) {
+      await Promise.allSettled([
+        clutch.me.updateProfile({ full_name: name }),
+        auth.updateUser({ data: { full_name: name } }),
+      ]);
+    }
+  }, []);
+
+  /** Drop to signed out locally: cache, state and the stored session. */
+  const signOutLocally = useCallback(async () => {
+    await forgetLocalSession();
+    await rememberRecovery(null);
+    queryClient.clear();
+    lastUserId.current = null;
+    setPasswordRecovery(false);
+    setSession(null);
+    setStatus('anonymous');
   }, []);
 
   const value = useMemo<SessionContextValue>(() => {
@@ -189,6 +273,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           options: { emailRedirectTo: AUTH_CALLBACK_URL, data: { full_name: name.trim() } },
         });
         raise(error);
+        // With confirmations on, GoTrue does not reveal an existing address:
+        // it answers a user with no identities and sends no email.
+        if (!data.session && data.user && (data.user.identities?.length ?? 0) === 0) {
+          throw new EmailAlreadyRegisteredError();
+        }
         return { confirmationRequired: !data.session };
       },
       async sendEmailSignIn(email) {
@@ -210,10 +299,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         });
         raise(error);
       },
-      async completeAuthRedirect({ code, error, errorDescription }) {
+      async completeAuthRedirect({ code, flowId, error, errorDescription }) {
         if (error) throw new AuthRedirectError(error, errorDescription ?? error.replace(/_/g, ' '));
         if (!code) throw new AuthRedirectError('missing_code', 'This sign-in link is incomplete.');
-        const result = await auth().exchangeCodeForSession(code);
+        const result = await auth().exchangeCodeForSession(code, flowId ? { flowId } : undefined);
         raise(result.error);
       },
       signInWithGoogle: () => signInWithFederated(googleAdapter),
@@ -236,14 +325,24 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         const { error } = await auth().updateUser({ password });
         raise(error);
         setPasswordRecovery(false);
+        await rememberRecovery(null);
       },
       async signOut() {
-        // Removes the local session even when the revoke call fails offline;
-        // SIGNED_OUT then clears the query cache.
-        await auth().signOut({ scope: 'local' });
+        // GoTrue normally removes the local session and emits SIGNED_OUT. But
+        // with an expired token and no network it first tries to refresh,
+        // fails, and returns WITHOUT removing anything; then (or on any other
+        // failure) forget the session here so signing out always works.
+        let failed = false;
+        try {
+          const { error } = await auth().signOut({ scope: 'local' });
+          failed = Boolean(error);
+        } catch {
+          failed = true;
+        }
+        if (failed) await signOutLocally();
       },
     };
-  }, [status, session, passwordRecovery, configured, signInWithFederated]);
+  }, [status, session, passwordRecovery, configured, signInWithFederated, signOutLocally]);
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }

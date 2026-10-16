@@ -19,10 +19,8 @@
 import { Platform } from 'react-native';
 import * as Crypto from 'expo-crypto';
 import {
-  APPLE_CLIENT_ID,
   GOOGLE_ANDROID_CLIENT_ID,
   GOOGLE_IOS_CLIENT_ID,
-  GOOGLE_WEB_CLIENT_ID,
 } from './env';
 
 /** Lowercase-hex SHA-256 (the form GoTrue compares the nonce claim against). */
@@ -65,16 +63,24 @@ export interface FederatedAdapter {
   authenticate(hashedNonce: string): Promise<ProviderAssertion>;
 }
 
+/**
+ * Google on a phone: the iOS or Android OAuth client of the platform (never
+ * the web client, whose redirect must be https). Google only redirects an
+ * installed app to its reversed client id scheme
+ * (`com.googleusercontent.apps.<id>:/oauthredirect`), which app.config.js
+ * registers from the same env values; the flow is authorization code + PKCE,
+ * and the code is exchanged on the device (installed-app clients have no
+ * secret). The ID token carries the nonce we sent, so GoTrue's nonce check
+ * stays on. On Android the client must have "custom URI scheme" enabled in
+ * the Google Cloud console.
+ */
 function googleClientId(): string | null {
-  return (
-    Platform.select({
-      ios: GOOGLE_IOS_CLIENT_ID,
-      android: GOOGLE_ANDROID_CLIENT_ID,
-      default: GOOGLE_WEB_CLIENT_ID,
-    }) ??
-    GOOGLE_WEB_CLIENT_ID ??
-    null
-  );
+  return Platform.select({ ios: GOOGLE_IOS_CLIENT_ID, android: GOOGLE_ANDROID_CLIENT_ID, default: null }) ?? null;
+}
+
+/** `123-abc.apps.googleusercontent.com` -> `com.googleusercontent.apps.123-abc`. */
+export function reversedClientIdScheme(clientId: string): string {
+  return clientId.split('.').reverse().join('.');
 }
 
 // Google's OpenID endpoints (static; avoids a discovery round-trip).
@@ -92,35 +98,44 @@ export const googleAdapter: FederatedAdapter = {
     if (!clientId) throw new OAuthNotConfiguredError('google');
 
     const AuthSession = await import('expo-auth-session');
-    const redirectUri = AuthSession.makeRedirectUri({ scheme: 'seventy' });
+    const redirectUri = `${reversedClientIdScheme(clientId)}:/oauthredirect`;
     const request = new AuthSession.AuthRequest({
       clientId,
       redirectUri,
-      responseType: AuthSession.ResponseType.IdToken,
+      responseType: AuthSession.ResponseType.Code,
       scopes: ['openid', 'profile', 'email'],
-      usePKCE: false,
-      // Google echoes this into the ID token's `nonce` claim verbatim.
+      usePKCE: true,
+      // Google copies this into the ID token's `nonce` claim verbatim.
       extraParams: { nonce: hashedNonce },
     });
 
     const result = await request.promptAsync(GOOGLE_DISCOVERY);
     if (result.type === 'cancel' || result.type === 'dismiss') throw new OAuthCancelledError();
-    if (result.type !== 'success') {
-      throw new Error(result.type === 'error' ? result.error?.message ?? 'Google sign-in failed' : 'Google sign-in failed');
+    if (result.type !== 'success' || !result.params.code) {
+      throw new Error(result.type === 'error' ? (result.error?.message ?? 'Google sign-in failed') : 'Google sign-in failed');
     }
-    const idToken = result.params.id_token;
-    if (!idToken) throw new Error('Google did not return an ID token');
-    return { idToken };
+    const tokens = await AuthSession.exchangeCodeAsync(
+      {
+        clientId,
+        code: result.params.code,
+        redirectUri,
+        extraParams: request.codeVerifier ? { code_verifier: request.codeVerifier } : undefined,
+      },
+      GOOGLE_DISCOVERY,
+    );
+    if (!tokens.idToken) throw new Error('Google did not return an ID token');
+    return { idToken: tokens.idToken };
   },
 };
 
 export const appleAdapter: FederatedAdapter = {
   provider: 'apple',
-  // Native Sign in with Apple needs no client ID on iOS (the bundle id is the
-  // audience); Android/other rides the services ID via the web flow.
-  isConfigured: () => Platform.OS === 'ios' || Boolean(APPLE_CLIENT_ID),
+  // Native Sign in with Apple only (iOS; the bundle id is the audience).
+  // Android would need the web flow with a services id, which the app does
+  // not implement, so Apple is hidden there.
+  isConfigured: () => Platform.OS === 'ios',
   async isAvailable() {
-    if (Platform.OS !== 'ios') return Boolean(APPLE_CLIENT_ID);
+    if (Platform.OS !== 'ios') return false;
     const AppleAuthentication = await import('expo-apple-authentication');
     return AppleAuthentication.isAvailableAsync();
   },
