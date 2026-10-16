@@ -72,6 +72,11 @@ hands the intent id to Clutch (`confirm` / `save`) and shows Clutch's answer.
 `EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY` is the Clutch platform key. Physical venue
 memberships use Stripe, never IAP (App Store 3.1.3(e)).
 
+## Legal and contact
+`src/lib/links.ts` holds the privacy and terms URLs
+(seventyhospitality.com/privacy.html, /terms.html, opened in the in-app
+browser) and the contact address (mailto:contact@seventyhospitality.com).
+
 ## Features
 - **Onboarding**: signed in -> join the club (`POST /clubs/{id}/join`, then
   re-read `/me`; membership is never inferred from the join) -> pick a tier ->
@@ -91,8 +96,10 @@ memberships use Stripe, never IAP (App Store 3.1.3(e)).
   cards, tier change / cancel / resume, sign-in methods (link/unlink through
   supabase-js), delete account with a fresh sign-in as step-up.
 
-## Waiting on Clutch (coded against the design, verify when merged)
-- P1 `feat/expo-push`: `POST/DELETE /me/devices`.
+## Waiting on Clutch
+P1 and P5 are pushed (not merged) and the client follows their route code;
+P2, P3 and P4 are not pushed yet and the app is coded against the design.
+- P1 `feat/expo-push`: `POST/DELETE /me/devices` (pushed).
 - P2 `feat/native-payments`: PaymentSheet bundle (customer + ephemeral key +
   account), subscribe / confirm / change / cancel / resume, setup-intent +
   save by `setup_intent_id`, booking payment intent with customer + key.
@@ -103,8 +110,15 @@ memberships use Stripe, never IAP (App Store 3.1.3(e)).
 - P4 `feat/member-booking-parity`: `POST /bookings/quote`, invite respond,
   player removal, member player search, dearer reschedule, payment clearing vs
   failed split, members-only and tier gating.
-- P5 `feat/account-deletion-and-checkin`: `DELETE /me/account` with step-up,
-  `GET /me/checkin-token`.
+- P5 `feat/account-deletion-and-checkin` (pushed): `GET /me/account/deletion`,
+  `DELETE /me/account` with step-up, `GET /me/checkin-token`.
+- Also needed from P4: a route that records a player's share payment
+  (today only the booker's payment intent and confirm exist), so a player's
+  share shows as paid without waiting for the Stripe webhook (and at all in
+  simulated mode).
+- Clutch has no web page for group invite links, so shared links are the
+  app's `seventy://groups/join?token=` deep link and do not open without the
+  app installed.
 
 Until P3 lands, `/me` memberships `[]` and `/me/membership` `null` are treated
 as "not known", never as proof of absence.
