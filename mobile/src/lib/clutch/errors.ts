@@ -9,7 +9,7 @@
  * ErrorCode stays honest when Clutch adds a code.
  *
  * TO BE REPLACED: once Clutch's feat/api-contract publishes ErrorCode in
- * docs/api/openapi.json, `scripts/gen-clutch-contract.mjs` emits this list.
+ * docs/api/openapi.json, the contract generator emits this list.
  * Until then it is copied from origin/main packages/db/src/errors.ts, plus the
  * codes api.ts emits outside CODES and the codes the in-flight P-branches
  * specify (marked below).

@@ -4,9 +4,9 @@
  *
  * HAND-WRITTEN, TO BE REPLACED BY THE GENERATOR. Clutch's feat/api-contract
  * (P3) adds explicit response projections + zod response schemas to every
- * route and emits docs/api/openapi.json. Once that is on origin/main,
- * `node scripts/gen-clutch-contract.mjs <path-to-openapi.json>` regenerates
- * this file and the hand-written version goes away. Until then every schema
+ * route and emits docs/api/openapi.json. Once that is on origin/main, a
+ * generator script (to be added then, OpenAPI -> zod 4) writes this file and
+ * the hand-written version goes away. Until then every schema
  * below was read off the route handlers and the server actions they wrap on
  * we-are-clutch/club-management origin/main (2026-10-16), or, where marked
  * PENDING, off the design for an in-flight Clutch branch:
