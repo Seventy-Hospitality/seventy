@@ -17,6 +17,7 @@
  * 'incomplete') is resumed for its tier.
  */
 import { useState, type ReactNode } from 'react';
+import { openLegalPage } from '../../lib/links';
 import { Redirect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
@@ -291,10 +292,25 @@ function CheckoutView({ tier }: { tier: CheckoutTier }) {
           <Checkbox
             checked={agreed}
             onChange={setAgreed}
-            accessibilityLabel="I agree to the Terms and Conditions"
+            accessibilityLabel="I agree to the Terms of Service and Privacy Policy"
             label={
               <Text style={styles.termsLabel}>
-                I agree to the <Text style={styles.termsLink}>Terms and Conditions</Text>
+                I agree to the{' '}
+                <Text
+                  style={styles.termsLink}
+                  accessibilityRole="link"
+                  onPress={() => void openLegalPage('terms')}
+                >
+                  Terms of Service
+                </Text>{' '}
+                and{' '}
+                <Text
+                  style={styles.termsLink}
+                  accessibilityRole="link"
+                  onPress={() => void openLegalPage('privacy')}
+                >
+                  Privacy Policy
+                </Text>
               </Text>
             }
           />

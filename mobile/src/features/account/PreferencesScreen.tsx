@@ -8,6 +8,7 @@
  * compose. A failed save rolls back only that switch.
  */
 import { StyleSheet, Switch, Text, View } from 'react-native';
+import { openContactEmail, openLegalPage } from '../../lib/links';
 import { useRouter } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import Constants from 'expo-constants';
@@ -117,19 +118,19 @@ export function PreferencesScreen() {
       )}
 
       <SettingsGroup label="Data & privacy">
-        <SettingsRow label="Privacy policy" comingSoon />
+        <SettingsRow label="Privacy policy" onPress={() => void openLegalPage('privacy')} />
         <SettingsRow icon="key-outline" label="Sign-in methods" onPress={() => router.push('/account/sign-in-methods')} />
         <SettingsRow label="Delete my account" accent onPress={() => router.push('/account/delete')} />
       </SettingsGroup>
 
       <SettingsGroup label="Help & support">
-        <SettingsRow label="Contact us" comingSoon />
+        <SettingsRow label="Contact us" onPress={() => void openContactEmail()} />
         <SettingsRow label="Rate the app" comingSoon />
       </SettingsGroup>
 
       <SettingsGroup label="About">
         <SettingsRow label="Version" value={APP_VERSION} />
-        <SettingsRow label="Terms of Service" comingSoon />
+        <SettingsRow label="Terms of Service" onPress={() => void openLegalPage('terms')} />
       </SettingsGroup>
     </AccountFrame>
   );

@@ -57,3 +57,9 @@ jest.mock('expo-clipboard', () => ({
 // Icon + image modules render as simple host components in tests.
 jest.mock('@expo/vector-icons', () => ({ Ionicons: 'Ionicons' }));
 jest.mock('expo-image', () => ({ Image: 'Image' }));
+
+// expo-web-browser -> spyable no-op (legal pages open in the in-app browser).
+jest.mock('expo-web-browser', () => ({
+  openBrowserAsync: jest.fn(async () => ({ type: 'opened' })),
+  maybeCompleteAuthSession: jest.fn(),
+}));

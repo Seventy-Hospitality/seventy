@@ -27,7 +27,7 @@ import type {
 } from '../../lib/clutch';
 
 /**
- * Recorded by Clutch when the member accepts the Terms and Conditions at
+ * Recorded by Clutch when the member accepts the Terms of Service at
  * checkout. Bump when the terms text changes.
  */
 export const TERMS_VERSION = '2026-08';

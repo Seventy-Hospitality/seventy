@@ -1,5 +1,7 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react-native';
 import * as Notifications from 'expo-notifications';
+import * as WebBrowser from 'expo-web-browser';
+import { Linking } from 'react-native';
 import type { MockClutch } from '../../../lib/clutch/testing';
 import { clutchError } from '../../../lib/clutch/testing';
 import type { NotificationPreferences } from '../../../lib/clutch';
@@ -66,5 +68,19 @@ describe('PreferencesScreen', () => {
 
     await waitFor(() => expect(Notifications.requestPermissionsAsync).toHaveBeenCalled());
     await waitFor(() => expect(mockClutch.me.putPreferences).toHaveBeenCalled());
+  });
+
+  it('opens the legal pages in the in-app browser and contact in the mail app', async () => {
+    const openURL = jest.spyOn(Linking, 'openURL').mockResolvedValue(true);
+    renderWithProviders(<PreferencesScreen />);
+
+    fireEvent.press(await screen.findByText('Privacy policy'));
+    fireEvent.press(screen.getByText('Terms of Service'));
+    fireEvent.press(screen.getByText('Contact us'));
+
+    expect(WebBrowser.openBrowserAsync).toHaveBeenCalledWith('https://seventyhospitality.com/privacy.html');
+    expect(WebBrowser.openBrowserAsync).toHaveBeenCalledWith('https://seventyhospitality.com/terms.html');
+    expect(openURL).toHaveBeenCalledWith('mailto:contact@seventyhospitality.com');
+    openURL.mockRestore();
   });
 });

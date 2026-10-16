@@ -44,7 +44,7 @@ function bundle(over: Partial<SubscribeResult> = {}): SubscribeResult {
 }
 
 async function confirmMembership() {
-  fireEvent.press(await screen.findByLabelText('I agree to the Terms and Conditions'));
+  fireEvent.press(await screen.findByLabelText('I agree to the Terms of Service and Privacy Policy'));
   fireEvent.press(screen.getByLabelText('Confirm membership'));
 }
 
