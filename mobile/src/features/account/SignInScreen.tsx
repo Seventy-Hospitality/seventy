@@ -1,33 +1,31 @@
 import { useState } from 'react';
 import { Link, Redirect } from 'expo-router';
 import { Controller } from 'react-hook-form';
-import { StyleSheet, Text, View } from 'react-native';
+import { Text, View } from 'react-native';
 import { useSession } from '../../lib/session';
-import { ApiError } from '../../lib/api';
+import { authErrorMessage } from '../../lib/auth-errors';
 import { signInSchema, emailOnlySchema, useZodForm } from '../../lib/forms';
 import { AppScreen } from '../../components/AppScreen';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { SectionCard } from '../../components/SectionCard';
 import { FormField, Input, PasswordInput } from '../../components/FormField';
 import { SegmentedControl } from '../../components/SegmentedControl';
-import { useToast } from '../../components/toast-context';
 import { OAuthButtons } from './OAuthButtons';
-import { colors, spacing, typography } from '../../theme/tokens';
+import { EmailCodeForm } from './EmailCodeForm';
+import { authStyles as styles } from './auth-styles';
 
-type Mode = 'password' | 'magic';
+type Mode = 'password' | 'email';
 
 export function SignInScreen() {
-  const { status, signInWithPassword, requestMagicLink } = useSession();
-  const { toast } = useToast();
+  const { status, configured, signInWithPassword, sendEmailSignIn, verifyEmailCode } = useSession();
   const [mode, setMode] = useState<Mode>('password');
-  const [magicSent, setMagicSent] = useState<string | null>(null);
+  const [emailSentTo, setEmailSentTo] = useState<string | null>(null);
 
   const passwordForm = useZodForm(signInSchema, { defaultValues: { email: '', password: '' } });
-  const magicForm = useZodForm(emailOnlySchema, { defaultValues: { email: '' } });
+  const emailForm = useZodForm(emailOnlySchema, { defaultValues: { email: '' } });
 
   if (status === 'authenticated') {
-    // Route through '/' so the M1 onboarding gate can send a not-yet-onboarded
-    // member into their step (and a fully onboarded one on to the tabs).
+    // '/' funnels through the onboarding gate (join club, tier, then tabs).
     return <Redirect href="/" />;
   }
 
@@ -35,20 +33,16 @@ export function SignInScreen() {
     try {
       await signInWithPassword(values);
     } catch (err) {
-      const message =
-        err instanceof ApiError && err.status === 401
-          ? 'Incorrect email or password.'
-          : 'Unable to sign in right now.';
-      passwordForm.setError('password', { message });
+      passwordForm.setError('password', { message: authErrorMessage(err, 'Unable to sign in right now.') });
     }
   });
 
-  const onMagic = magicForm.handleSubmit(async (values) => {
+  const onEmail = emailForm.handleSubmit(async ({ email }) => {
     try {
-      await requestMagicLink(values.email);
-      setMagicSent(values.email);
-    } catch {
-      toast({ variant: 'error', message: 'Unable to send the sign-in email right now.' });
+      await sendEmailSignIn(email);
+      setEmailSentTo(email.trim());
+    } catch (err) {
+      emailForm.setError('email', { message: authErrorMessage(err, 'Unable to send the email right now.') });
     }
   });
 
@@ -57,17 +51,26 @@ export function SignInScreen() {
       <View style={styles.hero}>
         <Text style={styles.kicker}>Club70</Text>
         <Text style={styles.title}>Welcome back</Text>
-        <Text style={styles.subtitle}>Sign in to reservations, clubs, and your membership.</Text>
+        <Text style={styles.subtitle}>Sign in to book courts, see your groups, and manage your membership.</Text>
       </View>
+
+      {!configured ? (
+        <SectionCard>
+          <Text style={styles.subtitle}>Sign-in is not configured for this build.</Text>
+        </SectionCard>
+      ) : null}
 
       <SectionCard>
         <SegmentedControl
           label="Sign-in method"
           value={mode}
-          onChange={(next) => setMode(next)}
+          onChange={(next) => {
+            setMode(next);
+            setEmailSentTo(null);
+          }}
           options={[
             { value: 'password', label: 'Password' },
-            { value: 'magic', label: 'Magic link' },
+            { value: 'email', label: 'Email me a code' },
           ]}
         />
 
@@ -116,16 +119,24 @@ export function SignInScreen() {
               Forgot password?
             </Link>
           </View>
+        ) : emailSentTo ? (
+          <EmailCodeForm
+            email={emailSentTo}
+            intro="Tap the link in the email on this phone, or enter the code we sent to"
+            submitLabel="Sign In"
+            onSubmitCode={(code) => verifyEmailCode(emailSentTo, code)}
+            onResend={() => sendEmailSignIn(emailSentTo)}
+          />
         ) : (
           <View style={styles.form}>
             <Controller
-              control={magicForm.control}
+              control={emailForm.control}
               name="email"
               render={({ field: { onBlur, onChange, value }, fieldState }) => (
                 <FormField
                   label="Email"
                   error={fieldState.error?.message}
-                  hint="We email a one-tap link that opens this app."
+                  hint="We email a sign-in link and a 6-digit code."
                 >
                   <Input
                     autoCapitalize="none"
@@ -141,11 +152,10 @@ export function SignInScreen() {
               )}
             />
             <PrimaryButton
-              label="Send Magic Link"
-              loading={magicForm.formState.isSubmitting}
-              onPress={() => void onMagic()}
+              label="Email Me"
+              loading={emailForm.formState.isSubmitting}
+              onPress={() => void onEmail()}
             />
-            {magicSent ? <Text style={styles.success}>Magic link sent to {magicSent}.</Text> : null}
           </View>
         )}
       </SectionCard>
@@ -167,63 +177,3 @@ export function SignInScreen() {
     </AppScreen>
   );
 }
-
-const styles = StyleSheet.create({
-  content: {
-    gap: spacing.lg,
-  },
-  hero: {
-    gap: spacing.xs,
-    marginTop: spacing.lg,
-  },
-  kicker: {
-    color: colors.accent,
-    ...typography.label,
-    textTransform: 'uppercase',
-  },
-  title: {
-    ...typography.display,
-    color: colors.text,
-  },
-  subtitle: {
-    ...typography.body,
-    color: colors.textMuted,
-  },
-  form: {
-    gap: spacing.md,
-  },
-  link: {
-    color: colors.accent,
-    ...typography.bodyStrong,
-    textAlign: 'center',
-  },
-  success: {
-    color: colors.accent,
-    ...typography.caption,
-    textAlign: 'center',
-  },
-  dividerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
-  divider: {
-    flex: 1,
-    height: 1,
-    backgroundColor: colors.border,
-  },
-  dividerLabel: {
-    color: colors.textSubtle,
-    ...typography.caption,
-  },
-  footer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: spacing.xs,
-  },
-  footerText: {
-    color: colors.textMuted,
-    ...typography.body,
-  },
-});

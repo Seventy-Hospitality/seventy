@@ -1,25 +1,31 @@
 import { useState } from 'react';
 import { Link } from 'expo-router';
 import { Controller } from 'react-hook-form';
-import { StyleSheet, Text, View } from 'react-native';
+import { Text, View } from 'react-native';
 import { useSession } from '../../lib/session';
 import { emailOnlySchema, useZodForm } from '../../lib/forms';
 import { AppScreen } from '../../components/AppScreen';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { SectionCard } from '../../components/SectionCard';
 import { FormField, Input } from '../../components/FormField';
-import { colors, spacing, typography } from '../../theme/tokens';
+import { EmailCodeForm } from './EmailCodeForm';
+import { authStyles as styles } from './auth-styles';
 
+/**
+ * Password reset. GoTrue emails a link (PKCE, back to this app) and a code;
+ * either signs the user in in recovery mode, and the root layout then routes
+ * to /auth/set-password before anything else.
+ */
 export function ForgotPasswordScreen() {
-  const { forgotPassword } = useSession();
-  const [sent, setSent] = useState(false);
+  const { requestPasswordReset, verifyRecoveryCode } = useSession();
+  const [sentTo, setSentTo] = useState<string | null>(null);
   const form = useZodForm(emailOnlySchema, { defaultValues: { email: '' } });
 
-  // The backend always answers success (no email enumeration), so we show the
-  // same confirmation whether or not the address exists.
-  const onSubmit = form.handleSubmit(async (values) => {
-    await forgotPassword(values.email).catch(() => undefined);
-    setSent(true);
+  // GoTrue answers the same whether or not the address exists (no
+  // enumeration), so the confirmation is shown either way.
+  const onSubmit = form.handleSubmit(async ({ email }) => {
+    await requestPasswordReset(email).catch(() => undefined);
+    setSentTo(email.trim());
   });
 
   return (
@@ -27,17 +33,17 @@ export function ForgotPasswordScreen() {
       <View style={styles.hero}>
         <Text style={styles.kicker}>Club70</Text>
         <Text style={styles.title}>Reset your password</Text>
-        <Text style={styles.subtitle}>
-          Enter your email and we will send a link to set a new password.
-        </Text>
+        <Text style={styles.subtitle}>We will email you a link and a code to set a new password.</Text>
       </View>
 
       <SectionCard>
-        {sent ? (
-          <Text style={styles.success}>
-            If an account exists for that email, a reset link is on its way. Follow it to set a new
-            password.
-          </Text>
+        {sentTo ? (
+          <EmailCodeForm
+            email={sentTo}
+            intro="If an account exists, the email is on its way. Tap its link on this phone, or enter the code sent to"
+            onSubmitCode={(code) => verifyRecoveryCode(sentTo, code)}
+            onResend={() => requestPasswordReset(sentTo)}
+          />
         ) : (
           <View style={styles.form}>
             <Controller
@@ -59,7 +65,7 @@ export function ForgotPasswordScreen() {
               )}
             />
             <PrimaryButton
-              label="Send Reset Link"
+              label="Send Reset Email"
               loading={form.formState.isSubmitting}
               onPress={() => void onSubmit()}
             />
@@ -73,38 +79,3 @@ export function ForgotPasswordScreen() {
     </AppScreen>
   );
 }
-
-const styles = StyleSheet.create({
-  content: {
-    gap: spacing.lg,
-  },
-  hero: {
-    gap: spacing.xs,
-    marginTop: spacing.lg,
-  },
-  kicker: {
-    color: colors.accent,
-    ...typography.label,
-    textTransform: 'uppercase',
-  },
-  title: {
-    ...typography.display,
-    color: colors.text,
-  },
-  subtitle: {
-    ...typography.body,
-    color: colors.textMuted,
-  },
-  form: {
-    gap: spacing.md,
-  },
-  success: {
-    ...typography.body,
-    color: colors.text,
-  },
-  link: {
-    color: colors.accent,
-    ...typography.bodyStrong,
-    textAlign: 'center',
-  },
-});

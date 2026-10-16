@@ -1,92 +1,66 @@
-import { useEffect, useState } from 'react';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { Link, useLocalSearchParams, useRouter } from 'expo-router';
+import { ActivityIndicator, Text, View } from 'react-native';
 import { useSession } from '../../lib/session';
+import { authErrorMessage } from '../../lib/auth-errors';
 import { AppScreen } from '../../components/AppScreen';
-import { colors, spacing, typography } from '../../theme/tokens';
+import { colors } from '../../theme/tokens';
+import { authStyles as styles } from './auth-styles';
 
-function getSingleParam(value: string | string[] | undefined) {
+function single(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
 /**
- * Magic-link deep-link landing. The backend redirects here with the full
- * bearer pair as query params (token + refreshToken + expiresAt) plus the
- * `state` this device minted for the request, or an error code. completeMagicLink
- * verifies the state before trusting the tokens, then establishes the session.
+ * seventy://auth/callback: where every GoTrue email link lands (magic link,
+ * signup confirmation, password reset). The link carries a PKCE `code` that
+ * only completes with the verifier this device stored when it asked, so a
+ * link opened on another phone, or a forged deep link, cannot sign anyone in
+ * here; the user is pointed at the 6-digit code instead. A recovery link
+ * signs in in recovery mode, and the root layout routes to set-password.
  */
 export function AuthCallbackScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{
-    token?: string;
-    refreshToken?: string;
-    expiresAt?: string;
-    state?: string;
+    code?: string;
     error?: string;
+    error_code?: string;
+    error_description?: string;
   }>();
-  const { completeMagicLink } = useSession();
-  const [message, setMessage] = useState('Completing sign in...');
+  const { completeAuthRedirect } = useSession();
+  const [failure, setFailure] = useState<string | null>(null);
+  const started = useRef(false);
 
-  const token = getSingleParam(params.token);
-  const refreshToken = getSingleParam(params.refreshToken);
-  const expiresAt = getSingleParam(params.expiresAt);
-  const state = getSingleParam(params.state);
-  const error = getSingleParam(params.error);
+  const code = single(params.code);
+  const error = single(params.error_code) ?? single(params.error);
+  const errorDescription = single(params.error_description);
 
   useEffect(() => {
-    let mounted = true;
-
-    (async () => {
-      if (error) {
-        if (mounted) setMessage(`Sign-in failed: ${error.replace(/_/g, ' ')}`);
-        return;
-      }
-      if (!token || !refreshToken) {
-        if (mounted) setMessage('This sign-in link is missing its session tokens.');
-        return;
-      }
-
-      try {
-        await completeMagicLink({
-          accessToken: token,
-          refreshToken,
-          accessTokenExpiresAt: expiresAt ?? '',
-          state,
-        });
-        // '/' funnels through the M1 onboarding gate (tabs vs. resume step).
-        router.replace('/');
-      } catch {
-        if (mounted) {
-          setMessage('This sign-in link is invalid or was not requested on this device.');
-        }
-      }
-    })();
-
-    return () => {
-      mounted = false;
-    };
-  }, [completeMagicLink, error, expiresAt, refreshToken, router, state, token]);
+    // A code is single-use: never exchange it twice (re-render, remount).
+    if (started.current) return;
+    started.current = true;
+    completeAuthRedirect({ code, error, errorDescription })
+      .then(() => router.replace('/'))
+      .catch((err: unknown) => setFailure(authErrorMessage(err, 'This link could not sign you in.')));
+  }, [code, completeAuthRedirect, error, errorDescription, router]);
 
   return (
     <AppScreen scroll={false}>
       <View style={styles.center}>
-        <ActivityIndicator color={colors.accent} />
-        <Text style={styles.message}>{message}</Text>
+        {failure ? (
+          <>
+            <Text style={styles.message}>{failure}</Text>
+            <Link href="/auth/sign-in" style={styles.link}>
+              Back to sign in
+            </Link>
+          </>
+        ) : (
+          <>
+            <ActivityIndicator color={colors.accent} />
+            <Text style={styles.message}>Signing you in...</Text>
+          </>
+        )}
       </View>
     </AppScreen>
   );
 }
-
-const styles = StyleSheet.create({
-  center: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.md,
-  },
-  message: {
-    ...typography.body,
-    color: colors.textMuted,
-    textAlign: 'center',
-  },
-});

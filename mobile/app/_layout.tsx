@@ -11,6 +11,8 @@ import { ToastProvider } from '../src/components/Toast';
 import { queryClient } from '../src/lib/query-client';
 import { SessionProvider } from '../src/lib/session';
 import { StripeAppProvider } from '../src/lib/stripe';
+import { ClubCheck } from '../src/features/app/ClubCheck';
+import { RecoveryRedirect } from '../src/features/app/RecoveryRedirect';
 import { colors, fontAssets, fonts } from '../src/theme/tokens';
 
 // Baseline family for any Text without an explicit fontFamily, so stray copy
@@ -46,7 +48,10 @@ export default function RootLayout() {
             <SessionProvider>
               <ToastProvider>
                 <StatusBar style="light" backgroundColor={colors.bg} />
-                <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }} />
+                <ClubCheck>
+                  <RecoveryRedirect />
+                  <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }} />
+                </ClubCheck>
               </ToastProvider>
             </SessionProvider>
           </StripeAppProvider>

@@ -1,8 +1,9 @@
+import { useState } from 'react';
 import { Link, Redirect, useRouter } from 'expo-router';
 import { Controller } from 'react-hook-form';
-import { StyleSheet, Text, View } from 'react-native';
+import { Text, View } from 'react-native';
 import { useSession } from '../../lib/session';
-import { ApiError } from '../../lib/api';
+import { authErrorCode, authErrorMessage } from '../../lib/auth-errors';
 import { signUpSchema, useZodForm } from '../../lib/forms';
 import { AppScreen } from '../../components/AppScreen';
 import { PrimaryButton } from '../../components/PrimaryButton';
@@ -10,38 +11,39 @@ import { SectionCard } from '../../components/SectionCard';
 import { FormField, Input, PasswordInput } from '../../components/FormField';
 import { useToast } from '../../components/toast-context';
 import { OAuthButtons } from './OAuthButtons';
-import { colors, spacing, typography } from '../../theme/tokens';
+import { EmailCodeForm } from './EmailCodeForm';
+import { authStyles as styles } from './auth-styles';
 
+/**
+ * Create a Club70 login (a Supabase account). Joining the club and choosing a
+ * tier happen next, in onboarding. With email confirmation on, GoTrue sends a
+ * link plus a code and issues no session until one is used.
+ */
 export function SignUpScreen() {
   const router = useRouter();
-  const { status, signUpWithPassword } = useSession();
+  const { status, signUpWithPassword, verifyEmailCode, resendSignupConfirmation } = useSession();
   const { toast } = useToast();
+  const [confirmEmail, setConfirmEmail] = useState<string | null>(null);
 
-  const form = useZodForm(signUpSchema, {
-    defaultValues: { name: '', email: '', password: '', phone: '' },
-  });
+  const form = useZodForm(signUpSchema, { defaultValues: { name: '', email: '', password: '' } });
 
-  if (status === 'authenticated') {
-    // Route through '/' so the M1 onboarding gate takes a brand-new signup
-    // into plan selection rather than the (empty) tabs.
-    return <Redirect href="/" />;
-  }
+  if (status === 'authenticated') return <Redirect href="/" />;
 
   const onSubmit = form.handleSubmit(async (values) => {
     try {
-      await signUpWithPassword({
-        name: values.name,
-        email: values.email,
-        password: values.password,
-        phone: values.phone ? values.phone : undefined,
-      });
-      // The auth guard redirects; onboarding gating is the M1 package's job.
+      const { confirmationRequired } = await signUpWithPassword(values);
+      if (confirmationRequired) setConfirmEmail(values.email.trim());
     } catch (err) {
-      if (err instanceof ApiError && err.code === 'EMAIL_IN_USE') {
-        form.setError('email', { message: 'That email already has an account.' });
+      const code = authErrorCode(err);
+      if (code === 'user_already_exists' || code === 'email_exists') {
+        form.setError('email', { message: authErrorMessage(err) });
         return;
       }
-      toast({ variant: 'error', message: 'Unable to create your account right now.' });
+      if (code === 'weak_password') {
+        form.setError('password', { message: authErrorMessage(err) });
+        return;
+      }
+      toast({ variant: 'error', message: authErrorMessage(err, 'Unable to create your account right now.') });
     }
   });
 
@@ -49,98 +51,92 @@ export function SignUpScreen() {
     <AppScreen contentStyle={styles.content}>
       <View style={styles.hero}>
         <Text style={styles.kicker}>Club70</Text>
-        <Text style={styles.title}>Create your account</Text>
-        <Text style={styles.subtitle}>A few details and you are in.</Text>
+        <Text style={styles.title}>{confirmEmail ? 'Confirm your email' : 'Create your account'}</Text>
+        <Text style={styles.subtitle}>
+          {confirmEmail ? 'One more step and you are in.' : 'A few details and you are in.'}
+        </Text>
       </View>
 
       <SectionCard>
-        <View style={styles.form}>
-          <Controller
-            control={form.control}
-            name="name"
-            render={({ field: { onBlur, onChange, value }, fieldState }) => (
-              <FormField label="Full name" error={fieldState.error?.message}>
-                <Input
-                  autoComplete="name"
-                  placeholder="Alex Morgan"
-                  hasError={Boolean(fieldState.error)}
-                  onBlur={onBlur}
-                  onChangeText={onChange}
-                  value={value}
-                />
-              </FormField>
-            )}
+        {confirmEmail ? (
+          <EmailCodeForm
+            email={confirmEmail}
+            intro="Tap the link in the email on this phone, or enter the code we sent to"
+            submitLabel="Confirm"
+            onSubmitCode={(code) => verifyEmailCode(confirmEmail, code)}
+            onResend={() => resendSignupConfirmation(confirmEmail)}
           />
-          <Controller
-            control={form.control}
-            name="email"
-            render={({ field: { onBlur, onChange, value }, fieldState }) => (
-              <FormField label="Email" error={fieldState.error?.message}>
-                <Input
-                  autoCapitalize="none"
-                  autoComplete="email"
-                  keyboardType="email-address"
-                  placeholder="you@club70.com"
-                  hasError={Boolean(fieldState.error)}
-                  onBlur={onBlur}
-                  onChangeText={onChange}
-                  value={value}
-                />
-              </FormField>
-            )}
-          />
-          <Controller
-            control={form.control}
-            name="phone"
-            render={({ field: { onBlur, onChange, value }, fieldState }) => (
-              <FormField label="Phone (optional)" error={fieldState.error?.message}>
-                <Input
-                  autoComplete="tel"
-                  keyboardType="phone-pad"
-                  placeholder="+1 555 123 4567"
-                  hasError={Boolean(fieldState.error)}
-                  onBlur={onBlur}
-                  onChangeText={onChange}
-                  value={value ?? ''}
-                />
-              </FormField>
-            )}
-          />
-          <Controller
-            control={form.control}
-            name="password"
-            render={({ field: { onBlur, onChange, value }, fieldState }) => (
-              <FormField
-                label="Password"
-                error={fieldState.error?.message}
-                hint="At least 8 characters."
-              >
-                <PasswordInput
-                  autoComplete="new-password"
-                  placeholder="Create a password"
-                  hasError={Boolean(fieldState.error)}
-                  onBlur={onBlur}
-                  onChangeText={onChange}
-                  value={value}
-                />
-              </FormField>
-            )}
-          />
-          <PrimaryButton
-            label="Create Account"
-            loading={form.formState.isSubmitting}
-            onPress={() => void onSubmit()}
-          />
-        </View>
+        ) : (
+          <View style={styles.form}>
+            <Controller
+              control={form.control}
+              name="name"
+              render={({ field: { onBlur, onChange, value }, fieldState }) => (
+                <FormField label="Full name" error={fieldState.error?.message}>
+                  <Input
+                    autoComplete="name"
+                    placeholder="Alex Morgan"
+                    hasError={Boolean(fieldState.error)}
+                    onBlur={onBlur}
+                    onChangeText={onChange}
+                    value={value}
+                  />
+                </FormField>
+              )}
+            />
+            <Controller
+              control={form.control}
+              name="email"
+              render={({ field: { onBlur, onChange, value }, fieldState }) => (
+                <FormField label="Email" error={fieldState.error?.message}>
+                  <Input
+                    autoCapitalize="none"
+                    autoComplete="email"
+                    keyboardType="email-address"
+                    placeholder="you@club70.com"
+                    hasError={Boolean(fieldState.error)}
+                    onBlur={onBlur}
+                    onChangeText={onChange}
+                    value={value}
+                  />
+                </FormField>
+              )}
+            />
+            <Controller
+              control={form.control}
+              name="password"
+              render={({ field: { onBlur, onChange, value }, fieldState }) => (
+                <FormField label="Password" error={fieldState.error?.message} hint="At least 8 characters.">
+                  <PasswordInput
+                    autoComplete="new-password"
+                    placeholder="Create a password"
+                    hasError={Boolean(fieldState.error)}
+                    onBlur={onBlur}
+                    onChangeText={onChange}
+                    value={value}
+                  />
+                </FormField>
+              )}
+            />
+            <PrimaryButton
+              label="Create Account"
+              loading={form.formState.isSubmitting}
+              onPress={() => void onSubmit()}
+            />
+          </View>
+        )}
       </SectionCard>
 
-      <View style={styles.dividerRow}>
-        <View style={styles.divider} />
-        <Text style={styles.dividerLabel}>or</Text>
-        <View style={styles.divider} />
-      </View>
-
-      <OAuthButtons />
+      {confirmEmail ? null : (
+        <>
+          <View style={styles.dividerRow}>
+            <View style={styles.divider} />
+            <Text style={styles.dividerLabel}>or</Text>
+            <View style={styles.divider} />
+          </View>
+          <OAuthButtons />
+        </>
+      )}
 
       <View style={styles.footer}>
         <Text style={styles.footerText}>Already a member?</Text>
@@ -151,57 +147,3 @@ export function SignUpScreen() {
     </AppScreen>
   );
 }
-
-const styles = StyleSheet.create({
-  content: {
-    gap: spacing.lg,
-  },
-  hero: {
-    gap: spacing.xs,
-    marginTop: spacing.lg,
-  },
-  kicker: {
-    color: colors.accent,
-    ...typography.label,
-    textTransform: 'uppercase',
-  },
-  title: {
-    ...typography.display,
-    color: colors.text,
-  },
-  subtitle: {
-    ...typography.body,
-    color: colors.textMuted,
-  },
-  form: {
-    gap: spacing.md,
-  },
-  link: {
-    color: colors.accent,
-    ...typography.bodyStrong,
-  },
-  dividerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
-  divider: {
-    flex: 1,
-    height: 1,
-    backgroundColor: colors.border,
-  },
-  dividerLabel: {
-    color: colors.textSubtle,
-    ...typography.caption,
-  },
-  footer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: spacing.xs,
-  },
-  footerText: {
-    color: colors.textMuted,
-    ...typography.body,
-  },
-});

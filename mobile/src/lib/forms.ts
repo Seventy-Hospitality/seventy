@@ -1,9 +1,9 @@
 /**
  * Form conventions: react-hook-form + zod (mirrors member-web/src/lib/forms.ts).
  * Screens define a schema, call useZodForm(schema), and render fields through
- * <FormField> + <Input>/<PasswordInput>. Server-side ApiErrors surface via a
- * toast or a form-level error, never inline for a specific field unless the
- * code maps to one.
+ * <FormField> + <Input>/<PasswordInput>. Server-side failures (ClutchError,
+ * Supabase AuthError) surface via a toast or a form-level error, never inline
+ * for a specific field unless the code maps to one.
  */
 import { useForm, type Resolver, type UseFormProps, type UseFormReturn } from 'react-hook-form';
 import type { FieldValues } from 'react-hook-form';
@@ -36,13 +36,11 @@ export const passwordField = z
 
 export const nameField = z.string().trim().min(1, 'Enter your full name').max(200, 'Name is too long');
 
-export const phoneField = z
+/** The 6-digit code GoTrue puts in every auth email. */
+export const emailCodeField = z
   .string()
   .trim()
-  .max(30, 'Phone number is too long')
-  .regex(/^[+\d][\d\s().-]*$/, 'Enter a valid phone number')
-  .optional()
-  .or(z.literal(''));
+  .regex(/^\d{6}$/, 'Enter the 6-digit code from the email');
 
 // ── Auth form schemas ──
 
@@ -56,9 +54,16 @@ export const signUpSchema = z.object({
   name: nameField,
   email: emailField,
   password: passwordField,
-  phone: phoneField,
 });
 export type SignUpForm = z.infer<typeof signUpSchema>;
 
 export const emailOnlySchema = z.object({ email: emailField });
 export type EmailOnlyForm = z.infer<typeof emailOnlySchema>;
+
+export const emailCodeSchema = z.object({ code: emailCodeField });
+export type EmailCodeForm = z.infer<typeof emailCodeSchema>;
+
+export const newPasswordSchema = z
+  .object({ password: passwordField, confirm: z.string() })
+  .refine((v) => v.password === v.confirm, { path: ['confirm'], message: 'Passwords do not match' });
+export type NewPasswordForm = z.infer<typeof newPasswordSchema>;

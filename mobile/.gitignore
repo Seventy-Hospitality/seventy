@@ -9,3 +9,6 @@ web-build
 
 expo-env.d.ts
 # @end expo-cli
+# Local env files (public config, but per developer)
+.env
+.env.local

@@ -1,17 +1,20 @@
 /**
- * Native federated sign-in (Google + Apple), ported from the web client's
- * nonce contract to a React Native FederatedAuth port.
+ * Native federated sign-in (Google + Apple) for Supabase GoTrue.
  *
- * Nonce contract (matches the backend account-linking service): fetch a
- * single-use RAW nonce from POST /api/auth/oauth/nonce, hand the platform SDK
- * `sha256(nonce)` as hex (so the ID token's `nonce` claim carries the hash),
- * and POST the ID token plus the RAW nonce to the verify endpoint. The
- * backend hashes the raw nonce, burns it, and compares against the claim.
+ * Nonce contract (GoTrue's signInWithIdToken): the app mints a random RAW
+ * nonce, hands the platform SDK `sha256(raw)` as hex (so the ID token's
+ * `nonce` claim carries the hash), and gives GoTrue the ID token plus the RAW
+ * nonce. GoTrue hashes the raw nonce and compares it with the claim, so a
+ * token minted for another sign-in cannot be replayed here.
  *
  * Degradation: each adapter reports `isConfigured()` from the env client IDs
  * (Apple is also available natively on iOS). When not configured the sign-in
  * buttons render disabled and `authenticate()` is never called, so no SDK is
  * initialized. The provider SDKs are imported lazily inside `authenticate()`.
+ *
+ * The Supabase dashboard must list these client ids as authorized for the
+ * Google provider (iOS, Android and web client ids, comma separated) and the
+ * bundle id / services id for Apple, or GoTrue rejects the token audience.
  */
 import { Platform } from 'react-native';
 import * as Crypto from 'expo-crypto';
@@ -22,7 +25,7 @@ import {
   GOOGLE_WEB_CLIENT_ID,
 } from './env';
 
-/** Lowercase-hex SHA-256, matching the backend's `hashToken` and web `sha256Hex`. */
+/** Lowercase-hex SHA-256 (the form GoTrue compares the nonce claim against). */
 export async function sha256Hex(value: string): Promise<string> {
   return Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, value, {
     encoding: Crypto.CryptoEncoding.HEX,
@@ -156,33 +159,39 @@ export const federatedAdapters: Record<OAuthProvider, FederatedAdapter> = {
   apple: appleAdapter,
 };
 
-/** The raw ID token + raw nonce ready to POST to the verify endpoint. */
-export interface FederatedSignInResult {
+/** The raw ID token + raw nonce ready for supabase.auth.signInWithIdToken. */
+export interface FederatedCredential {
   provider: OAuthProvider;
-  idToken: string;
-  rawNonce: string;
+  /** OIDC ID token from the platform SDK. */
+  token: string;
+  /** The RAW nonce (GoTrue hashes it and compares with the token's claim). */
+  nonce: string;
   fullName?: { givenName?: string; familyName?: string };
 }
 
+/** A fresh random raw nonce (two UUIDs: 244 random bits). */
+export function createRawNonce(): string {
+  return `${Crypto.randomUUID()}${Crypto.randomUUID()}`.replace(/-/g, '');
+}
+
 /**
- * Run the full nonce round-trip for an adapter: fetch a raw nonce, hand the
- * SDK its SHA-256 hash, and return the ID token with the RAW nonce for the
- * backend. `fetchNonce` is injected (api.oauthNonce) so this stays testable.
+ * Drive the platform SDK with sha256(raw nonce) and return the ID token with
+ * the RAW nonce, ready for signInWithIdToken or linkIdentity.
  */
-export async function authenticateWithProvider(
+export async function getFederatedCredential(
   adapter: FederatedAdapter,
-  fetchNonce: () => Promise<{ nonce: string }>,
-): Promise<FederatedSignInResult> {
+  mintNonce: () => string = createRawNonce,
+): Promise<FederatedCredential> {
   if (!adapter.isConfigured()) throw new OAuthNotConfiguredError(adapter.provider);
 
-  const { nonce: rawNonce } = await fetchNonce();
+  const rawNonce = mintNonce();
   const hashedNonce = await sha256Hex(rawNonce);
   const assertion = await adapter.authenticate(hashedNonce);
 
   return {
     provider: adapter.provider,
-    idToken: assertion.idToken,
-    rawNonce,
+    token: assertion.idToken,
+    nonce: rawNonce,
     fullName: assertion.fullName,
   };
 }

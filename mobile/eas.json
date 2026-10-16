@@ -9,17 +9,30 @@
       "distribution": "internal",
       "channel": "development",
       "env": {
-        "EXPO_PUBLIC_API_URL": "http://localhost:3001"
+        "EXPO_PUBLIC_CLUTCH_API_URL": "http://localhost:3000/api/v1",
+        "EXPO_PUBLIC_SUPABASE_URL": "http://127.0.0.1:54321",
+        "EXPO_PUBLIC_CLUB_ID": "15e24f5f-ee39-4154-8ad6-06942d06cb8a",
+        "EXPO_PUBLIC_CLUB_SLUG": "770"
       }
     },
     "preview": {
       "distribution": "internal",
       "channel": "preview",
-      "ios": { "simulator": true }
+      "ios": { "simulator": true },
+      "env": {
+        "EXPO_PUBLIC_CLUTCH_API_URL": "https://club-management-web.vercel.app/api/v1",
+        "EXPO_PUBLIC_CLUB_ID": "15e24f5f-ee39-4154-8ad6-06942d06cb8a",
+        "EXPO_PUBLIC_CLUB_SLUG": "770"
+      }
     },
     "production": {
       "channel": "production",
-      "autoIncrement": true
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_CLUTCH_API_URL": "https://club-management-web.vercel.app/api/v1",
+        "EXPO_PUBLIC_CLUB_ID": "15e24f5f-ee39-4154-8ad6-06942d06cb8a",
+        "EXPO_PUBLIC_CLUB_SLUG": "770"
+      }
     }
   },
   "submit": {

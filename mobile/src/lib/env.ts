@@ -1,11 +1,20 @@
 /**
- * Typed access to build-time (public) configuration. Every value is
- * optional: the app must run with an empty env, exactly like the web client.
- * With no OAuth client IDs the sign-in buttons render disabled ("not
- * configured") and load no SDK; with no Stripe key the payment flows show a
- * configuration notice. See .env.example for the full list.
+ * Typed access to build-time (public) configuration. Only EXPO_PUBLIC_* vars
+ * are inlined into the bundle at build time; see .env.example for the list.
  *
- * Only EXPO_PUBLIC_* vars are inlined into the bundle at build time.
+ * The app talks to two services, both owned by Clutch:
+ *  - Supabase GoTrue (EXPO_PUBLIC_SUPABASE_URL + anon key) for every auth flow,
+ *    driven by supabase-js on the device;
+ *  - the Clutch HTTP API (EXPO_PUBLIC_CLUTCH_API_URL, ending in /api/v1) for
+ *    all data, authenticated with the Supabase access token.
+ *
+ * EXPO_PUBLIC_CLUB_ID binds the app to ONE Clutch club (Club 70). The startup
+ * check reads GET /clubs/{id} and refuses to run against a club whose slug is
+ * not EXPO_PUBLIC_CLUB_SLUG (default "770"), so a build pointed at the wrong
+ * club fails loudly instead of showing another club's data.
+ *
+ * Optional values (OAuth client ids, Stripe key) degrade their feature when
+ * absent: the buttons render a "not configured" note and load no SDK.
  */
 
 function optional(value: string | undefined): string | null {
@@ -13,19 +22,38 @@ function optional(value: string | undefined): string | null {
   return trimmed ? trimmed : null;
 }
 
-/** API origin. Defaults to the local dev API. */
-export const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:3001';
+/** Supabase project URL (GoTrue lives at `${SUPABASE_URL}/auth/v1`). */
+export const SUPABASE_URL = optional(process.env.EXPO_PUBLIC_SUPABASE_URL);
+
+/** Supabase anon (publishable) key. Public by design; RLS protects data. */
+export const SUPABASE_ANON_KEY = optional(process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY);
+
+/** Clutch API base, including the version segment (e.g. https://host/api/v1). */
+export const CLUTCH_API_URL = (
+  optional(process.env.EXPO_PUBLIC_CLUTCH_API_URL) ?? 'http://localhost:3000/api/v1'
+).replace(/\/+$/, '');
+
+/** The one Clutch club this app serves (Club 70 in production). */
+export const CLUB_ID =
+  optional(process.env.EXPO_PUBLIC_CLUB_ID) ?? '15e24f5f-ee39-4154-8ad6-06942d06cb8a';
+
+/** The slug CLUB_ID must resolve to; checked once at startup. */
+export const CLUB_SLUG = optional(process.env.EXPO_PUBLIC_CLUB_SLUG) ?? '770';
 
 /**
  * Member web origin, used to build shareable links that resolve in a browser
- * (the club invite/QR join link, `${WEB_URL}/clubs/join?token=...`). The member
- * web client owns the join page; scanning the QR on any device lands there.
- * Once universal/app-link association is configured this same URL opens the
- * native app directly. Defaults to the local member-web dev origin.
+ * (the group invite/QR join link). Defaults to the Clutch web app.
  */
-export const WEB_URL = process.env.EXPO_PUBLIC_WEB_URL ?? 'http://localhost:5173';
+export const WEB_URL = (
+  optional(process.env.EXPO_PUBLIC_WEB_URL) ?? 'https://club-management-web.vercel.app'
+).replace(/\/+$/, '');
 
-/** Stripe publishable key (pk_...); null disables PaymentSheet. */
+/**
+ * Stripe publishable key of the CLUTCH PLATFORM account (pk_...). Club charges
+ * are direct charges on the club's connected account, so the SDK is
+ * re-initialised with that account id per sheet (presentConnectedSheet).
+ * Null disables PaymentSheet.
+ */
 export const STRIPE_PUBLISHABLE_KEY = optional(process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY);
 
 /** Apple merchant identifier for Apple Pay in PaymentSheet (optional). */
@@ -38,3 +66,6 @@ export const GOOGLE_WEB_CLIENT_ID = optional(process.env.EXPO_PUBLIC_GOOGLE_WEB_
 
 /** Sign in with Apple services ID (used for the web audience / Android). */
 export const APPLE_CLIENT_ID = optional(process.env.EXPO_PUBLIC_APPLE_CLIENT_ID);
+
+/** The deep link GoTrue redirects auth emails to (magic link, signup, recovery). */
+export const AUTH_CALLBACK_URL = 'seventy://auth/callback';
