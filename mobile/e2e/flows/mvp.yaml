@@ -1,0 +1,89 @@
+# Club70 MVP on a real build against a local Clutch (e2e/run.sh passes the env).
+# A new member signs up, onboarding joins them to Club 70 and has them sign
+# the club's waiver, the club puts them on a tier, they book a court and pay
+# (simulated), and the booking is on Home.
+appId: club.seventy.mobile
+env:
+  NAME: Alex Morgan
+---
+- launchApp:
+    clearState: true
+    clearKeychain: true
+
+# ── Sign up ──
+- tapOn: Create an account
+- tapOn: Alex Morgan
+- inputText: ${NAME}
+- tapOn: you@club70.com
+- inputText: ${EMAIL}
+- tapOn: Create a password
+- inputText: ${PASSWORD}
+- hideKeyboard
+- tapOn:
+    text: Create Account
+    index: -1
+
+# ── Onboarding: join (automatic), then the club's waiver ──
+- extendedWaitUntil:
+    visible: Facility Liability Waiver
+    timeout: 30000
+- takeScreenshot: e2e/screens/01-waiver
+- tapOn: I have read the waiver and agree to it
+- tapOn: Sign waiver
+
+# ── The club puts the new member on a tier (no in-app payment without P2) ──
+- extendedWaitUntil:
+    visible: Check again
+    timeout: 20000
+- runScript:
+    file: assign-tier.js
+    env:
+      EMAIL: ${EMAIL}
+      PASSWORD: ${PASSWORD}
+      TIER_ID: ${TIER_ID}
+      CLUB_ID: ${CLUB_ID}
+- tapOn: Check again
+
+# ── Book a court ──
+- extendedWaitUntil:
+    visible: Reserve
+    timeout: 20000
+- takeScreenshot: e2e/screens/02-home
+- tapOn: Reserve
+- extendedWaitUntil:
+    visible: Book a court in advance
+    timeout: 20000
+- tapOn:
+    text: "Book .*"
+- takeScreenshot: e2e/screens/03-select-time
+# Tomorrow's first time with a court free: open whatever hour the run starts,
+# and however many runs came before.
+- tapOn:
+    text: "(?i)(sun|mon|tue|wed|thu|fri|sat) \\d+"
+    index: 1
+- tapOn:
+    text: ".*, \\d+ courts? free"
+    index: 0
+- tapOn: Continue
+
+# ── Checkout: the court is held, then paid (simulated by this Clutch) ──
+- extendedWaitUntil:
+    visible: "Court \\d+ is held for you.*"
+    timeout: 20000
+- takeScreenshot: e2e/screens/04-checkout
+# Club 70 prices tax at payment, so checkout names no total until then.
+- assertVisible: Calculated at payment
+# The hold's countdown ticks every second, so the screen never settles: tap
+# without waiting for it to.
+- tapOn:
+    text: Continue to payment
+    waitToSettleTimeoutMs: 500
+- extendedWaitUntil:
+    visible: Booking confirmed
+    timeout: 30000
+- takeScreenshot: e2e/screens/05-confirmed
+- tapOn: View booking
+- extendedWaitUntil:
+    visible: "(?i)confirmed"
+    timeout: 20000
+- takeScreenshot: e2e/screens/06-booking
