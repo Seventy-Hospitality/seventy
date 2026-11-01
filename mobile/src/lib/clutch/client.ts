@@ -27,18 +27,27 @@ import {
   AddBookingPlayersResponseSchema,
   CancelBookingResponseSchema,
   ConfirmBookingResponseSchema,
+  ConfirmPaidMoveResponseSchema,
+  ConfirmSharePaymentResponseSchema,
   CreateBookingResponseSchema,
   CreateGroupInviteLinkResponseSchema,
   CreateGroupResponseSchema,
+  CreateMovePaymentIntentResponseSchema,
+  CreateSharePaymentIntentResponseSchema,
   DeleteGroupResponseSchema,
+  DeleteMyAccountResponseSchema,
+  DeviceVerificationRequiredSchema,
   ErrorSchema,
   GetBookingResponseSchema,
   GetClubAvailabilityResponseSchema,
+  GetClubBookingRulesResponseSchema,
   GetClubResponseSchema,
   GetGroupActivityResponseSchema,
   GetGroupMembersResponseSchema,
   GetGroupResponseSchema,
   GetMeResponseSchema,
+  GetMyAccountDeletionResponseSchema,
+  GetMyCheckinTokenResponseSchema,
   GetMyClubMembershipResponseSchema,
   GetMyGroupInvitationsResponseSchema,
   GetMyGroupsResponseSchema,
@@ -55,51 +64,46 @@ import {
   ListMyBookingsResponseSchema,
   ListMyNotificationsResponseSchema,
   ListMyPaymentsResponseSchema,
+  ListMyWaiversResponseSchema,
   MarkMyNotificationsReadResponseSchema,
   PreviewGroupInviteResponseSchema,
+  QuoteBookingResponseSchema,
+  QuoteRescheduleResponseSchema,
+  RegisteredDeviceSchema,
+  ReleaseBookingHoldResponseSchema,
+  RemoveBookingPlayerResponseSchema,
   RemoveGroupMemberResponseSchema,
-  ReplaceMyPreferencesResponseSchema,
+  UpdateMyPreferencesResponseSchema,
   RescheduleBookingResponseSchema,
+  RespondToBookingInvitationResponseSchema,
   RespondToGroupInvitationResponseSchema,
+  SearchClubPlayersResponseSchema,
+  SignWaiverResponseSchema,
+  UnregisterMyDeviceResponseSchema,
   UpdateGroupMemberResponseSchema,
   UpdateGroupResponseSchema,
   UpdateMyProfileResponseSchema,
   UploadGroupCoverResponseSchema,
   UploadMyAvatarResponseSchema,
+  VerifyMyDeviceResponseSchema,
   type BookingInvitation,
   type ClubDetail,
-  type MyBooking,
+  type MemberBooking,
   type NotificationPreferences,
 } from './contract.gen';
 import {
-  AccountDeletionPreviewSchema,
   BookingCheckoutSchema,
-  BookingQuoteSchema,
   CancelSubscriptionResultSchema,
   ChangeTierResultSchema,
-  CheckinTokenSchema,
-  ClubBookingRulesSchema,
-  ClubPlayersSchema,
-  DeleteAccountResultSchema,
   EligibleChangeTiersSchema,
-  InvitationAnswerSchema,
   LegacyBookingCheckoutSchema,
   MembershipConfirmSchema,
-  MoveCheckoutSchema,
   MyMembershipBillingSchema,
-  ParityBookingSchema,
-  PlayerRemovalSchema,
-  RegisteredDeviceSchema,
   RemovedCardSchema,
-  RemovedDeviceSchema,
-  VerifiedDeviceSchema,
-  RescheduleQuoteSchema,
   ResumeSubscriptionResultSchema,
   SavedCardSchema,
   SavedCardsSchema,
   SetupIntentSchema,
-  ShareCheckoutSchema,
-  ShareSettledSchema,
   SimulatedPaySchema,
   SubscribeResultSchema,
   type BookingCheckout,
@@ -189,6 +193,12 @@ interface RequestSpec<S extends z.ZodType> {
 const IN_FLIGHT_RETRY_DELAYS_MS = [400, 800, 1600, 3200];
 
 /** The `data` schema of a generated `{ data }` response schema. */
+/** POST /me/devices: registered (200), or waiting for the pushed code (202). */
+const RegisteredDeviceAnswerSchema = z.discriminatedUnion('status', [
+  RegisteredDeviceSchema,
+  DeviceVerificationRequiredSchema,
+]);
+
 function dataOf<S extends z.ZodObject<{ data: z.ZodType }>>(schema: S): S['shape']['data'] {
   return schema.shape.data;
 }
@@ -444,7 +454,7 @@ export function createClutchClient(options: ClutchClientOptions) {
     /** P4: booking rules per court type, with whether the caller may book each. */
     bookingRules: () => {
       need('bookingParity');
-      return call({ method: 'GET', path: `/clubs/${enc(clubId)}/booking-rules`, schema: ClubBookingRulesSchema });
+      return call({ method: 'GET', path: `/clubs/${enc(clubId)}/booking-rules`, schema: dataOf(GetClubBookingRulesResponseSchema) });
     },
 
     /** P4: fellow members a member may invite (never the admin roster). */
@@ -454,7 +464,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'GET',
         path: `/clubs/${enc(clubId)}/players`,
         query: { q: q.trim() || undefined, limit },
-        schema: ClubPlayersSchema,
+        schema: dataOf(SearchClubPlayersResponseSchema),
       });
     },
   };
@@ -469,7 +479,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'POST',
         path: '/bookings/quote',
         body: { club_id: clubId, ...rangeBody(range) },
-        schema: BookingQuoteSchema,
+        schema: dataOf(QuoteBookingResponseSchema),
       });
     },
 
@@ -563,7 +573,7 @@ export function createClutchClient(options: ClutchClientOptions) {
       return call({
         method: 'POST',
         path: `/bookings/${enc(id)}/release`,
-        schema: ParityBookingSchema,
+        schema: dataOf(ReleaseBookingHoldResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       });
     },
@@ -575,7 +585,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'POST',
         path: `/bookings/${enc(id)}/reschedule/quote`,
         body: moveBody(move),
-        schema: RescheduleQuoteSchema,
+        schema: dataOf(QuoteRescheduleResponseSchema),
       });
     },
 
@@ -586,7 +596,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'POST',
         path: `/bookings/${enc(id)}/reschedule/payment-intent`,
         body: moveBody(move),
-        schema: MoveCheckoutSchema,
+        schema: dataOf(CreateMovePaymentIntentResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       });
     },
@@ -598,7 +608,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'POST',
         path: `/bookings/${enc(id)}/reschedule/confirm`,
         body: { payment_intent_id: paymentIntentId },
-        schema: ParityBookingSchema,
+        schema: dataOf(ConfirmPaidMoveResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       });
     },
@@ -609,7 +619,7 @@ export function createClutchClient(options: ClutchClientOptions) {
       return call({
         method: 'POST',
         path: `/bookings/${enc(id)}/shares/payment-intent`,
-        schema: ShareCheckoutSchema,
+        schema: dataOf(CreateSharePaymentIntentResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       });
     },
@@ -621,7 +631,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'POST',
         path: `/bookings/${enc(id)}/shares/confirm`,
         body: { payment_intent_id: paymentIntentId },
-        schema: ShareSettledSchema,
+        schema: dataOf(ConfirmSharePaymentResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       });
     },
@@ -655,7 +665,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'POST',
         path: `/bookings/${enc(id)}/respond`,
         body: { accept },
-        schema: InvitationAnswerSchema,
+        schema: dataOf(RespondToBookingInvitationResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       });
     },
@@ -666,7 +676,7 @@ export function createClutchClient(options: ClutchClientOptions) {
       return call({
         method: 'DELETE',
         path: `/bookings/${enc(id)}/players/${enc(userId)}`,
-        schema: PlayerRemovalSchema,
+        schema: dataOf(RemoveBookingPlayerResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       });
     },
@@ -984,18 +994,32 @@ export function createClutchClient(options: ClutchClientOptions) {
   const me = {
     get: () => call({ method: 'GET', path: '/me', schema: dataOf(GetMeResponseSchema) }),
 
+    /** The club's active waivers, and whether the caller has signed each. */
+    waivers: () =>
+      call({ method: 'GET', path: '/me/waivers', query: { club_id: clubId }, schema: dataOf(ListMyWaiversResponseSchema) }),
+
+    /** Sign a waiver as its text reads now (Clutch keeps that text with the signature). */
+    signWaiver: (waiverId: string, opts?: MutationOptions) =>
+      call({
+        method: 'POST',
+        path: `/waivers/${enc(waiverId)}/sign`,
+        body: {},
+        schema: dataOf(SignWaiverResponseSchema),
+        idempotencyKey: opts?.idempotencyKey,
+      }),
+
     home: () =>
       call({ method: 'GET', path: '/me/home', query: { club_id: clubId }, schema: dataOf(GetMyHomeResponseSchema) }),
 
     /** The caller's own bookings here (those they booked). */
-    async bookings(q: { status?: string; from?: string; limit?: number; offset?: number } = {}): Promise<Page<MyBooking>> {
+    async bookings(q: { status?: string; from?: string; limit?: number; offset?: number } = {}): Promise<Page<MemberBooking>> {
       const { data, count } = await request({
         method: 'GET',
         path: '/me/bookings',
         query: { club_id: clubId, ...q },
         schema: dataOf(ListMyBookingsResponseSchema),
       });
-      const items = data.filter((row): row is MyBooking => row.kind === 'booking');
+      const items = data.filter((row): row is MemberBooking => row.kind === 'booking');
       return { items, count: count ?? items.length };
     },
 
@@ -1048,7 +1072,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'PUT',
         path: '/me/preferences',
         body: prefs,
-        schema: dataOf(ReplaceMyPreferencesResponseSchema),
+        schema: dataOf(UpdateMyPreferencesResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       }),
 
@@ -1087,7 +1111,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'POST',
         path: '/me/devices',
         body: input,
-        schema: RegisteredDeviceSchema,
+        schema: RegisteredDeviceAnswerSchema,
         idempotencyKey: opts?.idempotencyKey,
       });
     },
@@ -1099,7 +1123,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'POST',
         path: '/me/devices/verify',
         body: input,
-        schema: VerifiedDeviceSchema,
+        schema: dataOf(VerifyMyDeviceResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       });
     },
@@ -1111,7 +1135,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'DELETE',
         path: '/me/devices',
         body: { token },
-        schema: RemovedDeviceSchema,
+        schema: dataOf(UnregisterMyDeviceResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       });
     },
@@ -1119,18 +1143,18 @@ export function createClutchClient(options: ClutchClientOptions) {
     /** P5: signed, short-lived member check-in token for the QR card. */
     checkinToken: () => {
       need('checkinToken');
-      return call({ method: 'GET', path: '/me/checkin-token', query: { club_id: clubId }, schema: CheckinTokenSchema });
+      return call({ method: 'GET', path: '/me/checkin-token', query: { club_id: clubId }, schema: dataOf(GetMyCheckinTokenResponseSchema) });
     },
 
     /** P5: blockers + step-up state, before asking for a fresh sign-in. */
     accountDeletion: () => {
       need('accountDeletion');
-      return call({ method: 'GET', path: '/me/account/deletion', schema: AccountDeletionPreviewSchema });
+      return call({ method: 'GET', path: '/me/account/deletion', schema: dataOf(GetMyAccountDeletionResponseSchema) });
     },
 
     /**
      * P5: delete the account for good. 403 step_up_required (details:
-     * StepUpState), 409 account_deletion_blocked (details: DeletionBlockers)
+     * StepUpState), 409 account_deletion_blocked (details: AccountDeletionBlockers)
      * or refunds_pending, 500 account_deletion_failed (nothing deleted).
      */
     deleteAccount: (opts?: MutationOptions) => {
@@ -1138,7 +1162,7 @@ export function createClutchClient(options: ClutchClientOptions) {
       return call({
         method: 'DELETE',
         path: '/me/account',
-        schema: DeleteAccountResultSchema,
+        schema: dataOf(DeleteMyAccountResponseSchema),
         idempotencyKey: opts?.idempotencyKey,
       });
     },

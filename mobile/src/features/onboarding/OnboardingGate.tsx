@@ -7,8 +7,9 @@
  * - OnboardingLayoutGate wraps the /onboarding/* stack: a done member is sent
  *   out, and a step cannot be skipped.
  *
- * 'name', 'join' and 'lapsed' render in place (no route): naming and joining
- * are one action each, and a lapsed membership must never redirect-loop.
+ * 'name', 'join', 'waiver' and 'lapsed' render in place (no route): naming,
+ * joining and signing are one action each, and a lapsed membership must never
+ * redirect-loop.
  */
 import { useEffect, useRef } from 'react';
 import { Redirect, Stack, usePathname, useRouter } from 'expo-router';
@@ -18,6 +19,7 @@ import { meQuery, membershipQuery, queryKeys } from '../../lib/queries';
 import { useSession } from '../../lib/session';
 import { profileErrorMessage } from '../account/account-lib';
 import { useSignOut } from '../account/useSignOut';
+import { WaiverSigning } from '../waivers/WaiverSigning';
 import {
   canRenewInApp,
   canVisitOnboardingPath,
@@ -65,6 +67,8 @@ function StepOutlet({ step, view }: { step: OnboardingStep; view: MembershipView
       return <NameStep />;
     case 'join':
       return <JoinClubStep />;
+    case 'waiver':
+      return <WaiverStep />;
     case 'lapsed':
       return view ? <LapsedStep view={view} /> : <JoinClubStep />;
     case 'plan':
@@ -142,6 +146,15 @@ function JoinClubStep() {
     );
   }
   return <GateLoading label="Setting up your membership" />;
+}
+
+/**
+ * The club's required waivers, signed in the app. Signing re-reads
+ * GET /me/waivers into the shared cache, and the gate moves on from it.
+ */
+function WaiverStep() {
+  const signOut = useSignOut();
+  return <WaiverSigning mode="onboarding" onDone={() => {}} secondary={{ label: 'Sign out', onPress: signOut }} />;
 }
 
 function LapsedStep({ view }: { view: MembershipView }) {

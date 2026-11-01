@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react-native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import type { MockClutch } from '../../lib/clutch/testing';
-import { CheckinTokenSchema, type CheckinToken } from '../../lib/clutch';
+import { GetMyCheckinTokenResponseSchema } from '../../lib/clutch';
 import { queryKeys } from '../../lib/queries';
 import { clutchError } from '../../lib/clutch/testing';
 import { checkinErrorMessage, checkinRefreshDelay, MemberCardSheet } from '../MemberCardSheet';
@@ -17,11 +17,11 @@ jest.mock('../../lib/clutch', () => {
 const mockClutch = (jest.requireMock('../../lib/clutch') as { clutch: MockClutch }).clutch;
 
 /** Parsed through the contract schema, like every fixture. */
-function token(ttlSeconds: number): CheckinToken {
-  return CheckinTokenSchema.parse({
+function token(ttlSeconds: number) {
+  return GetMyCheckinTokenResponseSchema.shape.data.parse({
     token: `ck.${ttlSeconds}`,
-    expiresAt: new Date(Date.now() + ttlSeconds * 1000).toISOString(),
-    ttlSeconds,
+    expires_at: new Date(Date.now() + ttlSeconds * 1000).toISOString(),
+    ttl_seconds: ttlSeconds,
   });
 }
 

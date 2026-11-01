@@ -35,7 +35,7 @@ beforeEach(() => jest.clearAllMocks());
 
 describe('useSendInvites', () => {
   it('invites the players, then each group, each under its own key', async () => {
-    mockClutch.bookings.invitePlayers.mockResolvedValue(null);
+    mockClutch.bookings.invitePlayers.mockResolvedValue({ invited: [SAM.user_id], not_invited: [] });
     mockClutch.bookings.inviteGroup.mockResolvedValue({ invited: [] });
     const { hook, progress } = setup();
 
@@ -53,7 +53,7 @@ describe('useSendInvites', () => {
   });
 
   it('reports what was sent before a failure so a retry sends only the rest', async () => {
-    mockClutch.bookings.invitePlayers.mockResolvedValue(null);
+    mockClutch.bookings.invitePlayers.mockResolvedValue({ invited: [SAM.user_id], not_invited: [] });
     mockClutch.bookings.inviteGroup
       .mockResolvedValueOnce({ invited: [] })
       .mockRejectedValueOnce(networkError())

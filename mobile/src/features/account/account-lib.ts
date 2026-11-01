@@ -5,9 +5,9 @@
  * here adds, nets or prorates money. Error copy branches on ClutchError.code.
  */
 import {
-  DeletionBlockersSchema,
+  AccountDeletionBlockersSchema,
   isClutchError,
-  type DeletionBlockers,
+  type AccountDeletionBlockers,
   type MembershipView,
   type MyMembershipBilling,
   type Payment,
@@ -317,17 +317,17 @@ export function avatarErrorMessage(err: unknown): string {
 }
 
 /** The blockers in a 409 account_deletion_blocked's details, or null when malformed. */
-export function deletionBlockersFrom(details: Record<string, unknown> | undefined): DeletionBlockers | null {
-  const parsed = DeletionBlockersSchema.safeParse(details);
+export function deletionBlockersFrom(details: Record<string, unknown> | undefined): AccountDeletionBlockers | null {
+  const parsed = AccountDeletionBlockersSchema.safeParse(details);
   return parsed.success ? parsed.data : null;
 }
 
-export function hasDeletionBlockers(blockers: DeletionBlockers): boolean {
+export function hasDeletionBlockers(blockers: AccountDeletionBlockers): boolean {
   return blockers.owned_clubs.length > 0 || blockers.managed_children.length > 0;
 }
 
 /** Each blocker as a plain sentence saying what to do about it. */
-export function blockerSentences(blockers: DeletionBlockers): string[] {
+export function blockerSentences(blockers: AccountDeletionBlockers): string[] {
   return [
     ...blockers.owned_clubs.map(
       (club) => `You own ${club.club_name}. Hand the club to another owner before deleting your account.`,

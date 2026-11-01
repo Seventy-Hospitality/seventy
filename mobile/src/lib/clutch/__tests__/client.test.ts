@@ -1,7 +1,7 @@
 import { createClutchClient, ClubMismatchError, type AuthPort } from '../client';
 import { ClutchError } from '../errors';
 import { asBookingId, asClubId, asCourtId, asGroupId } from '../ids';
-import { makeBookingRecord, makeClub, makeGroupSummary, makeMyBooking, makeBookingInvitation } from '../fixtures';
+import { makeChargedBooking, makeClub, makeGroupSummary, makeMyBooking, makeBookingInvitation } from '../fixtures';
 import { ClutchUnavailableError, CAPABILITIES } from '../capabilities';
 
 const CLUB = asClubId('15e24f5f-ee39-4154-8ad6-06942d06cb8a');
@@ -149,7 +149,7 @@ describe('auth', () => {
   it('refreshes once after a 401 and retries with the new token and a new key', async () => {
     const { client, calls, port } = setup([
       reply(401, { error: 'session_expired', message: 'Expired.' }),
-      reply(201, { data: makeBookingRecord() }),
+      reply(201, { data: makeChargedBooking() }),
     ]);
     await client.bookings.create(
       { court_id: asCourtId('c1'), date: '2026-10-20', start_time: '18:00', end_time: '19:00' },
@@ -223,7 +223,7 @@ describe('idempotency', () => {
     const { client, calls } = setup([
       reply(409, { error: 'request_in_flight', message: 'Still running.' }),
       reply(409, { error: 'request_in_flight', message: 'Still running.' }),
-      reply(200, { data: makeBookingRecord({ status: 'confirmed' }) }),
+      reply(200, { data: makeChargedBooking({ status: 'confirmed' }) }),
     ]);
     const booking = await client.bookings.confirm(asBookingId('b1'), 'pi_1', { idempotencyKey: 'k' });
     expect(booking.status).toBe('confirmed');
@@ -261,7 +261,7 @@ describe('club binding', () => {
   });
 
   it('sends club_id in bodies of club-scoped mutations', async () => {
-    const { client, calls } = setup([reply(201, { data: makeBookingRecord() })]);
+    const { client, calls } = setup([reply(201, { data: makeChargedBooking() })]);
     await client.bookings.create({
       court_id: asCourtId('c1'),
       date: '2026-10-20',
@@ -293,7 +293,7 @@ describe('requests', () => {
   });
 
   it('sends midnight as 00:00', async () => {
-    const { client, calls } = setup([reply(201, { data: makeBookingRecord() })]);
+    const { client, calls } = setup([reply(201, { data: makeChargedBooking() })]);
     await client.bookings.create({ court_id: asCourtId('c1'), date: '2026-10-20', start_time: '23:00', end_time: '24:00' });
     expect(calls[0].body).toMatchObject({ start_time: '23:00', end_time: '00:00' });
   });

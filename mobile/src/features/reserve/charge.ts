@@ -5,8 +5,11 @@
  * as two lines, never summed.
  *
  * - quoted: a P4 booking quote (list price, discount, price, tax, total).
+ *   With `tax_status` `at_checkout` its total is not final: Clutch prices the
+ *   tax when the payment starts, so no total is named until then.
  * - checkout: a P4 share or move checkout (subtotal, tax, total).
- * - split: a booking payment intent on main / P2 (subtotal and tax only).
+ * - split: a booking payment intent that states subtotal and tax only.
+ *   One that states its total too is a `checkout`.
  * - unknown: nothing priced the tax yet (bookingParity off, before the
  *   intent): the court price, and the total is shown at payment.
  */
@@ -54,6 +57,10 @@ export function chargeFromBookingCheckout(
   currency: string,
 ): Charge {
   const { subtotal_cents, tax_cents } = checkoutAmounts(checkout);
+  const total = 'total_cents' in checkout ? checkout.total_cents : undefined;
+  if (typeof total === 'number' && subtotal_cents !== null && tax_cents !== null) {
+    return { kind: 'checkout', currency, subtotal_cents, tax_cents, total_cents: total };
+  }
   return { kind: 'split', currency, subtotal_cents, tax_cents };
 }
 
@@ -85,6 +92,11 @@ export function chargeLines(charge: Charge): ChargeLine[] {
         lines.push({ label: 'Discount', value: `-${money(charge.discount_amount_cents)}` });
       }
       lines.push({ label: 'Court price', value: money(charge.price_cents) });
+      if (charge.tax_status === 'at_checkout') {
+        lines.push({ label: 'Tax', value: 'Calculated at payment' });
+        lines.push({ label: 'Total', value: 'Shown at payment', total: true });
+        return lines;
+      }
       if (charge.tax_status === 'calculated' || charge.tax_cents > 0) {
         lines.push({ label: 'Tax', value: money(charge.tax_cents) });
       }
@@ -115,8 +127,14 @@ export function chargeLines(charge: Charge): ChargeLine[] {
 /** The one figure a Pay button may name: a total Clutch stated, else none. */
 export function chargeTotal(charge: Charge | null): string | null {
   if (!charge) return null;
+  if (charge.kind === 'quoted' && charge.tax_status === 'at_checkout') return null;
   if (charge.kind === 'quoted' || charge.kind === 'checkout') {
     return formatMoney(charge.total_cents, charge.currency);
   }
   return null;
+}
+
+/** A charge whose total is what the card is charged: never a quote that prices tax at payment. */
+export function isFinalCharge(charge: Charge | null): charge is Charge {
+  return !!charge && !(charge.kind === 'quoted' && charge.tax_status === 'at_checkout');
 }

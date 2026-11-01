@@ -1,11 +1,12 @@
 /**
  * One resolved onboarding step for both gates (app entry and the onboarding
- * stack), read from Clutch: GET /me always, GET /me/membership once /me shows
- * a named profile with a membership at this club.
+ * stack), read from Clutch: GET /me always, GET /me/membership and
+ * GET /me/waivers once /me shows a named profile with a membership at this
+ * club.
  */
 import { useQuery } from '@tanstack/react-query';
 import { clutch, type MembershipView } from '../../lib/clutch';
-import { meQuery, membershipQuery } from '../../lib/queries';
+import { meQuery, membershipQuery, waiversQuery } from '../../lib/queries';
 import { useSession } from '../../lib/session';
 import { needsMembershipView, resolveOnboardingStep, type OnboardingStep } from './onboarding';
 
@@ -20,6 +21,7 @@ export function useOnboardingResume(): ResumePhase {
   const me = useQuery({ ...meQuery, enabled: authenticated });
   const wantsView = me.data ? needsMembershipView(me.data, clutch.clubId) : false;
   const membership = useQuery({ ...membershipQuery, enabled: authenticated && wantsView });
+  const waivers = useQuery({ ...waiversQuery, enabled: authenticated && wantsView });
 
   // Signed out (or still restoring): nothing to resolve; callers redirect.
   if (!authenticated) return { phase: 'loading' };
@@ -30,9 +32,16 @@ export function useOnboardingResume(): ResumePhase {
   if (wantsView) {
     if (membership.isPending) return { phase: 'loading' };
     if (membership.isError) return { phase: 'error', retry: () => void membership.refetch() };
+    if (waivers.isPending) return { phase: 'loading' };
+    if (waivers.isError) return { phase: 'error', retry: () => void waivers.refetch() };
   }
 
   const view = wantsView ? membership.data ?? null : null;
-  const step = resolveOnboardingStep({ me: me.data, clubId: clutch.clubId, view });
+  const step = resolveOnboardingStep({
+    me: me.data,
+    clubId: clutch.clubId,
+    view,
+    waivers: wantsView ? waivers.data ?? null : null,
+  });
   return { phase: 'ready', step, view };
 }

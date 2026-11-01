@@ -25,7 +25,7 @@ import { asClubId, ClutchUnavailableError, isClutchError, type ClubId } from '..
  * - check-again: the payment reached the provider but is not settled; ask
  *   Clutch again, never pay again.
  * - membership: booking needs a club membership or a tier the member lacks.
- * - waiver: the club needs a signed waiver first (on the web).
+ * - waiver: the club needs a signed waiver first (signed in the app, /waivers).
  * - none: a final answer; nothing to retry here.
  * - refresh: re-read the booking and show what it says now.
  */
@@ -194,6 +194,7 @@ export function describeBookingFailure(error: unknown, context: FailureContext =
 
     // ── Who may book ──
     case 'not_club_member':
+    case 'club_members_only':
     case 'membership_not_active':
     case 'membership_unconfirmed':
     case 'no_active_subscription':
@@ -224,7 +225,7 @@ export function describeBookingFailure(error: unknown, context: FailureContext =
       return {
         action: 'waiver',
         title: 'Waiver needed',
-        message: 'The club needs you to sign its waiver before you book. Sign it on the club website, then try again.',
+        message: 'The club needs you to sign its waiver before you book. Sign it, then pick your time again.',
         clubId: typeof clubId === 'string' ? asClubId(clubId) : undefined,
       };
     }
@@ -368,6 +369,50 @@ export function describeBookingFailure(error: unknown, context: FailureContext =
         action: 'pick-time',
         title: 'Your booking was not moved',
         message: `${moveReason(error.details?.reason)} The payment for the difference is being returned to your card. Pick another time.`,
+      };
+    case 'booking_unavailable':
+      return {
+        action: 'pick-time',
+        title: 'That time is no longer available',
+        message: 'This booking cannot be made or changed any more. Pick another time.',
+      };
+    case 'hold_in_bundle':
+      return {
+        action: 'refresh',
+        title: 'This court is booked with others',
+        message: 'It was held together with other courts, and they go together. Check the booking for what it holds now.',
+      };
+    case 'cancel_terms_changed':
+      return {
+        action: 'refresh',
+        title: 'The cancellation terms changed',
+        message: 'What cancelling would refund changed since you were shown it, so nothing was cancelled. Check the booking and try again.',
+      };
+    case 'price_changed':
+    case 'slot_not_priced':
+    case 'price_above_club_price':
+    case 'series_price_not_agreed':
+    case 'series_currency_changed':
+      return {
+        action: 'refresh',
+        title: 'The price changed',
+        message: 'The club\'s price for this slot changed since you were shown it, so nothing was changed. Check it and try again.',
+      };
+    case 'notice_not_saved':
+      return TRANSIENT;
+    case 'removal_payment_required':
+    case 'removal_needs_booker_cover':
+      return {
+        action: 'none',
+        title: 'Their share has to be covered first',
+        message: 'This player paid toward the booking, and the club takes no payment at the venue: removing them means paying their share.',
+      };
+    case 'removal_not_applied':
+    case 'currency_mismatch':
+      return {
+        action: 'refresh',
+        title: 'Nothing was changed',
+        message: 'The booking changed meanwhile, so this was not done. If money moved, it is being returned. Check the booking.',
       };
     case 'booking_started':
     case 'booking_ended':
@@ -550,6 +595,13 @@ export function describeBookingFailure(error: unknown, context: FailureContext =
     case 'not_cancelling':
     case 'setup_incomplete':
     case 'card_in_use_by_subscription':
+    case 'refund_needs_booker_cover':
+    case 'refund_needs_cancel':
+    case 'review_not_found':
+    case 'review_resolved':
+    case 'unknown_resolution':
+    case 'sold_terms_fixed':
+    case 'sold_cannot_delete':
     case 'step_up_required':
     case 'account_deletion_blocked':
     case 'refunds_pending':

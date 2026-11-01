@@ -10,6 +10,9 @@
  *   join     -> GET /me lists no membership at this club. The gate calls
  *               POST /clubs/{club}/join (idempotent) and re-reads; it never
  *               infers membership from the join answer.
+ *   waiver   -> the club requires a waiver this member has never signed
+ *               (GET /me/waivers): read it and sign it in the app. Clutch
+ *               refuses every booking until it is signed.
  *   plan     -> a member in good standing without a tier picks one.
  *   checkout -> a subscription attempt waits on its first payment: resume it.
  *   lapsed   -> was a member; the club standing (suspended, expired,
@@ -28,6 +31,7 @@ import {
   type GetMeResponse,
   type MembershipView,
   type Profile,
+  type WaiverStatus,
 } from '../../lib/clutch';
 
 /**
@@ -38,7 +42,7 @@ export const TERMS_VERSION = '2026-08';
 
 export type Me = GetMeResponse['data'];
 
-export type OnboardingStep = 'name' | 'join' | 'plan' | 'checkout' | 'lapsed' | 'done';
+export type OnboardingStep = 'name' | 'join' | 'waiver' | 'plan' | 'checkout' | 'lapsed' | 'done';
 
 /** The caller's membership at this club, if /me lists one. */
 export function membershipAt(me: Me, clubId: ClubId): ClubMembership | null {
@@ -64,11 +68,31 @@ export interface OnboardingInput {
    * request instead of answering empty).
    */
   view: MembershipView | null;
+  /** GET /me/waivers, read alongside the membership view; absent while unread. */
+  waivers?: WaiverStatus[] | null;
 }
 
-export function resolveOnboardingStep({ me, clubId, view }: OnboardingInput): OnboardingStep {
+/**
+ * The waivers onboarding asks for: required and never signed. An `every_time`
+ * waiver signed before still lapses per visit; Clutch answers the booking
+ * with waiver_required then, and the booking screen sends the member to sign
+ * it again (waiversToSign), so onboarding does not hold them on it.
+ */
+export function unsignedRequiredWaivers(waivers: WaiverStatus[]): WaiverStatus[] {
+  return waivers.filter((w) => w.is_required && !w.signed);
+}
+
+/** What the waiver screen offers: every required waiver, signed or due again. */
+export function waiversToSign(waivers: WaiverStatus[]): WaiverStatus[] {
+  return waivers.filter((w) => w.is_required && (!w.signed || w.frequency === 'every_time'));
+}
+
+export function resolveOnboardingStep({ me, clubId, view, waivers }: OnboardingInput): OnboardingStep {
   if (!hasProfileName(me.profile)) return 'name';
   if (!membershipAt(me, clubId) || !view) return 'join';
+  if (entitlement(view) !== 'no_membership' && waivers && unsignedRequiredWaivers(waivers).length > 0) {
+    return 'waiver';
+  }
   switch (entitlement(view)) {
     case 'entitled':
       return 'done';
@@ -92,7 +116,7 @@ export function canRenewInApp(view: MembershipView, nativePayments: boolean): bo
   return nativePayments && view.kind === 'billing' && view.data.membership?.status === 'active';
 }
 
-/** The route of a step that has one; name, join and lapsed render in place. */
+/** The route of a step that has one; name, join, waiver and lapsed render in place. */
 export function onboardingPathForStep(step: OnboardingStep): string | null {
   switch (step) {
     case 'plan':
@@ -103,6 +127,7 @@ export function onboardingPathForStep(step: OnboardingStep): string | null {
       return '/(tabs)';
     case 'name':
     case 'join':
+    case 'waiver':
     case 'lapsed':
       return null;
   }
@@ -128,6 +153,7 @@ export function canVisitOnboardingPath(
       return opts.renewInApp && tierRoute;
     case 'name':
     case 'join':
+    case 'waiver':
     case 'done':
       return false;
   }

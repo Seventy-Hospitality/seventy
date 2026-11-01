@@ -8,11 +8,10 @@
  * error or a dead end. `clutch.*` refuses with ClutchUnavailableError if a
  * gated call slips through.
  *
- * Today (2026-10-16) every branch is pushed but none is deployed to the
- * Clutch the app talks to. P1 and P5 are on (their routes are final and
- * small); P2 and P4 stay off until they are merged behind P3's contract
- * (see MERGE-ORDER: P4 then P3 then P2) and the contract is regenerated,
- * because their payment fields are still being renamed.
+ * P1 (push, #160) and P5 (deletion and check-in, #161) are in Clutch's main.
+ * P4 (booking parity, #181) and P3 (the typed contract, feat/typed-api-contract)
+ * are what contract.gen.ts is generated from, so P4 is on. P2 (native payments)
+ * stays off until it is merged behind P3 and the contract is regenerated.
  */
 export const CAPABILITIES = {
   /** P1 feat/expo-push: POST/DELETE /me/devices with the install's device_secret. */
@@ -33,7 +32,7 @@ export const CAPABILITIES = {
    * quote/payment, players paying their share, and releasing a hold only
    * while it is still pending (POST /bookings/{id}/release).
    */
-  bookingParity: false,
+  bookingParity: true,
 } as const;
 
 export type Capability = keyof typeof CAPABILITIES;
@@ -46,7 +45,7 @@ export const CAPABILITY_SOURCE: Record<Capability, string> = {
   accountDeletion: 'feat/account-deletion-and-checkin',
   checkinToken: 'feat/account-deletion-and-checkin',
   nativePayments: 'feat/native-payments',
-  bookingParity: 'feat/member-booking-parity',
+  bookingParity: 'feat/booking-parity',
 };
 
 export class ClutchUnavailableError extends Error {

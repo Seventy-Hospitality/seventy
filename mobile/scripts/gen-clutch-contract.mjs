@@ -57,7 +57,11 @@ const ID_BRANDS = {
   Booking: 'BookingId',
   BookingRecord: 'BookingId',
   BookingDetail: 'BookingId',
-  MyBooking: 'BookingId',
+  MemberBooking: 'BookingId',
+  CancelledBooking: 'BookingId',
+  // POST /bookings and /bookings/{id}/confirm answer a BookingRecord with its charge, inline.
+  'CreateBookingResponse.data': 'BookingId',
+  'ConfirmBookingResponse.data': 'BookingId',
   Group: 'GroupId',
   GroupSummary: 'GroupId',
   GroupInvitation: 'GroupInvitationId',

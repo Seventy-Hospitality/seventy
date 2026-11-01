@@ -23,7 +23,6 @@ import {
   type BookingId,
   type BookingMove,
   type BookingRecord,
-  type ParityBooking,
   type ShareSettled,
   type UserId,
 } from '../../lib/clutch';
@@ -38,8 +37,11 @@ export type { PaymentStage } from './usePaymentFlow';
 /** The booking fields a confirmed payment hands back, from confirm or a re-read. */
 export type BookingFacts = Pick<
   BookingRecord,
-  'id' | 'date' | 'start_time' | 'end_time' | 'status' | 'currency' | 'price_cents' | 'paid_cents'
->;
+  'id' | 'date' | 'start_time' | 'end_time' | 'status' | 'currency' | 'price_cents'
+> & {
+  /** Null on a booking detail read by someone other than the booker. */
+  paid_cents: number | null;
+};
 
 const LIVE = new Set(['pending', 'confirmed']);
 
@@ -181,7 +183,7 @@ export interface UseMovePaymentOptions {
 /** P4: pay the difference on a dearer move, then make the move. */
 export function useMovePayment(bookingId: BookingId | null, move: BookingMove, options: UseMovePaymentOptions) {
   const { userId } = useSession();
-  return usePaymentFlow<ParityBooking>({
+  return usePaymentFlow<BookingRecord>({
     bookingId,
     userId,
     purpose: 'move',

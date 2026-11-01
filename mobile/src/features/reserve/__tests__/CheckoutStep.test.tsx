@@ -5,12 +5,13 @@ import { asCourtId, asUserId, clutch, CAPABILITIES } from '../../../lib/clutch';
 import type { MockClutch } from '../../../lib/clutch/testing';
 import { clutchError, networkError } from '../../../lib/clutch/testing';
 import {
-  ME_ID,
   makeBookingDetail,
   makeBookingRecord,
+  makeChargedBooking,
   makeCourtAvailability,
   makeLegacyCheckout,
   makeQuote,
+  ME_ID,
 } from '../../../lib/clutch/fixtures';
 import type { SheetResult } from '../../../lib/stripe';
 import { CheckoutStep } from '../CheckoutStep';
@@ -38,8 +39,8 @@ jest.mock('../useCountdown', () => ({ useCountdown: () => 600 }));
 
 const mockClutch = clutch as unknown as MockClutch;
 const COURT = makeCourtAvailability(asCourtId('c0000000-0000-4000-8000-000000000001'), { court_name: 'Court 2' });
-const HELD = makeBookingRecord({ price_cents: 3000, hold_expires_at: '2099-01-01T00:15:00.000Z' });
-const CONFIRMED = makeBookingRecord({ status: 'confirmed', payment_status: 'paid', paid_cents: 3000, hold_expires_at: null });
+const HELD = makeChargedBooking({ price_cents: 3000, hold_expires_at: '2099-01-01T00:15:00.000Z' });
+const CONFIRMED = makeChargedBooking({ status: 'confirmed', payment_status: 'paid', paid_cents: 3000, hold_expires_at: null });
 const CHECKOUT = makeLegacyCheckout({ clientSecret: 'pi_1_secret_x', paymentIntentId: 'pi_1', subtotalCents: 3000, taxAmountCents: 240 });
 void ME_ID;
 void asUserId;
@@ -149,8 +150,8 @@ describe('CheckoutStep: paying', () => {
   });
 
   it('confirms a free booking with no intent', async () => {
-    mockClutch.bookings.create.mockResolvedValue(makeBookingRecord({ price_cents: 0 }));
-    mockClutch.bookings.confirm.mockResolvedValue(makeBookingRecord({ status: 'confirmed', price_cents: 0 }));
+    mockClutch.bookings.create.mockResolvedValue(makeChargedBooking({ price_cents: 0 }));
+    mockClutch.bookings.confirm.mockResolvedValue(makeChargedBooking({ status: 'confirmed', price_cents: 0 }));
     const { onConfirmed } = renderCheckout();
 
     fireEvent.press(await screen.findByText('Confirm booking'));

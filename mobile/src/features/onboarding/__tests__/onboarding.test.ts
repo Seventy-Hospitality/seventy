@@ -4,6 +4,7 @@ import {
   makeProfile,
   makeStandingMembership,
   makeSubscription,
+  makeWaiver,
   TIER_ID,
 } from '../../../lib/clutch/fixtures';
 import { TEST_CLUB_ID } from '../../../lib/clutch/testing';
@@ -17,7 +18,9 @@ import {
   needsMembershipView,
   onboardingPathForStep,
   resolveOnboardingStep,
+  unsignedRequiredWaivers,
   viewOutcome,
+  waiversToSign,
 } from '../onboarding';
 
 const OTHER_CLUB = asClubId('99999999-0000-4000-8000-000000000000');
@@ -42,6 +45,34 @@ describe('resolveOnboardingStep', () => {
     expect(hasProfileName(makeProfile({ full_name: 'Alex' }))).toBe(true);
     expect(hasProfileName(makeProfile({ full_name: '' }))).toBe(false);
     expect(step(makeStandingMembership())).toBe('done');
+  });
+
+  it("asks a member to sign the club's required waivers before anything else", () => {
+    const view = makeStandingMembership();
+    const me = makeMe();
+    expect(resolveOnboardingStep({ me, clubId: TEST_CLUB_ID, view, waivers: [makeWaiver()] })).toBe('waiver');
+    const signed = makeWaiver({ signed: true, signed_at: '2026-10-01T12:00:00Z' });
+    expect(resolveOnboardingStep({ me, clubId: TEST_CLUB_ID, view, waivers: [signed] })).toBe('done');
+    expect(
+      resolveOnboardingStep({ me, clubId: TEST_CLUB_ID, view, waivers: [makeWaiver({ is_required: false })] }),
+    ).toBe('done');
+    // Unread waivers hold nobody (the hook waits for them before resolving).
+    expect(resolveOnboardingStep({ me, clubId: TEST_CLUB_ID, view, waivers: null })).toBe('done');
+    // A waiver comes before the tier: a member without one signs first.
+    const noTier = makeStandingMembership({
+      membership: { role: 'player', skill_level: null, status: 'active', tier: null },
+    });
+    expect(resolveOnboardingStep({ me, clubId: TEST_CLUB_ID, view: noTier, waivers: [makeWaiver()] })).toBe('waiver');
+  });
+
+  it('asks again for an every_time waiver only when a booking needs it, never in onboarding', () => {
+    const everyTime = makeWaiver({ frequency: 'every_time', signed: true, signed_at: '2026-10-01T12:00:00Z' });
+    const once = makeWaiver({ id: 'w-once', signed: true, signed_at: '2026-10-01T12:00:00Z' });
+    const optional = makeWaiver({ id: 'w-optional', is_required: false, frequency: 'every_time' });
+    expect(unsignedRequiredWaivers([everyTime, once, optional])).toEqual([]);
+    expect(waiversToSign([everyTime, once, optional]).map((w) => w.id)).toEqual([everyTime.id]);
+    expect(onboardingPathForStep('waiver')).toBeNull();
+    expect(canVisitOnboardingPath('waiver', '/onboarding/plan')).toBe(false);
   });
 
   it('asks to join when /me lists no membership at this club', () => {

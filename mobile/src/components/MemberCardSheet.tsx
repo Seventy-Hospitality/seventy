@@ -108,7 +108,7 @@ function MemberCardQr({ memberName }: { memberName: string }) {
     gcTime: 0,
   });
 
-  const ttlSeconds = token.data?.ttlSeconds ?? null;
+  const ttlSeconds = token.data?.ttl_seconds ?? null;
   const fetchedAt = token.dataUpdatedAt;
   useEffect(() => {
     if (ttlSeconds === null) return;

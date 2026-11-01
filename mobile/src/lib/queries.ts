@@ -15,6 +15,7 @@ export const queryKeys = {
   me: ['me'] as const,
   home: ['home'] as const,
   membership: ['membership'] as const,
+  waivers: ['waivers'] as const,
   tiers: ['tiers'] as const,
   eligibleTierChanges: ['membership', 'eligible-changes'] as const,
   paymentMethods: ['payment-methods'] as const,
@@ -41,6 +42,12 @@ export const homeQuery = queryOptions({ queryKey: queryKeys.home, queryFn: () =>
 export const membershipQuery = queryOptions({
   queryKey: queryKeys.membership,
   queryFn: () => clutch.membership.get(),
+});
+
+/** GET /me/waivers at this club: its active waivers and which the caller signed. */
+export const waiversQuery = queryOptions({
+  queryKey: queryKeys.waivers,
+  queryFn: () => clutch.me.waivers(),
 });
 
 /** The club's tiers plus the caller's subscription. */

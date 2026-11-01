@@ -7,6 +7,7 @@ import {
   makeProfile,
   makeStandingMembership,
   makeSubscription,
+  makeWaiver,
   TIER_ID,
 } from '../../../lib/clutch/fixtures';
 import { renderWithProviders } from '../../account/__tests__/render-account';
@@ -52,6 +53,7 @@ beforeEach(() => {
   mockClutch.club.join.mockResolvedValue({ joined: true, status: 'active', role: 'player' });
   mockClutch.membership.get.mockResolvedValue(NO_TIER);
   mockClutch.me.unregisterDevice.mockResolvedValue({ removed: true });
+  mockClutch.me.waivers.mockResolvedValue([]);
 });
 
 describe('OnboardingEntry', () => {
@@ -112,6 +114,46 @@ describe('OnboardingEntry', () => {
 
     expect(await screen.findByText('redirect:/(tabs)')).toBeTruthy();
     expect(mockClutch.club.join).not.toHaveBeenCalled();
+  });
+
+  it("asks a member for the club's required waiver, signs it in the app, then lets them in", async () => {
+    mockClutch.me.get.mockResolvedValue(makeMe());
+    mockClutch.membership.get.mockResolvedValue(makeStandingMembership());
+    let signed = false;
+    mockClutch.me.waivers.mockImplementation(async () => [
+      makeWaiver(signed ? { signed: true, signed_at: '2026-11-01T12:00:00Z' } : {}),
+    ]);
+    mockClutch.me.signWaiver.mockImplementation(async () => {
+      signed = true;
+      return { id: 'sig-1', waiver_id: 'waiver-1', signed_at: '2026-11-01T12:00:00Z', signer_name: null };
+    });
+
+    renderWithProviders(<OnboardingEntry />);
+
+    expect(await screen.findByText('Facility Liability Waiver')).toBeTruthy();
+    expect(screen.queryByText('redirect:/(tabs)')).toBeNull();
+    fireEvent.press(screen.getByLabelText('Sign waiver'));
+    expect(mockClutch.me.signWaiver).not.toHaveBeenCalled();
+
+    fireEvent.press(screen.getByLabelText('I have read the waiver and agree to it'));
+    fireEvent.press(screen.getByLabelText('Sign waiver'));
+
+    expect(await screen.findByText('redirect:/(tabs)')).toBeTruthy();
+    expect(mockClutch.me.signWaiver).toHaveBeenCalledTimes(1);
+    expect(mockClutch.me.signWaiver.mock.calls[0][0]).toBe('waiver-1');
+  });
+
+  it('never holds a member on a waiver they signed, or one the club does not require', async () => {
+    mockClutch.me.get.mockResolvedValue(makeMe());
+    mockClutch.membership.get.mockResolvedValue(makeStandingMembership());
+    mockClutch.me.waivers.mockResolvedValue([
+      makeWaiver({ id: 'w-signed', signed: true, signed_at: '2026-10-01T12:00:00Z', frequency: 'every_time' }),
+      makeWaiver({ id: 'w-optional', is_required: false }),
+    ]);
+
+    renderWithProviders(<OnboardingEntry />);
+
+    expect(await screen.findByText('redirect:/(tabs)')).toBeTruthy();
   });
 
   it('never lets a lapsed member in: its own screen, honest copy, sign-out', async () => {

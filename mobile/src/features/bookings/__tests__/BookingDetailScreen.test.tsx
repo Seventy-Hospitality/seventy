@@ -14,19 +14,21 @@ import {
 import type { MockClutch } from '../../../lib/clutch/testing';
 import { clutchError } from '../../../lib/clutch/testing';
 import {
-  ME_ID,
-  OTHER_ID,
   makeBookingDetail,
   makeBookingDue,
   makeBookingInvitation,
   makeBookingPlayer,
   makeBookingRecord,
+  makeCancelledBooking,
+  makeChargedBooking,
   makeClub,
   makeInvitationAnswer,
   makeParityBooking,
   makePlayerRemoval,
   makeShareCheckout,
   makeShareSettled,
+  ME_ID,
+  OTHER_ID,
 } from '../../../lib/clutch/fixtures';
 import { queryKeys } from '../../../lib/queries';
 import type { SheetResult } from '../../../lib/stripe';
@@ -142,7 +144,7 @@ describe('BookingDetailScreen: the booker', () => {
     const detail = makeBookingDetail({ date: FUTURE, user_id: ME });
     const client = renderDetail(detail);
     const invalidate = jest.spyOn(client, 'invalidateQueries');
-    mockClutch.bookings.cancel.mockResolvedValue(makeBookingRecord({ status: 'cancelled', payment_status: 'refunded' }));
+    mockClutch.bookings.cancel.mockResolvedValue(makeCancelledBooking({ payment_status: 'refunded' }));
 
     fireEvent.press(await screen.findByLabelText('Cancel booking'));
     const confirmButtons = await screen.findAllByText('Cancel booking');
@@ -173,7 +175,7 @@ describe('BookingDetailScreen: the booker', () => {
     setParity(false);
     const detail = makeBookingDetail({ date: FUTURE, user_id: ME, status: 'pending', hold_expires_at: '2099-01-01T00:00:00.000Z' });
     renderDetail(detail);
-    mockClutch.bookings.cancel.mockResolvedValue(makeBookingRecord({ status: 'cancelled' }));
+    mockClutch.bookings.cancel.mockResolvedValue(makeCancelledBooking());
 
     fireEvent.press(await screen.findByLabelText('Cancel booking'));
     const confirmButtons = await screen.findAllByText('Cancel booking');
@@ -202,7 +204,7 @@ describe('BookingDetailScreen: the booker', () => {
       expiresAt: null,
       state: 'submitted',
     });
-    mockClutch.bookings.confirm.mockResolvedValue(makeBookingRecord({ status: 'confirmed' }));
+    mockClutch.bookings.confirm.mockResolvedValue(makeChargedBooking({ status: 'confirmed' }));
     renderDetail(detail);
 
     expect(await screen.findByText('Check payment again')).toBeTruthy();

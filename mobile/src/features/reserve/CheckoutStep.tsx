@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { StyleSheet, Text, View, Pressable } from 'react-native';
+import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import {
   clutch,
@@ -16,7 +17,7 @@ import { colors, fonts, radius, spacing } from '../../theme/tokens';
 import { formatDateLong, formatDuration, formatTimeRangeCompact, type TimeRange } from './booking';
 import { describeBookingFailure, type BookingFailure } from './booking-failures';
 import { BookingSummaryCard } from './BookingSummaryCard';
-import { chargeFromQuote, chargeTotal, type Charge } from './charge';
+import { chargeFromQuote, chargeTotal, isFinalCharge, type Charge } from './charge';
 import { ChargeSummary } from './ChargeSummary';
 import type { HoldSession } from './hold-session';
 import { MembershipInactiveState } from './MembershipInactiveState';
@@ -113,7 +114,9 @@ export function CheckoutStep({
     currency: held?.currency ?? court.slots[0]?.currency ?? 'USD',
     // The confirmation shows what checkout showed: the quote, else the
     // intent's own lines.
-    onConfirmed: (booking, charged) => onConfirmed(booking, quotedRef.current ?? charged),
+    // A quote that prices its tax at payment is not what was charged.
+    onConfirmed: (booking, charged) =>
+      onConfirmed(booking, isFinalCharge(quotedRef.current) ? quotedRef.current : (charged ?? quotedRef.current)),
     onLockChange: (locked) => holdSession.setPaymentLocked(locked),
   });
 
@@ -214,7 +217,7 @@ export function CheckoutStep({
   // ── The payable hold ──
 
   const free = held.price_cents <= 0;
-  const charge: Charge = quoted ??
+  const charge: Charge = (isFinalCharge(quoted) ? quoted : (payment.charge ?? quoted)) ??
     payment.charge ?? { kind: 'unknown', currency: held.currency, price_cents: held.price_cents };
   const total = chargeTotal(charge);
   const payLabel = free ? 'Confirm booking' : total ? `Confirm and pay ${total}` : 'Continue to payment';
@@ -303,6 +306,7 @@ export function FailureBox({
   onRetry?: () => void;
   retrying?: boolean;
 }) {
+  const router = useRouter();
   if (failure.action === 'membership') {
     return <MembershipInactiveState title={failure.title} description={failure.message} />;
   }
@@ -311,6 +315,7 @@ export function FailureBox({
       {failure.action === 'pick-time' && onPickTime ? (
         <PrimaryButton label="Pick another time" onPress={onPickTime} />
       ) : null}
+      {failure.action === 'waiver' ? <PrimaryButton label="Sign the waiver" onPress={() => router.push('/waivers')} /> : null}
       {(failure.action === 'retry' || failure.action === 'retry-payment') && onRetry ? (
         <PrimaryButton label="Try again" variant="secondary" loading={retrying} onPress={onRetry} />
       ) : null}

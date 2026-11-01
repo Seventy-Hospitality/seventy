@@ -30,7 +30,7 @@ import { useRouter } from 'expo-router';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { authErrorMessage } from '../../lib/auth-errors';
-import { clutch, isClutchError, StepUpStateSchema, useMutationKey, type DeletionBlockers } from '../../lib/clutch';
+import { clutch, isClutchError, StepUpStateSchema, useMutationKey, type AccountDeletionBlockers } from '../../lib/clutch';
 import { OAuthCancelledError } from '../../lib/oauth';
 import { useSession } from '../../lib/session';
 import { Checkbox, FormField, Input, PasswordInput, PrimaryButton, Skeleton } from '../../components';
@@ -117,7 +117,7 @@ function BlockedView({
   checking = false,
   onCheckAgain,
 }: {
-  blockers: DeletionBlockers;
+  blockers: AccountDeletionBlockers;
   checking?: boolean;
   onCheckAgain: () => void;
 }) {
@@ -166,7 +166,7 @@ function DeleteFlow({
   const [code, setCode] = useState('');
   const [codeSent, setCodeSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [blockers, setBlockers] = useState<DeletionBlockers | null>(null);
+  const [blockers, setBlockers] = useState<AccountDeletionBlockers | null>(null);
   /** Set when a delete answered step_up_required with a second factor. */
   const [secondFactorSeen, setSecondFactorSeen] = useState(false);
 

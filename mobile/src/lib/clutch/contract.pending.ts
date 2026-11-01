@@ -22,6 +22,7 @@
  *                                        GET /me/payment-methods, POST /bookings/{id}/payment-intent/pay
  */
 import { z } from 'zod';
+import type { MoveCheckout, ShareCheckout } from './contract.gen';
 import {
   BookingIdSchema,
   CardIdSchema,
@@ -34,9 +35,6 @@ import {
 // ─── Error codes these branches add ─────────────────────────────────────────
 
 export const PENDING_ERROR_CODES = [
-  // P1 (origin/feat/expo-push @ 550e77c)
-  'device_verification_invalid',
-  'device_verification_unavailable',
   // P2 (packages/db/src/errors.ts on feat/native-payments)
   'already_subscribed',
   'membership_not_active',
@@ -47,57 +45,9 @@ export const PENDING_ERROR_CODES = [
   'not_cancelling',
   'setup_incomplete',
   'card_in_use_by_subscription',
-  // P4 (packages/db/src/errors.ts on feat/member-booking-parity)
-  'tier_required',
-  'outside_hours',
-  'slot_not_on_grid',
-  'max_bookings_reached',
-  'payment_processing',
-  'payment_required',
-  'reschedule_payment_required',
-  'move_not_applied',
-  // P5
-  'step_up_required',
-  'account_deletion_blocked',
-  'refunds_pending',
-  'account_deletion_failed',
-  'checkin_unavailable',
 ] as const;
 
-// ─── P1: push devices (origin/feat/expo-push, me/devices/{route,verify/route,respond}.ts, _shape.ts publicDevice) ─
-
-/** The device is registered for the caller (200, and the verify answer). */
-export const DeviceRegisteredSchema = z.object({
-  status: z.literal('registered'),
-  token: z.string(),
-  platform: z.enum(['ios', 'android']),
-  registeredAt: z.string(),
-});
-
-/**
- * 202: the token is another account's and this install could not show the
- * secret it was registered with. Clutch pushed a data-only message
- * `{type: "clutch.device_verification", code}` to the token; the app on that
- * device posts the code to POST /me/devices/verify before `expiresAt`.
- */
-export const DeviceVerificationRequiredSchema = z.object({
-  status: z.literal('verification_required'),
-  token: z.string(),
-  expiresAt: z.string(),
-});
-
-/** POST /me/devices `{ token, platform, device_secret }`. */
-export const RegisteredDeviceSchema = z.discriminatedUnion('status', [
-  DeviceRegisteredSchema,
-  DeviceVerificationRequiredSchema,
-]);
-export type RegisteredDevice = z.infer<typeof RegisteredDeviceSchema>;
-
-/** POST /me/devices/verify `{ token, code }`; 409 device_verification_invalid otherwise. */
-export const VerifiedDeviceSchema = DeviceRegisteredSchema;
-
-/** DELETE /me/devices `{ token }` answers this. */
-export const RemovedDeviceSchema = z.object({ removed: z.boolean() });
+// ─── Push payloads (packages/notifications; not API responses) ──────────────
 
 /** `data.type` of the verification push (packages/notifications/src/push.ts). */
 export const DEVICE_VERIFICATION_PUSH_TYPE = 'clutch.device_verification';
@@ -117,42 +67,6 @@ export const DeviceVerificationPushSchema = z.object({
   code: z.string(),
 });
 
-// ─── P5: account deletion and member check-in ───────────────────────────────
-
-export const CheckinTokenSchema = z.object({
-  token: z.string(),
-  expiresAt: z.string(),
-  ttlSeconds: z.number(),
-});
-export type CheckinToken = z.infer<typeof CheckinTokenSchema>;
-
-export const DeleteAccountResultSchema = z.object({ deleted: z.literal(true) });
-export type DeleteAccountResult = z.infer<typeof DeleteAccountResultSchema>;
-
-/** `details` of 409 account_deletion_blocked; `blockers` of GET /me/account/deletion. */
-export const DeletionBlockersSchema = z.object({
-  owned_clubs: z.array(z.object({ club_id: ClubIdSchema, club_name: z.string() })),
-  managed_children: z.array(z.object({ link_id: z.string(), name: z.string() })),
-});
-export type DeletionBlockers = z.infer<typeof DeletionBlockersSchema>;
-
-/** `details` of 403 step_up_required. */
-export const StepUpStateSchema = z.object({
-  satisfied: z.boolean(),
-  reason: z.string().nullable(),
-  authenticated_at: z.string().nullable(),
-  fresh_until: z.string().nullable(),
-  max_age_seconds: z.number(),
-  second_factor_required: z.boolean(),
-});
-export type StepUpState = z.infer<typeof StepUpStateSchema>;
-
-export const AccountDeletionPreviewSchema = z.object({
-  blockers: DeletionBlockersSchema,
-  step_up: StepUpStateSchema,
-});
-export type AccountDeletionPreview = z.infer<typeof AccountDeletionPreviewSchema>;
-
 // ─── main today (P2 replaces): booking checkout and saved cards ─────────────
 
 /** POST /bookings/{id}/payment-intent on main: no customer, no ephemeral key. */
@@ -163,6 +77,8 @@ export const LegacyBookingCheckoutSchema = z.object({
   stripeAccount: z.string().optional(),
   taxAmountCents: z.number().int().optional(),
   subtotalCents: z.number().int().optional(),
+  /** What the card is charged, tax included (Clutch states it since #181). */
+  total_cents: z.number().int().optional(),
 });
 export type LegacyBookingCheckout = z.infer<typeof LegacyBookingCheckoutSchema>;
 
@@ -332,167 +248,6 @@ export const BookingCheckoutSchema = SheetBundleSchema.extend({
   tax_cents: z.number().int().nullable(),
 });
 export type BookingCheckout = z.infer<typeof BookingCheckoutSchema>;
-
-// ─── P4: member booking parity (_booking-contract.ts) ───────────────────────
-
-/** A booking as the P4 routes return it. */
-export const ParityBookingSchema = z.object({
-  charge: z.unknown().optional(),
-  id: BookingIdSchema,
-  club_id: ClubIdSchema,
-  court_id: CourtIdSchema,
-  user_id: UserIdSchema.nullable(),
-  date: z.string(),
-  start_time: z.string(),
-  end_time: z.string(),
-  status: z.string(),
-  price_cents: z.number().int(),
-  currency: z.string(),
-  original_price_cents: z.number().int().nullable(),
-  discount_amount_cents: z.number().int().nullable(),
-  discount_code_id: z.string().nullable(),
-  payment_status: z.string().nullable(),
-  paid_cents: z.number().int().nullable(),
-  hold_expires_at: z.string().nullable(),
-});
-export type ParityBooking = z.infer<typeof ParityBookingSchema>;
-
-/** POST /bookings/quote: `total_cents` is what the card is charged (tax included). */
-/**
- * `charge` is being added to quote, hold and confirm on P4 (what the card
- * will be or was charged); its shape is not published yet, so it is kept
- * opaque and nothing reads it until the final regeneration names it.
- */
-const PendingChargeField = z.unknown().optional();
-
-export const BookingQuoteSchema = z.object({
-  charge: PendingChargeField,
-  club_id: ClubIdSchema,
-  court_id: CourtIdSchema,
-  date: z.string(),
-  start_time: z.string(),
-  end_time: z.string(),
-  currency: z.string(),
-  list_price_cents: z.number().int(),
-  discount_code_id: z.string().nullable(),
-  discount_amount_cents: z.number().int(),
-  price_cents: z.number().int(),
-  tax_cents: z.number().int(),
-  total_cents: z.number().int(),
-  tax_status: z.enum(['calculated', 'not_applicable', 'unavailable']),
-  member_pricing: z.boolean(),
-  joins_club: z.boolean(),
-  venue_payment_allowed: z.boolean(),
-});
-export type BookingQuote = z.infer<typeof BookingQuoteSchema>;
-
-export const InvitationAnswerSchema = z.object({
-  booking_id: BookingIdSchema,
-  status: z.enum(['accepted', 'declined']),
-});
-export type InvitationAnswer = z.infer<typeof InvitationAnswerSchema>;
-
-export const PlayerRemovalSchema = z.object({
-  booking_id: BookingIdSchema,
-  user_id: UserIdSchema,
-  removed: z.literal(true),
-});
-
-/** What a member may see of a fellow member (GET /clubs/{club}/players). */
-export const ClubPlayerSchema = z.object({
-  user_id: UserIdSchema,
-  full_name: z.string(),
-  username: z.string().nullable(),
-  avatar_url: z.string().nullable(),
-});
-export type ClubPlayer = z.infer<typeof ClubPlayerSchema>;
-export const ClubPlayersSchema = z.array(ClubPlayerSchema);
-
-const DayHoursSchema = z.object({
-  day_of_week: z.number().int(),
-  open_time: z.string(),
-  close_time: z.string(),
-  is_closed: z.boolean(),
-});
-
-export const CourtTypeRulesSchema = z.object({
-  court_type: z.string(),
-  slot_duration_minutes: z.number().int(),
-  min_duration_minutes: z.number().int().nullable(),
-  max_duration_minutes: z.number().int().nullable(),
-  advance_booking_days: z.number().int().nullable(),
-  max_bookings_per_day: z.number().int().nullable(),
-  tier_restricted: z.boolean(),
-  allowed_tier_ids: z.array(TierIdSchema),
-  hours: z.array(DayHoursSchema),
-  bookable_by_viewer: z.boolean().nullable(),
-  refusal: z.enum(['tier_required', 'not_club_member']).nullable(),
-});
-export type CourtTypeRules = z.infer<typeof CourtTypeRulesSchema>;
-
-/** GET /clubs/{club}/booking-rules: per court type. */
-export const ClubBookingRulesSchema = z.object({
-  club_id: ClubIdSchema,
-  members_only: z.boolean(),
-  venue_payment_allowed: z.boolean(),
-  enforce_schedule: z.boolean(),
-  max_bookings_per_day: z.number().int().nullable(),
-  court_types: z.array(CourtTypeRulesSchema),
-});
-export type ClubBookingRules = z.infer<typeof ClubBookingRulesSchema>;
-
-/** POST /bookings/{id}/reschedule/quote. */
-export const RescheduleQuoteSchema = z.object({
-  booking_id: BookingIdSchema,
-  court_id: CourtIdSchema,
-  date: z.string(),
-  start_time: z.string(),
-  end_time: z.string(),
-  currency: z.string(),
-  current_price_cents: z.number().int(),
-  new_price_cents: z.number().int(),
-  difference_cents: z.number().int(),
-  tax_cents: z.number().int(),
-  total_cents: z.number().int(),
-  payment_required: z.boolean(),
-});
-export type RescheduleQuote = z.infer<typeof RescheduleQuoteSchema>;
-
-/** POST /bookings/{id}/reschedule/payment-intent: the move order and its intent. */
-export const MoveCheckoutSchema = z.object({
-  move_order_id: z.string(),
-  expires_at: z.string(),
-  client_secret: z.string(),
-  payment_intent_id: z.string(),
-  stripe_account: z.string().nullable(),
-  simulated: z.boolean(),
-  subtotal_cents: z.number().int(),
-  tax_cents: z.number().int(),
-  total_cents: z.number().int(),
-  currency: z.string(),
-});
-export type MoveCheckout = z.infer<typeof MoveCheckoutSchema>;
-
-/** POST /bookings/{id}/shares/payment-intent: a player's share checkout. */
-export const ShareCheckoutSchema = z.object({
-  client_secret: z.string(),
-  payment_intent_id: z.string(),
-  stripe_account: z.string().nullable(),
-  simulated: z.boolean(),
-  subtotal_cents: z.number().int(),
-  tax_cents: z.number().int(),
-  total_cents: z.number().int(),
-});
-export type ShareCheckout = z.infer<typeof ShareCheckoutSchema>;
-
-/** POST /bookings/{id}/shares/confirm. */
-export const ShareSettledSchema = z.object({
-  booking_id: BookingIdSchema,
-  payment_intent_id: z.string(),
-  my_due_cents: z.number().int(),
-  my_paid_cents: z.number().int(),
-});
-export type ShareSettled = z.infer<typeof ShareSettledSchema>;
 
 // ─── PaymentSheet intents (app side, built from the bundles above) ──────────
 

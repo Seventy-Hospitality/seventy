@@ -3,8 +3,7 @@
  * social groups at this club; in Clutch "club" means the venue). Kept free of
  * React and of the client so they are unit-tested in isolation.
  */
-import type { GroupActivityItem, GroupMember, GroupRole } from '../../lib/clutch/contract.gen';
-import type { ClubPlayer } from '../../lib/clutch/contract.pending';
+import type { ClubPlayer, GroupActivityItem, GroupMember, GroupRole } from '../../lib/clutch/contract.gen';
 import { ClutchError, hasCode } from '../../lib/clutch/errors';
 import type { UserId } from '../../lib/clutch/ids';
 

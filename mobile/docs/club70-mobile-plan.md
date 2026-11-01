@@ -134,28 +134,28 @@ browser) and the contact address (mailto:contact@seventyhospitality.com).
   account with a fresh sign-in as step-up.
 
 ## What is gated, and why (capabilities.ts)
-All five Clutch branches are pushed; none is deployed. The merge order
-(#156, P1, P5, P4, P3, P2) ends with regenerating `contract.gen.ts` from the
-final `openapi.json`.
+`contract.gen.ts` is generated from `feat/typed-api-contract` (we-are-clutch
+#183: P3's typed contract on top of #181), which carries P1, P4 and P5. It
+merges after #180 and #181; until then a Clutch deployment of main does not
+answer this contract.
 
-| Capability | Clutch branch | State | What it unlocks |
+| Capability | Clutch | State | What it unlocks |
 |---|---|---|---|
-| `pushDevices` | P1 feat/expo-push | on | register / unregister this install (device_secret); prove a taken token with the pushed code (`/me/devices/verify`) |
-| `checkinToken` | P5 feat/account-deletion-and-checkin | on | signed member QR |
-| `accountDeletion` | P5 | on | deletion preview, delete with step-up |
-| `bookingParity` | P4 feat/member-booking-parity | off | quote with tax, per-sport booking rules, accept/decline, remove/leave, member search, reschedule quote and paid moves, players paying their share, pending-only hold release |
+| `pushDevices` | #160, in main | on | register / unregister this install (device_secret); prove a taken token with the pushed code (`/me/devices/verify`) |
+| `checkinToken` | #161, in main | on | signed member QR |
+| `accountDeletion` | #161, in main | on | deletion preview, delete with step-up |
+| `bookingParity` | #181 (+ #183's contract) | on | quote with tax, per-sport booking rules, accept/decline, remove/leave, member search, reschedule quote and paid moves, players paying their share, pending-only hold release |
 | `nativePayments` | P2 feat/native-payments | off | subscribe / confirm / change / cancel / resume, add card, set default, remove card, booking checkout with saved cards |
 
-P2 and P4 stay off until they are merged behind P3's contract: their payment
-fields are being renamed to snake_case (client_secret, customer_id,
-ephemeral_key_secret, stripe_account, intent_type) and P4's `charge` field is
-not published yet. While off, the app says plainly that the action is not
-available yet; booking still works through main's checkout (no saved cards).
+Without P2 a member cannot pay for a membership in the app: the club gives
+them their tier (the admin app), and the plan step says so with "Check
+again". Booking checkout works without P2 through main's payment intent.
+
+Club 70 prices tax at payment (`tax_status: at_checkout`): checkout names no
+total until the payment intent states it, and the confirmation shows what was
+charged.
 
 Still missing in Clutch (not on any branch):
-- A list of bookings the member plays in (accepted invitations). The app keeps
-  the ids it accepted on this device and reads each booking; Clutch should
-  add `include=playing` (or similar) to `/me/bookings`.
 - A web page for group invite links: shared links are the app's
   `seventy://groups/join?token=` deep link and need the app installed.
 
@@ -173,7 +173,8 @@ Still missing in Clutch (not on any branch):
 - EAS: set `EXPO_PUBLIC_SUPABASE_URL` / `EXPO_PUBLIC_SUPABASE_ANON_KEY` and the
   Stripe, Google and Apple values as EAS environment variables per profile.
 
-## Verification (honest limits)
-No iOS/Android simulator here. Gate: `npm run typecheck`, `npm test` (jest,
-mocked at the client boundary). The owner runs it on a device against a
-Clutch deployment.
+## Verification
+`npm run typecheck`, `npm test` (jest, mocked at the client boundary), and
+`e2e/run.sh`: a release build on an Android emulator against a local Clutch,
+driven by Maestro from sign-up to a paid booking, then checked in Clutch's
+database (e2e/README.md). iOS is not run here (no macOS).

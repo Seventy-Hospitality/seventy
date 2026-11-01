@@ -28,19 +28,31 @@ import {
   GroupSummarySchema,
   MembershipSubscriptionSchema,
   MembershipTierSchema,
-  MyBookingSchema,
+  MemberBookingSchema,
   NotificationPreferencesSchema,
   PaymentSchema,
   ProfileSchema,
+  WaiverStatusSchema,
   type AvailabilitySlot,
   type CourtAvailability,
 } from './contract.gen';
 import {
-  BookingCheckoutSchema,
   BookingQuoteSchema,
+  CancelBookingResponseSchema,
   ClubBookingRulesSchema,
+  CreateBookingResponseSchema,
   ClubPlayerSchema,
-  CourtTypeRulesSchema,
+  CourtTypeBookingRulesSchema as CourtTypeRulesSchema,
+  GetMyAccountDeletionResponseSchema,
+  InvitationAnswerSchema,
+  MoveCheckoutSchema,
+  PlayerRemovalSchema,
+  RescheduleQuoteSchema,
+  ShareCheckoutSchema,
+  ShareSettledSchema,
+} from './contract.gen';
+import {
+  BookingCheckoutSchema,
   LegacyBookingCheckoutSchema,
   MyMembershipBillingSchema,
   SavedCardSchema,
@@ -154,7 +166,11 @@ export function makeCourtAvailability(
       court_type: 'badminton',
       is_indoor: true,
       surface: null,
+      min_booking_duration_minutes: 60,
       max_booking_duration_minutes: 120,
+      slot_duration_minutes: 60,
+      tier_restricted: false,
+      bookable_by_viewer: true,
       slots: slots ?? [makeSlot({ court_id: courtId as never })],
     } as z.input<typeof CourtAvailabilitySchema>,
     over,
@@ -188,6 +204,7 @@ function bookingColumns(): z.input<typeof BookingRecordSchema> {
     checked_in_at: null,
     no_show_recorded_at: null,
     cancelled_at: null,
+    discount_code_id: null,
     is_rainout: false,
     rainout_at: null,
     is_open_play: false,
@@ -230,8 +247,22 @@ export function makeBooking(over: Over<typeof BookingSchema> = {}) {
 }
 
 /** A row of GET /me/bookings (kind: booking). */
-export function makeMyBooking(over: Over<typeof MyBookingSchema> = {}) {
-  return build(MyBookingSchema, { ...(makeBooking() as object), kind: 'booking' } as z.input<typeof MyBookingSchema>, over);
+export function makeMyBooking(over: Over<typeof MemberBookingSchema> = {}) {
+  return build(
+    MemberBookingSchema,
+    {
+      ...(makeBooking() as object),
+      kind: 'booking',
+      discount_code_id: null,
+      court_name: 'Court 1',
+      court_type: 'badminton',
+      share_path: null,
+      role: 'booker',
+      my_due_cents: 0,
+      my_paid_cents: 0,
+    } as z.input<typeof MemberBookingSchema>,
+    over,
+  );
 }
 
 export function makeBookingDetail(over: Over<typeof BookingDetailSchema> = {}) {
@@ -326,7 +357,27 @@ export function makeTier(over: Over<typeof MembershipTierSchema> = {}) {
       advance_booking_days: 14,
       discount_percent: 0,
       sort_order: 1,
+      benefits: [],
     } as z.input<typeof MembershipTierSchema>,
+    over,
+  );
+}
+
+export function makeWaiver(over: Over<typeof WaiverStatusSchema> = {}) {
+  return build(
+    WaiverStatusSchema,
+    {
+      id: 'waiver-1',
+      club_id: TEST_CLUB_ID,
+      title: 'Facility Liability Waiver',
+      content: 'ASSUMPTION OF RISK AND WAIVER OF LIABILITY',
+      waiver_type: 'facility',
+      is_required: true,
+      frequency: 'once',
+      signed: false,
+      signed_at: null,
+      signer_name: null,
+    } as z.input<typeof WaiverStatusSchema>,
     over,
   );
 }
@@ -612,6 +663,8 @@ export function makeBookingRules(over: Over<typeof ClubBookingRulesSchema> = {})
       venue_payment_allowed: false,
       enforce_schedule: true,
       max_bookings_per_day: null,
+      cancellation_hours: 24,
+      late_cancel: 'refused',
       court_types: [makeCourtTypeRules()],
     } as z.input<typeof ClubBookingRulesSchema>,
     over,
@@ -670,8 +723,9 @@ export function makeGroupInvitation(over: Over<typeof GroupInvitationSchema> = {
 
 // ─── P2 billing results and P5 deletion preview (account / onboarding) ──────
 
+const AccountDeletionPreviewSchema = GetMyAccountDeletionResponseSchema.shape.data;
+
 import {
-  AccountDeletionPreviewSchema,
   ChangeTierResultSchema,
   EligibleChangeTierSchema,
   MembershipConfirmSchema,
@@ -774,6 +828,7 @@ export function makeDeletionPreview(over: Over<typeof AccountDeletionPreviewSche
         fresh_until: null,
         max_age_seconds: 300,
         second_factor_required: false,
+        methods: ['password', 'email_code'],
       },
     } as z.input<typeof AccountDeletionPreviewSchema>,
     over,
@@ -782,15 +837,6 @@ export function makeDeletionPreview(over: Over<typeof AccountDeletionPreviewSche
 
 // ─── Booking parts and P4 booking parity (appended by the bookings area) ────
 
-import {
-  InvitationAnswerSchema,
-  MoveCheckoutSchema,
-  ParityBookingSchema,
-  PlayerRemovalSchema,
-  RescheduleQuoteSchema,
-  ShareCheckoutSchema,
-  ShareSettledSchema,
-} from './contract.pending';
 
 /** One payer's line of a booking's dues (BookingDetail.dues). */
 export function makeBookingDue(over: Over<typeof BookingDueSchema> = {}) {
@@ -825,30 +871,34 @@ export function makeBookingPlayer(over: Over<typeof BookingPlayerSchema> = {}) {
   );
 }
 
-export function makeParityBooking(over: Over<typeof ParityBookingSchema> = {}) {
-  const c = bookingColumns() as Record<string, unknown>;
-  return build(
-    ParityBookingSchema,
-    {
-      id: c.id,
-      club_id: c.club_id,
-      court_id: c.court_id,
-      user_id: c.user_id,
-      date: c.date,
-      start_time: c.start_time,
-      end_time: c.end_time,
-      status: 'confirmed',
-      price_cents: 3000,
-      currency: 'USD',
-      original_price_cents: 3000,
-      discount_amount_cents: 0,
-      discount_code_id: null,
-      payment_status: 'paid',
-      paid_cents: 3000,
-      hold_expires_at: null,
-    } as z.input<typeof ParityBookingSchema>,
-    over,
-  );
+/** A booking as POST /bookings and its confirm answer it: the record and its charge. */
+export function makeChargedBooking(over: Parameters<typeof makeBookingRecord>[0] = {}) {
+  return CreateBookingResponseSchema.shape.data.parse({
+    ...makeBookingRecord(over),
+    charge: { subtotal_cents: 3000, tax_cents: 0, total_cents: 3000, tax_status: 'not_applicable' },
+  });
+}
+
+/** A booking as its cancel answers it: the record and what happened to the booker's money. */
+export function makeCancelledBooking(over: Parameters<typeof makeBookingRecord>[0] = {}) {
+  return CancelBookingResponseSchema.shape.data.parse({
+    ...makeBookingRecord({ status: 'cancelled', cancelled_at: '2026-10-19T12:00:00.000Z', ...over }),
+    cancellation: null,
+  });
+}
+
+/** A booking as release and the move confirm answer it (BookingRecord). */
+export function makeParityBooking(over: Parameters<typeof makeBookingRecord>[0] = {}) {
+  return makeBookingRecord({
+    status: 'confirmed',
+    price_cents: 3000,
+    original_price_cents: 3000,
+    discount_amount_cents: 0,
+    payment_status: 'paid',
+    paid_cents: 3000,
+    hold_expires_at: null,
+    ...over,
+  });
 }
 
 export function makeShareCheckout(over: Over<typeof ShareCheckoutSchema> = {}) {
