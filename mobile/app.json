@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Club70",
-    "slug": "seventy-mobile",
+    "slug": "seventy",
     "scheme": "seventy",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -62,6 +62,12 @@
         "backgroundColor": "#1e2a20"
       }
     },
-    "icon": "./assets/icon.png"
+    "icon": "./assets/icon.png",
+    "owner": "seventy-hospitality",
+    "extra": {
+      "eas": {
+        "projectId": "96451087-60a9-4b5d-8ee0-4f877d0ffe43"
+      }
+    }
   }
 }
