@@ -1,5 +1,6 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { clutchError, networkError } from '../../../lib/clutch/testing';
+import { WrongAccountError } from '../../../lib/same-member';
 import { SetPasswordScreen } from '../SetPasswordScreen';
 import { renderWithProviders } from './render-account';
 
@@ -15,7 +16,7 @@ const mockSession = {
   updatePassword: jest.fn(async (_password: string) => undefined),
   signOut: jest.fn(async () => undefined),
   sendExistingAccountCode: jest.fn(async (_email: string) => undefined),
-  verifyEmailCode: jest.fn(async (_email: string, _code: string) => undefined),
+  reconfirmWithCode: jest.fn(async (_email: string, _code: string) => undefined),
 };
 jest.mock('../../../lib/session', () => ({ useSession: () => mockSession }));
 
@@ -49,7 +50,7 @@ describe('SetPasswordScreen', () => {
     fireEvent.changeText(screen.getByLabelText('6-digit code'), '123456');
     fireEvent.press(screen.getByText('Save Password'));
 
-    await waitFor(() => expect(mockSession.verifyEmailCode).toHaveBeenCalledWith('alex@example.com', '123456'));
+    await waitFor(() => expect(mockSession.reconfirmWithCode).toHaveBeenCalledWith('alex@example.com', '123456'));
     await waitFor(() => expect(mockSession.updatePassword).toHaveBeenCalledTimes(2));
     expect(mockSession.updatePassword).toHaveBeenLastCalledWith('new-password-1');
     expect(mockReplace).toHaveBeenCalledWith('/');
@@ -57,12 +58,27 @@ describe('SetPasswordScreen', () => {
 
   it('keeps the member on the code step when the code is wrong', async () => {
     mockSession.updatePassword.mockRejectedValueOnce(clutchError('step_up_required', 403));
-    mockSession.verifyEmailCode.mockRejectedValueOnce(clutchError('invalid_credentials', 401));
+    mockSession.reconfirmWithCode.mockRejectedValueOnce(clutchError('invalid_credentials', 401));
     renderWithProviders(<SetPasswordScreen />);
     typePassword();
     fireEvent.changeText(await screen.findByLabelText('6-digit code'), '000000');
     fireEvent.press(screen.getByText('Save Password'));
     expect(await screen.findByText('That code is wrong, expired or already used. Ask for a new one.')).toBeTruthy();
+    expect(mockSession.updatePassword).toHaveBeenCalledTimes(1);
+    expect(mockReplace).not.toHaveBeenCalled();
+  });
+
+  it('does not save the password when the code signs in a different account', async () => {
+    mockSession.updatePassword.mockRejectedValueOnce(clutchError('step_up_required', 403));
+    mockSession.reconfirmWithCode.mockRejectedValueOnce(new WrongAccountError());
+    renderWithProviders(<SetPasswordScreen />);
+    typePassword();
+    fireEvent.changeText(await screen.findByLabelText('6-digit code'), '123456');
+    fireEvent.press(screen.getByText('Save Password'));
+    expect(
+      await screen.findByText('That code signed in a different account. Sign out, then sign in again.'),
+    ).toBeTruthy();
+    expect(screen.getByText('Choose a new password')).toBeTruthy();
     expect(mockSession.updatePassword).toHaveBeenCalledTimes(1);
     expect(mockReplace).not.toHaveBeenCalled();
   });

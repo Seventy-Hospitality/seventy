@@ -233,6 +233,9 @@ describe('session store', () => {
     expect(store.secondsUntilRefresh()).toBe(MIN_REFRESH_INTERVAL_S);
     expect(await store.getAccessToken()).toBe('a2');
     expect(refresher).toHaveBeenCalledTimes(1);
+    // A 401 still forces a refresh inside the floor.
+    expect(await store.refresh('a2')).toBe('a2');
+    expect(refresher).toHaveBeenCalledTimes(2);
     advance(MIN_REFRESH_INTERVAL_S);
     expect(store.secondsUntilRefresh()).toBe(0);
   });

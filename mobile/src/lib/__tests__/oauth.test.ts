@@ -22,7 +22,7 @@ describe('sha256Hex', () => {
 });
 
 describe('getFederatedCredential', () => {
-  it('hands the SDK sha256(raw nonce) and returns the RAW nonce for GoTrue', async () => {
+  it("hands the SDK sha256(raw nonce) and returns the RAW nonce for Clutch's /auth/id-token", async () => {
     const authenticate = jest.fn(async (hashedNonce: string) => {
       expect(hashedNonce).toBe(sha256('raw-nonce-123'));
       return { idToken: 'id-token-xyz', fullName: { givenName: 'Alex' } };

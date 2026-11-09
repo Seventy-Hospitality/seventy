@@ -15,6 +15,7 @@ const mockClutch = (jest.requireMock('../clutch') as { clutch: MockClutch }).clu
 import { SessionProvider, useSession } from '../session';
 import { sessionStore } from '../auth-session';
 import { queryClient } from '../query-client';
+import { WrongAccountError } from '../same-member';
 
 function wrapper({ children }: { children: ReactNode }) {
   return <SessionProvider>{children}</SessionProvider>;
@@ -97,6 +98,28 @@ describe('SessionProvider', () => {
     await act(() => result.current.updatePassword('new-password-1'));
     expect(mockClutch.auth.setPassword).toHaveBeenCalledWith('new-password-1');
     expect(result.current.passwordRecovery).toBe(false);
+  });
+
+  it('re-confirms the same member with a code and adopts the fresh session', async () => {
+    await sessionStore.set(makeAuthSession({ access_token: 'old-token' }));
+    mockClutch.auth.verifyCode.mockResolvedValue(makeAuthSession({ access_token: 'fresh-token' }));
+    const { result } = await renderSession();
+    await act(() => result.current.reconfirmWithCode(' a@b.com ', ' 123456 '));
+    expect(mockClutch.auth.verifyCode).toHaveBeenCalledWith('a@b.com', '123456');
+    expect(sessionStore.current()?.access_token).toBe('fresh-token');
+    expect(mockClutch.auth.signOut).not.toHaveBeenCalled();
+  });
+
+  it('never adopts a re-confirming code that signs in another account, and ends that session', async () => {
+    await sessionStore.set(makeAuthSession({ access_token: 'old-token' }));
+    mockClutch.auth.verifyCode.mockResolvedValue(
+      makeAuthSession({ access_token: 'stray-token', user: { id: 'someone-else', email: 'a@b.com' } }),
+    );
+    const { result } = await renderSession();
+    await expect(result.current.reconfirmWithCode('a@b.com', '123456')).rejects.toBeInstanceOf(WrongAccountError);
+    expect(sessionStore.current()?.access_token).toBe('old-token');
+    expect(result.current.userId).toBe(ME_ID);
+    expect(mockClutch.auth.signOut).toHaveBeenCalledWith('local', { accessToken: 'stray-token' });
   });
 
   it('restores recovery mode after an app restart', async () => {

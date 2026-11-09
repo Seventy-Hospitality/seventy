@@ -42,10 +42,11 @@ no Supabase or Stripe key and receives no email links.
 - Clutch sets a password only for a recent sign-in (about ten minutes):
   past that, `POST /auth/password` answers `step_up_required` and the
   set-password screen emails a fresh code to the signed-in address, signs
-  the same member in with it and saves the password already typed.
-  `mfa_required` (an account with an authenticator app, which the app does
-  not support) sends the member to the website; `upstream_error` is retried
-  with the session kept; a password the account already has is
+  the same member in with it (a code that signs in another account is not
+  adopted) and saves the password already typed. `mfa_required` (an account
+  with an authenticator app, which the app does not support) sends the
+  member to the website; `upstream_error` asks the member to try again, and
+  the session is kept; a password the account already has is
   `invalid_field`.
 - A refused refresh (any 4xx but 429, including an ended or banned session)
   ends the session; 429, 5xx and network failures keep it for the next try.
@@ -92,9 +93,10 @@ no Supabase or Stripe key and receives no email links.
   envelope, `ClutchError.code: ErrorCode | 'unknown'`, a refresh only after a
   401 `session_expired`, `auth_required` or `invalid_token` (the session store
   shares one rotation and answers only the same member's new token) and a NEW
-  Idempotency-Key for that retry (Clutch caches the 401 under the first key), an Idempotency-Key on every mutation (the logical
-  mutation's, `useMutationKey`; confirm-style calls also rotate after a 5xx;
-  multipart sends always get a fresh one), `409 request_in_flight` waits with
+  Idempotency-Key for that retry (Clutch caches the 401 under the first key),
+  an Idempotency-Key on every mutation (the logical mutation's,
+  `useMutationKey`; confirm-style calls also rotate after a 5xx; multipart
+  sends always get a fresh one), `409 request_in_flight` waits with
   the same key, the club bound at construction with a startup slug check,
   `/me/groups` filtered to the club, midnight sent as `00:00`.
 - `membership-view.ts`: `entitlement()` is the one reading of "may this member
@@ -116,8 +118,8 @@ is Clutch's platform key, sent as `publishable_key` next to every
 for a club on the platform account). Move and share checkouts are generated;
 booking checkout and card setup are outside the OpenAPI document and stay in
 `contract.pending.ts`, which prefers `stripe_account` over the older
-`stripeAccount`. The app never reports success: it hands
-the intent id to Clutch (`confirm` / `save`) and shows Clutch's answer. Physical venue
+`stripeAccount`. The app never reports success: it hands the intent id to
+Clutch (`confirm` / `save`) and shows Clutch's answer. Physical venue
 memberships use Stripe, never IAP (App Store 3.1.3(e)).
 
 ## Push (`src/features/account/usePushRegistration.ts`, `push-verification.ts`, `src/features/notifications/`)

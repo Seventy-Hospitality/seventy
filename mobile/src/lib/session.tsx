@@ -42,6 +42,7 @@ import {
 } from './oauth';
 import { queryClient } from './query-client';
 import { clutch } from './clutch';
+import { adoptSameMemberSession } from './same-member';
 
 export type SessionStatus = 'loading' | 'anonymous' | 'authenticated';
 
@@ -75,6 +76,12 @@ export interface SessionContextValue {
   verifyEmailCode(email: string, code: string): Promise<void>;
   /** Email a code to an existing account only (confirming it, or stepping up). */
   sendExistingAccountCode(email: string): Promise<void>;
+  /**
+   * Confirm the signed-in member again with an emailed code (a step-up). The
+   * fresh session is adopted only when it is the same member's; otherwise it
+   * is ended on Clutch and WrongAccountError (lib/same-member.ts) is thrown.
+   */
+  reconfirmWithCode(email: string, code: string): Promise<void>;
   signInWithGoogle(): Promise<void>;
   signInWithApple(): Promise<void>;
   /** Email a reset code (same answer whether or not the address has an account). */
@@ -275,6 +282,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       },
       async sendExistingAccountCode(email) {
         await clutch.auth.sendCode({ email: email.trim(), create_user: false });
+      },
+      async reconfirmWithCode(email, code) {
+        const expected = sessionStore.current()?.user.id ?? null;
+        await adoptSameMemberSession(expected, await clutch.auth.verifyCode(email.trim(), code.trim()));
       },
       signInWithGoogle: () => signInWithFederated(googleAdapter),
       signInWithApple: () => signInWithFederated(appleAdapter),

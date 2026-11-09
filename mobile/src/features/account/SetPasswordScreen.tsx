@@ -3,6 +3,7 @@ import { useRouter } from 'expo-router';
 import { Controller } from 'react-hook-form';
 import { Text, View } from 'react-native';
 import { useSession } from '../../lib/session';
+import { WrongAccountError } from '../../lib/same-member';
 import { authErrorMessage, isStepUpRequired, passwordErrorMessage } from '../../lib/auth-errors';
 import { newPasswordSchema, useZodForm } from '../../lib/forms';
 import { AppScreen } from '../../components/AppScreen';
@@ -21,11 +22,13 @@ import { unregisterPushForSignOut } from './usePushRegistration';
  * Clutch only lets a recent sign-in set a password (step_up_required after
  * about ten minutes, or after the app was closed and reopened later). Then the
  * screen emails a fresh code to the signed-in address; the code signs the
- * same member in again and the password they already typed is saved.
+ * same member in again and the password they already typed is saved. A code
+ * that signs in a different account (the address has moved since) is not
+ * adopted: the member stays as they were and is told to sign out.
  */
 export function SetPasswordScreen() {
   const router = useRouter();
-  const { email, updatePassword, signOut, sendExistingAccountCode, verifyEmailCode } = useSession();
+  const { email, updatePassword, signOut, sendExistingAccountCode, reconfirmWithCode } = useSession();
   const form = useZodForm(newPasswordSchema, { defaultValues: { password: '', confirm: '' } });
   /** The password waiting for a fresh code, while the code form shows. */
   const [pending, setPending] = useState<string | null>(null);
@@ -71,7 +74,16 @@ export function SetPasswordScreen() {
               intro="For your security, enter the code we just sent to"
               submitLabel="Save Password"
               onSubmitCode={async (code) => {
-                await verifyEmailCode(email, code);
+                try {
+                  await reconfirmWithCode(email, code);
+                } catch (err) {
+                  if (!(err instanceof WrongAccountError)) throw err;
+                  setPending(null);
+                  form.setError('password', {
+                    message: 'That code signed in a different account. Sign out, then sign in again.',
+                  });
+                  return;
+                }
                 try {
                   await finish(pending);
                 } catch (err) {

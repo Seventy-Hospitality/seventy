@@ -8,20 +8,18 @@
  * code (never creating an account); a linked Google or Apple identity with
  * that provider.
  *
- * Every step-up must land on the SAME user. Clutch answers the fresh session
- * first and the app adopts it only when it names the member who is signed
- * in (its user, else the token's subject, as the session store reads it): a
- * sign-in that belongs to another account is dropped and best-effort signed
- * out on Clutch, so the session (and what DELETE /me/account would delete)
- * never switches person and no stray session is left running.
+ * Every step-up must land on the SAME user (lib/same-member.ts): a sign-in
+ * that belongs to another account is dropped and best-effort signed out on
+ * Clutch, so the session (and what DELETE /me/account would delete) never
+ * switches person and no stray session is left running.
  *
  * A refused step-up (`invalid_credentials`) becomes a StepUpRejectedError
  * whose message fits the method: a password, a code, or Google / Apple.
  */
 import { clutch, type AuthSession } from '../../lib/clutch';
 import { authErrorCode, codeErrorMessage, federatedErrorMessage } from '../../lib/auth-errors';
-import { sessionStore, sessionUserId } from '../../lib/auth-session';
 import { federatedAdapters, getFederatedCredential, type OAuthProvider } from '../../lib/oauth';
+import { adoptSameMemberSession, WrongAccountError } from '../../lib/same-member';
 
 export type StepUpMethod =
   | { kind: 'password' }
@@ -40,12 +38,7 @@ export function stepUpMethods(identities: { provider: string }[]): StepUpMethod[
 }
 
 /** The step-up landed on another account; nothing was deleted. */
-export class StepUpWrongAccountError extends Error {
-  constructor() {
-    super('That sign-in belongs to a different account.');
-    this.name = 'StepUpWrongAccountError';
-  }
-}
+export { WrongAccountError as StepUpWrongAccountError };
 
 /** The step-up sign-in was refused; `message` says so for its method. */
 export class StepUpRejectedError extends Error {
@@ -72,18 +65,8 @@ async function signInFor(method: StepUpMethod, run: () => Promise<AuthSession>):
   }
 }
 
-/** Adopt the fresh session only when it is the same member's. */
-async function adoptIfSameUser(expectedUserId: string, session: AuthSession): Promise<void> {
-  if (sessionUserId(session) !== expectedUserId) {
-    // Not adopted; end it on Clutch so it does not linger (best effort).
-    await clutch.auth.signOut('local', { accessToken: session.access_token }).catch(() => undefined);
-    throw new StepUpWrongAccountError();
-  }
-  await sessionStore.set(session);
-}
-
 export async function stepUpWithPassword(expectedUserId: string, email: string, password: string): Promise<void> {
-  await adoptIfSameUser(
+  await adoptSameMemberSession(
     expectedUserId,
     await signInFor({ kind: 'password' }, () => clutch.auth.token(email, password)),
   );
@@ -95,7 +78,7 @@ export async function sendStepUpCode(email: string): Promise<void> {
 }
 
 export async function stepUpWithCode(expectedUserId: string, email: string, code: string): Promise<void> {
-  await adoptIfSameUser(
+  await adoptSameMemberSession(
     expectedUserId,
     await signInFor({ kind: 'code' }, () => clutch.auth.verifyCode(email, code.trim())),
   );
@@ -103,7 +86,7 @@ export async function stepUpWithCode(expectedUserId: string, email: string, code
 
 export async function stepUpWithProvider(expectedUserId: string, provider: OAuthProvider): Promise<void> {
   const credential = await getFederatedCredential(federatedAdapters[provider]);
-  await adoptIfSameUser(
+  await adoptSameMemberSession(
     expectedUserId,
     await signInFor({ kind: 'federated', provider }, () =>
       clutch.auth.idToken({ provider: credential.provider, id_token: credential.token, nonce: credential.nonce }),
