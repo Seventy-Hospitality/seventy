@@ -79,6 +79,179 @@
         }
       }
     },
+    "/auth/id-token": {
+      "post": {
+        "operationId": "signInWithIdToken",
+        "summary": "Sign in with an Apple or Google ID token",
+        "description": "Creates the account on a first sign-in. The app's Apple bundle id and Google client ids must be authorized on the deployment's identity provider.",
+        "tags": ["Auth"],
+        "security": [{}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignInWithIdTokenRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignInWithIdTokenResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure. `error` is an ErrorCode.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-error-codes": ["invalid_credentials", "rate_limit_exceeded"]
+      }
+    },
+    "/auth/otp": {
+      "post": {
+        "operationId": "requestEmailCode",
+        "summary": "Email a 6-digit sign-in code",
+        "description": "Follow with POST /auth/otp/verify. Without `create_user`, an address with no account is answered the same 202 and gets no email, so this cannot tell who has an account. With it, an address with no account gets one (and `full_name` on its profile); its first email is the address confirmation, which carries the code too. Also the first step of a password reset: verify the code, then POST /auth/password.",
+        "tags": ["Auth"],
+        "security": [{}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestEmailCodeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestEmailCodeResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure. `error` is an ErrorCode.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-error-codes": ["invalid_field", "rate_limit_exceeded"]
+      }
+    },
+    "/auth/otp/verify": {
+      "post": {
+        "operationId": "verifyEmailCode",
+        "summary": "Exchange an emailed code for a session",
+        "description": "A code is single use and expires after an hour. A wrong or expired one is invalid_credentials.",
+        "tags": ["Auth"],
+        "security": [{}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyEmailCodeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerifyEmailCodeResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure. `error` is an ErrorCode.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-error-codes": ["invalid_credentials", "rate_limit_exceeded"]
+      }
+    },
+    "/auth/password": {
+      "post": {
+        "operationId": "setPassword",
+        "summary": "Set the signed-in account's password",
+        "description": "Needs a session no older than a day; an older one is step_up_required (sign in again, e.g. with an emailed code, and retry). Sessions elsewhere stay signed in.",
+        "tags": ["Auth"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetPasswordRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetPasswordResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure. `error` is an ErrorCode.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-error-codes": [
+          "auth_required",
+          "session_expired",
+          "password_too_short",
+          "weak_password",
+          "step_up_required"
+        ]
+      }
+    },
     "/auth/password-reset": {
       "post": {
         "operationId": "requestPasswordReset",
@@ -160,6 +333,47 @@
           }
         },
         "x-error-codes": ["invalid_credentials", "rate_limit_exceeded"]
+      }
+    },
+    "/auth/signout": {
+      "post": {
+        "operationId": "signOut",
+        "summary": "End the session",
+        "description": "`local` (the default) ends this session and its refresh token; `global` ends every session of the account. A session already ended is answered 200 too. Unregister push (DELETE /me/devices) first: it needs the session.",
+        "tags": ["Auth"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignOutRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Signed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignOutResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure. `error` is an ErrorCode.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-error-codes": ["auth_required", "session_expired"]
       }
     },
     "/auth/signup": {
@@ -4068,6 +4282,95 @@
             }
           }
         }
+      },
+      "post": {
+        "operationId": "linkMyIdentity",
+        "summary": "Link an Apple or Google account as a sign-in method",
+        "description": "Answers a new session: store it in place of the old one. A newly linked identity does not count as a recent sign-in for a week (step-up).",
+        "tags": ["Account"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkMyIdentityRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A new session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkMyIdentityResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure. `error` is an ErrorCode.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-error-codes": [
+          "invalid_credentials",
+          "identity_already_linked",
+          "identity_linking_disabled"
+        ]
+      }
+    },
+    "/me/identities/{identityId}": {
+      "delete": {
+        "operationId": "unlinkMyIdentity",
+        "summary": "Unlink a sign-in method",
+        "tags": ["Account"],
+        "parameters": [
+          {
+            "name": "identityId",
+            "in": "path",
+            "required": true,
+            "description": "`identity_id` from GET /me/identities.",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Unlinked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnlinkMyIdentityResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure. `error` is an ErrorCode.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-error-codes": [
+          "identity_not_found",
+          "last_identity",
+          "identity_linking_disabled"
+        ]
       }
     },
     "/me/membership": {
@@ -5147,6 +5450,17 @@
           "published_at",
           "author_name"
         ]
+      },
+      "AuthOk": {
+        "description": "The request did what it asked.",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": ["ok"]
       },
       "AuthSession": {
         "description": "A session. The token carries no roles and no club: read them from GET /me.",
@@ -9415,7 +9729,9 @@
           "step_up_required",
           "club_creation_not_permitted",
           "platform_managed_column",
+          "identity_linking_disabled",
           "not_found",
+          "identity_not_found",
           "club_not_found",
           "court_not_found",
           "booking_not_found",
@@ -9513,6 +9829,8 @@
           "not_enrolled",
           "no_active_subscription",
           "username_taken",
+          "identity_already_linked",
+          "last_identity",
           "device_verification_invalid",
           "device_verification_unavailable",
           "advance_booking_exceeded",
@@ -10638,6 +10956,52 @@
         "properties": {
           "data": {
             "type": "null"
+          }
+        },
+        "required": ["data"]
+      },
+      "LinkMyIdentityRequest": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": ["apple", "google"]
+          },
+          "id_token": {
+            "description": "The ID token the native Apple or Google SDK issued.",
+            "type": "string",
+            "minLength": 1
+          },
+          "nonce": {
+            "description": "The raw nonce whose hash the token carries, when one was requested.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "access_token": {
+            "description": "Google's access token, when the SDK returned one.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": ["provider", "id_token"]
+      },
+      "LinkMyIdentityResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/AuthSession"
           }
         },
         "required": ["data"]
@@ -12920,6 +13284,50 @@
         },
         "required": ["data"]
       },
+      "RequestEmailCodeRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "minLength": 1
+          },
+          "create_user": {
+            "description": "Create an account for an unknown address. Default false.",
+            "type": "boolean"
+          },
+          "full_name": {
+            "description": "For a new account's profile. Ignored for an existing one.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": ["email"]
+      },
+      "RequestEmailCodeResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "ok": {
+                "type": "boolean",
+                "const": true
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": ["ok", "message"]
+          }
+        },
+        "required": ["data"]
+      },
       "RequestPasswordResetRequest": {
         "type": "object",
         "properties": {
@@ -13333,6 +13741,26 @@
         },
         "required": ["id", "session_id", "status", "waitlist_position"]
       },
+      "SetPasswordRequest": {
+        "type": "object",
+        "properties": {
+          "password": {
+            "description": "At least 8 characters; shorter is password_too_short.",
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": ["password"]
+      },
+      "SetPasswordResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/AuthOk"
+          }
+        },
+        "required": ["data"]
+      },
       "ShareCheckout": {
         "description": "The payment for your share of someone else's booking.",
         "type": "object",
@@ -13418,6 +13846,71 @@
           "my_due_cents",
           "my_paid_cents"
         ]
+      },
+      "SignInWithIdTokenRequest": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": ["apple", "google"]
+          },
+          "id_token": {
+            "description": "The ID token the native Apple or Google SDK issued.",
+            "type": "string",
+            "minLength": 1
+          },
+          "nonce": {
+            "description": "The raw nonce whose hash the token carries, when one was requested.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "access_token": {
+            "description": "Google's access token, when the SDK returned one.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": ["provider", "id_token"]
+      },
+      "SignInWithIdTokenResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/AuthSession"
+          }
+        },
+        "required": ["data"]
+      },
+      "SignOutRequest": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "description": "Default local.",
+            "type": "string",
+            "enum": ["local", "global"]
+          }
+        }
+      },
+      "SignOutResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/AuthOk"
+          }
+        },
+        "required": ["data"]
       },
       "SignUp202Response": {
         "type": "object",
@@ -13632,6 +14125,22 @@
           }
         },
         "required": ["id", "name"]
+      },
+      "UnlinkMyIdentityResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "ok": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": ["ok"]
+          }
+        },
+        "required": ["data"]
       },
       "UnregisterMyDeviceRequest": {
         "type": "object",
@@ -13878,6 +14387,30 @@
           "data": {
             "description": "Public URL, already on the profile.",
             "type": "string"
+          }
+        },
+        "required": ["data"]
+      },
+      "VerifyEmailCodeRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "minLength": 1
+          },
+          "code": {
+            "description": "The 6 digits from the email.",
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": ["email", "code"]
+      },
+      "VerifyEmailCodeResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/AuthSession"
           }
         },
         "required": ["data"]
