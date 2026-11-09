@@ -25,9 +25,6 @@ jest.mock('expo-secure-store', () => {
   };
 });
 
-// The URL polyfill supabase-js needs on device; Node already has URL.
-jest.mock('react-native-url-polyfill/auto', () => ({}));
-
 // Heavy native modules that are only reached at runtime, never in unit tests.
 jest.mock('@stripe/stripe-react-native', () => ({
   StripeProvider: ({ children }) => children,

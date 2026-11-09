@@ -10,7 +10,6 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ToastProvider } from '../src/components/Toast';
 import { queryClient } from '../src/lib/query-client';
 import { SessionProvider } from '../src/lib/session';
-import { StripeAppProvider } from '../src/lib/stripe';
 import { ClubCheck } from '../src/features/app/ClubCheck';
 import { RecoveryRedirect } from '../src/features/app/RecoveryRedirect';
 import { PushRegistrationSync } from '../src/features/account/usePushRegistration';
@@ -46,20 +45,18 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <QueryClientProvider client={queryClient}>
-          <StripeAppProvider>
-            <SessionProvider>
-              <ToastProvider>
-                <StatusBar style="light" backgroundColor={colors.bg} />
-                <ClubCheck>
-                  <RecoveryRedirect />
-                  {/* Signed-in anywhere (onboarding included), not only in the tabs. */}
-                  <PushRegistrationSync />
-                  <NotificationTapRouter />
-                  <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }} />
-                </ClubCheck>
-              </ToastProvider>
-            </SessionProvider>
-          </StripeAppProvider>
+          <SessionProvider>
+            <ToastProvider>
+              <StatusBar style="light" backgroundColor={colors.bg} />
+              <ClubCheck>
+                <RecoveryRedirect />
+                {/* Signed-in anywhere (onboarding included), not only in the tabs. */}
+                <PushRegistrationSync />
+                <NotificationTapRouter />
+                <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.bg } }} />
+              </ClubCheck>
+            </ToastProvider>
+          </SessionProvider>
         </QueryClientProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

@@ -14,7 +14,7 @@
  * - 409 refunds_pending: money is still on its way back; try later.
  * - 500 account_deletion_failed: nothing was deleted; try again.
  * - { deleted: true }: every token is dead; end the local session.
- * The password and code never leave this screen except to GoTrue.
+ * The password and code never leave this screen except to Clutch's /auth routes.
  *
  * A second-factor account (step_up.second_factor_required) cannot pass the
  * step-up in the app (no second-factor check here yet), so no method is
@@ -203,15 +203,14 @@ function DeleteFlow({
       }
     },
     onError: async (err) => {
-      if (err instanceof StepUpWrongAccountError) {
-        // The session now belongs to that other login: leave it rather than act as it.
-        await unregisterPushForSignOut();
-        await signOut();
-        router.replace('/auth/sign-in');
-        return;
-      }
       // The account stays and so does the session: push resumes.
       requestPushResync();
+      if (err instanceof StepUpWrongAccountError) {
+        // That sign-in was another account's: it was never adopted, the
+        // member is still signed in as themselves, and nothing was deleted.
+        setError('That sign-in belongs to a different account. Use the one you are signed in with.');
+        return;
+      }
       if (err instanceof OAuthCancelledError) return;
       if (isClutchError(err)) {
         switch (err.code) {

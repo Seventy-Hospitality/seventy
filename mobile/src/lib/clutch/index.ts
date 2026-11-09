@@ -1,12 +1,11 @@
 /**
  * The app's Clutch client instance, bound to the configured club and to the
- * supabase-js session. Feature code imports `clutch` from here; tests mock
- * this module (the client boundary) rather than fetch.
+ * member's session (lib/auth-session.ts). Feature code imports `clutch` from
+ * here; tests mock this module (the client boundary) rather than fetch.
  */
 import * as Crypto from 'expo-crypto';
-import { isAuthRetryableFetchError } from '@supabase/supabase-js';
 import { CLUB_ID, CLUB_SLUG, CLUTCH_API_URL } from '../env';
-import { getSupabase, isSupabaseConfigured } from '../supabase';
+import { sessionStore } from '../auth-session';
 import { createClutchClient, type AuthPort } from './client';
 import { asClubId } from './ids';
 
@@ -20,30 +19,22 @@ export * from './ids';
 export { createMutationKey, useMutationKey, type MutationKey } from './mutation-key';
 
 /**
- * supabase-js owns the session. getSession() returns the stored session and
- * refreshes it first when it is about to expire; after a 401 we force one
- * refreshSession(). A refresh GoTrue rejects (revoked / reused refresh token)
- * makes supabase-js drop the session and emit SIGNED_OUT, which clears the
- * query cache (SessionProvider); a network failure leaves the session alone.
+ * The session store owns the tokens: getAccessToken() refreshes first when
+ * the token is about to expire, and after a 401 the client forces one
+ * refresh(). A refresh Clutch refuses ends the session (SIGNED_OUT clears the
+ * query cache in SessionProvider); a network failure keeps it and throws.
  */
-const supabaseAuth: AuthPort = {
-  async getAccessToken() {
-    if (!isSupabaseConfigured()) return null;
-    const { data } = await getSupabase().auth.getSession();
-    return data.session?.access_token ?? null;
-  },
-  async refreshAccessToken() {
-    const { data, error } = await getSupabase().auth.refreshSession();
-    if (data.session) return data.session.access_token;
-    if (error && isAuthRetryableFetchError(error)) throw error;
-    return null;
-  },
+const sessionAuth: AuthPort = {
+  getAccessToken: () => sessionStore.getAccessToken(),
+  refreshAccessToken: () => sessionStore.refresh(),
 };
 
 export const clutch = createClutchClient({
   baseUrl: CLUTCH_API_URL,
   clubId: asClubId(CLUB_ID),
   expectedClubSlug: CLUB_SLUG,
-  auth: supabaseAuth,
+  auth: sessionAuth,
   newIdempotencyKey: () => Crypto.randomUUID(),
 });
+
+sessionStore.setRefresher((refreshToken) => clutch.auth.refresh(refreshToken));

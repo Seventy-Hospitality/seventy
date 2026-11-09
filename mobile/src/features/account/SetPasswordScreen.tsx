@@ -12,8 +12,9 @@ import { authStyles as styles } from './auth-styles';
 import { unregisterPushForSignOut } from './usePushRegistration';
 
 /**
- * Set a new password after a recovery link or code (PASSWORD_RECOVERY). The
- * root layout keeps the user here until it is done or they sign out.
+ * Set a new password after a reset code (or when a sign-up's password did not
+ * save). The root layout keeps the member here until it is done or they sign
+ * out.
  */
 export function SetPasswordScreen() {
   const router = useRouter();

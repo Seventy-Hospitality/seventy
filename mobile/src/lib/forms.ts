@@ -1,8 +1,8 @@
 /**
  * Form conventions: react-hook-form + zod (mirrors member-web/src/lib/forms.ts).
  * Screens define a schema, call useZodForm(schema), and render fields through
- * <FormField> + <Input>/<PasswordInput>. Server-side failures (ClutchError,
- * Supabase AuthError) surface via a toast or a form-level error, never inline
+ * <FormField> + <Input>/<PasswordInput>. Server-side failures (ClutchError)
+ * surface via a toast or a form-level error, never inline
  * for a specific field unless the code maps to one.
  */
 import { useForm, type Resolver, type UseFormProps, type UseFormReturn } from 'react-hook-form';
@@ -36,7 +36,7 @@ export const passwordField = z
 
 export const nameField = z.string().trim().min(1, 'Enter your full name').max(200, 'Name is too long');
 
-/** The 6-digit code GoTrue puts in every auth email. */
+/** The 6-digit code in every Club70 sign-in email. */
 export const emailCodeField = z
   .string()
   .trim()

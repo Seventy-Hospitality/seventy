@@ -45,15 +45,17 @@ import {
   CourtTypeBookingRulesSchema as CourtTypeRulesSchema,
   GetMyAccountDeletionResponseSchema,
   InvitationAnswerSchema,
-  MoveCheckoutSchema,
   PlayerRemovalSchema,
   RescheduleQuoteSchema,
-  ShareCheckoutSchema,
   ShareSettledSchema,
+  AuthSessionSchema,
+  IdentitySchema as AuthIdentitySchema,
 } from './contract.gen';
 import {
   BookingCheckoutSchema,
   LegacyBookingCheckoutSchema,
+  MoveCheckoutWithKeySchema as MoveCheckoutSchema,
+  ShareCheckoutWithKeySchema as ShareCheckoutSchema,
   MyMembershipBillingSchema,
   SavedCardSchema,
   type MyMembershipBilling,
@@ -69,6 +71,9 @@ export const GROUP_ID = '90000000-0000-4000-8000-000000000001';
 export const TIER_ID = '70000000-0000-4000-8000-000000000001';
 
 type Over<S extends z.ZodType> = Partial<z.input<S>>;
+
+/** The Stripe key Clutch sends next to every client secret (feat/api-publishable-key). */
+export const TEST_PUBLISHABLE_KEY = 'pk_test_clutch';
 
 /** Parse `base` with `over` merged in through `schema`. */
 function build<S extends z.ZodType>(schema: S, base: z.input<S>, over: Over<S> = {}): z.output<S> {
@@ -584,6 +589,7 @@ export function makeLegacyCheckout(over: Over<typeof LegacyBookingCheckoutSchema
       paymentIntentId: 'pi_123',
       simulated: false,
       stripeAccount: 'acct_club',
+      publishable_key: TEST_PUBLISHABLE_KEY,
       subtotalCents: 3000,
       taxAmountCents: 0,
     },
@@ -600,6 +606,7 @@ export function makeBookingCheckout(over: Over<typeof BookingCheckoutSchema> = {
       customer_id: 'cus_123',
       ephemeral_key_secret: 'ek_123',
       stripe_account: 'acct_club',
+      publishable_key: TEST_PUBLISHABLE_KEY,
       simulated: false,
       payment_intent_id: 'pi_123',
       subtotal_cents: 3000,
@@ -740,6 +747,7 @@ const SHEET_BUNDLE = {
   ephemeral_key_secret: 'ek_123',
   stripe_account: 'acct_club',
   simulated: false,
+  publishable_key: TEST_PUBLISHABLE_KEY,
 };
 
 /** POST /me/membership/subscribe. */
@@ -908,6 +916,7 @@ export function makeShareCheckout(over: Over<typeof ShareCheckoutSchema> = {}) {
       client_secret: 'pi_share_secret_abc',
       payment_intent_id: 'pi_share',
       stripe_account: 'acct_club',
+      publishable_key: TEST_PUBLISHABLE_KEY,
       simulated: false,
       subtotal_cents: 1500,
       tax_cents: 120,
@@ -960,6 +969,7 @@ export function makeMoveCheckout(over: Over<typeof MoveCheckoutSchema> = {}) {
       client_secret: 'pi_move_secret_abc',
       payment_intent_id: 'pi_move',
       stripe_account: 'acct_club',
+      publishable_key: TEST_PUBLISHABLE_KEY,
       simulated: false,
       subtotal_cents: 1000,
       tax_cents: 80,
@@ -982,6 +992,38 @@ export function makePlayerRemoval(over: Over<typeof PlayerRemovalSchema> = {}) {
   return build(
     PlayerRemovalSchema,
     { booking_id: BOOKING_ID, user_id: ME_ID, removed: true } as z.input<typeof PlayerRemovalSchema>,
+    over,
+  );
+}
+
+// ─── Sign-in (we-are-clutch #188) ───────────────────────────────────────
+
+/** A session as /auth/token, /auth/otp/verify, /auth/id-token and POST /me/identities answer it. */
+export function makeAuthSession(over: Over<typeof AuthSessionSchema> = {}) {
+  return build(
+    AuthSessionSchema,
+    {
+      access_token: 'access-1',
+      refresh_token: 'refresh-1',
+      token_type: 'bearer',
+      expires_in: 3600,
+      expires_at: 4_000_000_000,
+      user: { id: ME_ID, email: 'alex@example.com' },
+    },
+    over,
+  );
+}
+
+export function makeAuthIdentity(over: Over<typeof AuthIdentitySchema> = {}) {
+  return build(
+    AuthIdentitySchema,
+    {
+      identity_id: 'identity-email',
+      provider: 'email',
+      email: 'alex@example.com',
+      created_at: '2026-01-01T00:00:00.000Z',
+      last_sign_in_at: null,
+    },
     over,
   );
 }

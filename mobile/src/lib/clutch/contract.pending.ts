@@ -20,9 +20,12 @@
  *                                        apps/web/app/api/v1/_booking-contract.ts
  *   main (owned by P2, not in the P3 document): POST /bookings/{id}/payment-intent,
  *                                        GET /me/payment-methods, POST /bookings/{id}/payment-intent/pay
+ *   feat/api-publishable-key (we-are-clutch #187) `publishable_key` next to every `client_secret`.
+ *                                        contract.gen.ts is generated from feat/api-sign-in-codes
+ *                                        (#188), which does not carry it.
  */
 import { z } from 'zod';
-import type { MoveCheckout, ShareCheckout } from './contract.gen';
+import { MoveCheckoutSchema, ShareCheckoutSchema } from './contract.gen';
 import {
   BookingIdSchema,
   CardIdSchema,
@@ -46,6 +49,21 @@ export const PENDING_ERROR_CODES = [
   'setup_incomplete',
   'card_in_use_by_subscription',
 ] as const;
+
+// ─── feat/api-publishable-key: the Stripe key travels with the intent ──────
+
+/**
+ * Clutch's platform publishable key, next to every `client_secret`. Null when
+ * the deployment has no key (payments simulated or off). Optional until the
+ * branch is deployed: an answer without it reads as null, and a sheet with no
+ * key resolves `unconfigured`.
+ */
+const PublishableKey = { publishable_key: z.string().nullable().optional() };
+
+export const MoveCheckoutWithKeySchema = MoveCheckoutSchema.extend(PublishableKey);
+export type MoveCheckoutWithKey = z.infer<typeof MoveCheckoutWithKeySchema>;
+export const ShareCheckoutWithKeySchema = ShareCheckoutSchema.extend(PublishableKey);
+export type ShareCheckoutWithKey = z.infer<typeof ShareCheckoutWithKeySchema>;
 
 // ─── Push payloads (packages/notifications; not API responses) ──────────────
 
@@ -79,6 +97,7 @@ export const LegacyBookingCheckoutSchema = z.object({
   subtotalCents: z.number().int().optional(),
   /** What the card is charged, tax included (Clutch states it since #181). */
   total_cents: z.number().int().optional(),
+  ...PublishableKey,
 });
 export type LegacyBookingCheckout = z.infer<typeof LegacyBookingCheckoutSchema>;
 
@@ -97,6 +116,7 @@ export const SheetBundleSchema = z.object({
   /** The connected account to initialise Stripe with; null for the platform. */
   stripe_account: z.string().nullable(),
   simulated: z.boolean(),
+  ...PublishableKey,
 });
 export type SheetBundle = z.infer<typeof SheetBundleSchema>;
 
@@ -263,6 +283,8 @@ export type SheetIntent =
       clientSecret: string;
       intentId: string;
       stripeAccount: string | null;
+      /** The key to initialise Stripe with (from the same answer); null: no sheet. */
+      publishableKey: string | null;
       customer?: { id: string; ephemeralKeySecret: string };
     }
   | { mode: 'simulated'; intentType: 'payment' | 'setup'; intentId: string | null };
@@ -293,6 +315,7 @@ export function bundleToSheet(bundle: SheetBundle, simulatedIntentId: string | n
     clientSecret: bundle.client_secret,
     intentId: intentIdFromClientSecret(bundle.client_secret),
     stripeAccount: bundle.stripe_account,
+    publishableKey: bundle.publishable_key ?? null,
     customer: customerOf(bundle.customer_id, bundle.ephemeral_key_secret),
   };
 }
@@ -328,6 +351,7 @@ export function bookingCheckoutToSheet(c: BookingCheckout | LegacyBookingCheckou
       clientSecret: c.client_secret,
       intentId,
       stripeAccount: c.stripe_account,
+      publishableKey: c.publishable_key ?? null,
       customer: customerOf(c.customer_id, c.ephemeral_key_secret),
     };
   }
@@ -337,11 +361,12 @@ export function bookingCheckoutToSheet(c: BookingCheckout | LegacyBookingCheckou
     clientSecret: c.clientSecret,
     intentId,
     stripeAccount: c.stripeAccount ?? null,
+    publishableKey: c.publishable_key ?? null,
   };
 }
 
 /** A P4 share or move checkout as a SheetIntent. */
-export function snakeCheckoutToSheet(c: ShareCheckout | MoveCheckout): SheetIntent {
+export function snakeCheckoutToSheet(c: ShareCheckoutWithKey | MoveCheckoutWithKey): SheetIntent {
   if (c.simulated) return { mode: 'simulated', intentType: 'payment', intentId: c.payment_intent_id };
   return {
     mode: 'stripe',
@@ -349,5 +374,6 @@ export function snakeCheckoutToSheet(c: ShareCheckout | MoveCheckout): SheetInte
     clientSecret: c.client_secret,
     intentId: c.payment_intent_id,
     stripeAccount: c.stripe_account,
+    publishableKey: c.publishable_key ?? null,
   };
 }

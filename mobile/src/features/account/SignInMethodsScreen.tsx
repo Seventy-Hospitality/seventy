@@ -1,22 +1,22 @@
 /**
- * Sign-in methods, straight from Supabase GoTrue (supabase-js):
- * - the identities on the account (getUserIdentities): email, google, apple;
+ * Sign-in methods, through Clutch's /api/v1/me/identities:
+ * - the identities on the account (GET): email, google, apple;
  * - link Google or Apple natively: the platform SDK issues an ID token for a
- *   fresh nonce (getFederatedCredential) and linkIdentity({provider, token,
- *   nonce}) attaches it. Needs "Manual linking" enabled in the Supabase
- *   dashboard (Authentication > Sign In / Providers);
- * - unlink with unlinkIdentity(identity). GoTrue refuses to remove the last
- *   one (single_identity_not_deletable).
- * Clutch is not involved: identities are GoTrue's.
+ *   fresh nonce (getFederatedCredential) and POST attaches it; Clutch answers
+ *   the session that now carries the identity, which the app adopts. Needs
+ *   manual linking on in Clutch's auth settings (identity_linking_disabled
+ *   otherwise);
+ * - unlink with DELETE /me/identities/{identityId}. Clutch refuses to remove
+ *   the last one (last_identity).
  */
 import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
-import type { UserIdentity } from '@supabase/supabase-js';
+import { clutch, type Identity as AuthIdentity } from '../../lib/clutch';
+import { sessionStore } from '../../lib/auth-session';
 import { authErrorMessage } from '../../lib/auth-errors';
 import { federatedAdapters, getFederatedCredential, OAuthCancelledError, type OAuthProvider } from '../../lib/oauth';
 import { useSession } from '../../lib/session';
-import { getSupabase } from '../../lib/supabase';
 import { PrimaryButton, Skeleton, useToast } from '../../components';
 import { colors, fonts, radius, spacing, typography } from '../../theme/tokens';
 import { AccountFrame } from './AccountFrame';
@@ -27,9 +27,8 @@ const PROVIDERS: readonly { provider: OAuthProvider; label: string; icon: 'logo-
   { provider: 'apple', label: 'Apple', icon: 'logo-apple' },
 ];
 
-function identityEmail(identity: UserIdentity): string | null {
-  const email = (identity.identity_data as { email?: unknown } | undefined)?.email;
-  return typeof email === 'string' ? email : null;
+function identityEmail(identity: AuthIdentity): string | null {
+  return identity.email;
 }
 
 export function SignInMethodsScreen() {
@@ -54,7 +53,7 @@ export function SignInMethodsScreen() {
   );
 }
 
-function SignInMethodsView({ identities }: { identities: UserIdentity[] }) {
+function SignInMethodsView({ identities }: { identities: AuthIdentity[] }) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { email, oauth } = useSession();
@@ -64,12 +63,13 @@ function SignInMethodsView({ identities }: { identities: UserIdentity[] }) {
   const link = useMutation({
     mutationFn: async (provider: OAuthProvider) => {
       const credential = await getFederatedCredential(federatedAdapters[provider]);
-      const { error } = await getSupabase().auth.linkIdentity({
-        provider: credential.provider,
-        token: credential.token,
-        nonce: credential.nonce,
-      });
-      if (error) throw error;
+      await sessionStore.set(
+        await clutch.auth.linkIdentity({
+          provider: credential.provider,
+          id_token: credential.token,
+          nonce: credential.nonce,
+        }),
+      );
     },
     onSuccess: (_data, provider) => {
       void refresh();
@@ -82,9 +82,8 @@ function SignInMethodsView({ identities }: { identities: UserIdentity[] }) {
   });
 
   const unlink = useMutation({
-    mutationFn: async (identity: UserIdentity) => {
-      const { error } = await getSupabase().auth.unlinkIdentity(identity);
-      if (error) throw error;
+    mutationFn: async (identity: AuthIdentity) => {
+      await clutch.auth.unlinkIdentity(identity.identity_id);
     },
     onSuccess: (_data, identity) => {
       void refresh();
@@ -94,7 +93,7 @@ function SignInMethodsView({ identities }: { identities: UserIdentity[] }) {
       toast({ variant: 'error', message: authErrorMessage(err, 'We could not unlink that account. Please try again.') }),
   });
 
-  const confirmUnlink = (identity: UserIdentity) => {
+  const confirmUnlink = (identity: AuthIdentity) => {
     const label = labelOf(identity.provider);
     Alert.alert(`Unlink ${label}?`, `You will no longer be able to sign in with ${label}.`, [
       { text: 'Cancel', style: 'cancel' },
@@ -103,7 +102,7 @@ function SignInMethodsView({ identities }: { identities: UserIdentity[] }) {
   };
 
   const emailIdentity = identities.find((identity) => identity.provider === 'email') ?? null;
-  // A hint only: GoTrue is the one that refuses removing the last identity.
+  // A hint only: Clutch is the one that refuses removing the last identity.
   const onlyOne = identities.length <= 1;
   const busyProvider = link.isPending ? link.variables : unlink.isPending ? unlink.variables?.provider : null;
 

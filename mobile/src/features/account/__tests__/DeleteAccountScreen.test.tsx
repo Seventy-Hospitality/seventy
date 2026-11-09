@@ -2,7 +2,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react-native';
 import * as Notifications from 'expo-notifications';
 import type { MockClutch } from '../../../lib/clutch/testing';
 import { clutchError, TEST_CLUB_ID } from '../../../lib/clutch/testing';
-import { makeDeletionPreview } from '../../../lib/clutch/fixtures';
+import { makeAuthIdentity, makeAuthSession, makeDeletionPreview } from '../../../lib/clutch/fixtures';
 import { DeleteAccountScreen } from '../DeleteAccountScreen';
 import { stepUpMethods } from '../step-up';
 import { renderWithProviders } from './render-account';
@@ -24,18 +24,13 @@ jest.mock('../../../lib/session', () => ({
   useSession: () => ({ status: 'authenticated', userId: 'user-1', email: 'alex@example.com', signOut: mockSignOut }),
 }));
 
-const mockAuth = {
-  getUserIdentities: jest.fn(),
-  signInWithPassword: jest.fn(),
-  signInWithOtp: jest.fn(),
-  verifyOtp: jest.fn(),
-  signInWithIdToken: jest.fn(),
-};
-jest.mock('../../../lib/supabase', () => ({
-  getSupabase: () => ({ auth: mockAuth }),
-  isSupabaseConfigured: () => true,
-  SupabaseNotConfiguredError: class extends Error {},
+const mockSetSession = jest.fn(async () => undefined);
+jest.mock('../../../lib/auth-session', () => ({
+  sessionStore: { set: (...args: unknown[]) => mockSetSession(...(args as [])), setRefresher: jest.fn() },
 }));
+
+const mockAuth = mockClutch.auth;
+const session = (userId: string) => makeAuthSession({ user: { id: userId, email: 'alex@example.com' } });
 
 const STALE = makeDeletionPreview().step_up;
 
@@ -45,10 +40,10 @@ function stepUp(satisfied: boolean, over: Partial<typeof STALE> = {}) {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockAuth.getUserIdentities.mockResolvedValue({ data: { identities: [{ provider: 'email' }] }, error: null });
-  mockAuth.signInWithPassword.mockResolvedValue({ data: { user: { id: 'user-1' } }, error: null });
-  mockAuth.signInWithOtp.mockResolvedValue({ data: {}, error: null });
-  mockAuth.verifyOtp.mockResolvedValue({ data: { user: { id: 'user-1' } }, error: null });
+  mockAuth.identities.mockResolvedValue([makeAuthIdentity()]);
+  mockAuth.token.mockResolvedValue(session('user-1'));
+  mockAuth.sendCode.mockResolvedValue({ ok: true, message: 'sent' });
+  mockAuth.verifyCode.mockResolvedValue(session('user-1'));
   mockClutch.me.deleteAccount.mockResolvedValue({ deleted: true });
   mockClutch.me.accountDeletion.mockResolvedValue(makeDeletionPreview());
   mockClutch.me.unregisterDevice.mockResolvedValue({ removed: true });
@@ -66,11 +61,12 @@ describe('DeleteAccountScreen', () => {
     await confirmWithPassword();
 
     await waitFor(() => expect(mockSignOut).toHaveBeenCalled());
-    expect(mockAuth.signInWithPassword).toHaveBeenCalledWith({ email: 'alex@example.com', password: 'hunter2' });
+    expect(mockAuth.token).toHaveBeenCalledWith('alex@example.com', 'hunter2');
+    expect(mockSetSession).toHaveBeenCalledWith(expect.objectContaining({ user: expect.objectContaining({ id: 'user-1' }) }));
     expect(mockClutch.me.deleteAccount).toHaveBeenCalledWith(
       expect.objectContaining({ idempotencyKey: expect.any(String) }),
     );
-    expect(mockAuth.signInWithPassword.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(mockAuth.token.mock.invocationCallOrder[0]).toBeLessThan(
       mockClutch.me.deleteAccount.mock.invocationCallOrder[0],
     );
     expect(mockReplace).toHaveBeenCalledWith('/auth/sign-in');
@@ -81,16 +77,13 @@ describe('DeleteAccountScreen', () => {
     fireEvent.press(await screen.findByLabelText('I understand this permanently deletes my account'));
     fireEvent.press(screen.getByLabelText('Email me a code'));
     await waitFor(() =>
-      expect(mockAuth.signInWithOtp).toHaveBeenCalledWith({
-        email: 'alex@example.com',
-        options: { shouldCreateUser: false },
-      }),
+      expect(mockAuth.sendCode).toHaveBeenCalledWith({ email: 'alex@example.com', create_user: false }),
     );
     fireEvent.changeText(await screen.findByLabelText('Code'), '123456');
     fireEvent.press(screen.getByLabelText('Delete with code'));
 
     await waitFor(() => expect(mockClutch.me.deleteAccount).toHaveBeenCalled());
-    expect(mockAuth.verifyOtp).toHaveBeenCalledWith({ email: 'alex@example.com', token: '123456', type: 'email' });
+    expect(mockAuth.verifyCode).toHaveBeenCalledWith('alex@example.com', '123456');
   });
 
   it('shows blockers up front, before asking anyone to sign in again', async () => {
@@ -114,7 +107,7 @@ describe('DeleteAccountScreen', () => {
     fireEvent.press(screen.getByLabelText('Delete my account'));
 
     await waitFor(() => expect(mockSignOut).toHaveBeenCalled());
-    expect(mockAuth.signInWithPassword).not.toHaveBeenCalled();
+    expect(mockAuth.token).not.toHaveBeenCalled();
     expect(mockClutch.me.deleteAccount).toHaveBeenCalled();
   });
 
@@ -150,13 +143,15 @@ describe('DeleteAccountScreen', () => {
     expect(mockSignOut).not.toHaveBeenCalled();
   });
 
-  it('never deletes when the sign-in lands on another account', async () => {
-    mockAuth.signInWithPassword.mockResolvedValue({ data: { user: { id: 'someone-else' } }, error: null });
+  it('never deletes, nor adopts the session, when the sign-in is another account', async () => {
+    mockAuth.token.mockResolvedValue(session('someone-else'));
     renderWithProviders(<DeleteAccountScreen />);
     await confirmWithPassword();
 
-    await waitFor(() => expect(mockSignOut).toHaveBeenCalled());
+    expect(await screen.findByText(/belongs to a different account/)).toBeTruthy();
     expect(mockClutch.me.deleteAccount).not.toHaveBeenCalled();
+    expect(mockSetSession).not.toHaveBeenCalled();
+    expect(mockSignOut).not.toHaveBeenCalled();
   });
 });
 
@@ -177,10 +172,10 @@ describe('DeleteAccountScreen push and second factor', () => {
     mockClutch.me.accountDeletion.mockResolvedValue(
       makeDeletionPreview({ step_up: stepUp(false, { second_factor_required: true }) }),
     );
-    mockAuth.getUserIdentities.mockResolvedValue({
-      data: { identities: [{ provider: 'email' }, { provider: 'google' }] },
-      error: null,
-    });
+    mockAuth.identities.mockResolvedValue([
+      makeAuthIdentity(),
+      makeAuthIdentity({ identity_id: 'identity-google', provider: 'google' }),
+    ]);
     renderWithProviders(<DeleteAccountScreen />);
 
     expect(await screen.findByText(/Club70 website/)).toBeTruthy();
