@@ -3,11 +3,11 @@
  * - the identities on the account (GET): email, google, apple;
  * - link Google or Apple natively: the platform SDK issues an ID token for a
  *   fresh nonce (getFederatedCredential) and POST attaches it; Clutch answers
- *   the session that now carries the identity, which the app adopts. Needs
- *   manual linking on in Clutch's auth settings (identity_linking_disabled
- *   otherwise);
+ *   the session that now carries the identity, which the app adopts. Linking
+ *   with an ID token works whatever Clutch's manual-linking setting is;
  * - unlink with DELETE /me/identities/{identityId}. Clutch refuses to remove
- *   the last one (last_identity).
+ *   the last one (last_identity), and refuses any unlink while manual linking
+ *   is off (identity_linking_disabled).
  */
 import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';

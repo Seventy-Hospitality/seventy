@@ -2,6 +2,7 @@ import { createClutchClient, ClubMismatchError, type AuthPort } from '../client'
 import { ClutchError } from '../errors';
 import { asBookingId, asClubId, asCourtId, asGroupId } from '../ids';
 import {
+  makeAuthIdentity,
   makeAuthSession,
   makeBookingInvitation,
   makeChargedBooking,
@@ -431,8 +432,22 @@ describe('sign-in calls', () => {
     expect(calls[0].headers['Idempotency-Key']).toBeDefined();
   });
 
+  it('signs out with a given token: never the session, and never refreshed', async () => {
+    // Step-up ends a session for another account with that session's own token.
+    const { client, calls, port } = setup([reply(401, { error: 'session_expired', message: 'x' })]);
+    const err = await client.auth.signOut('local', { accessToken: 'other' }).catch((e) => e);
+    expect(err).toBeInstanceOf(ClutchError);
+    expect(err.code).toBe('session_expired');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://clutch.test/api/v1/auth/signout');
+    expect(calls[0].body).toEqual({ scope: 'local' });
+    expect(calls[0].headers.Authorization).toBe('Bearer other');
+    expect(port.getAccessToken).not.toHaveBeenCalled();
+    expect(port.refreshAccessToken).not.toHaveBeenCalled();
+  });
+
   it("lists the member's identities with their Bearer", async () => {
-    const identity = { provider: 'email', identity_id: 'i1', created_at: null, last_sign_in_at: null, email: 'a@x.com' };
+    const identity = makeAuthIdentity();
     const { client, calls } = setup([reply(200, { data: [identity] })]);
     expect(await client.auth.identities()).toEqual([identity]);
     expect(calls[0].url).toBe('https://clutch.test/api/v1/me/identities');

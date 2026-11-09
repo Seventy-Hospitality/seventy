@@ -95,7 +95,7 @@ export interface PaymentFlowSpec<R> {
 const UNCONFIGURED: BookingFailure = {
   action: 'none',
   title: 'Card payments unavailable',
-  message: 'Card payments are not set up in this build of the app.',
+  message: 'Card payments are not available right now. Please try again later.',
 };
 
 const SHEET_BUSY: BookingFailure = {

@@ -118,7 +118,11 @@
             }
           }
         },
-        "x-error-codes": ["invalid_credentials", "rate_limit_exceeded"]
+        "x-error-codes": [
+          "invalid_credentials",
+          "rate_limit_exceeded",
+          "upstream_error"
+        ]
       }
     },
     "/auth/otp": {
@@ -160,7 +164,11 @@
             }
           }
         },
-        "x-error-codes": ["invalid_field", "rate_limit_exceeded"]
+        "x-error-codes": [
+          "invalid_field",
+          "rate_limit_exceeded",
+          "upstream_error"
+        ]
       }
     },
     "/auth/otp/verify": {
@@ -205,7 +213,8 @@
         "x-error-codes": [
           "invalid_credentials",
           "invalid_field",
-          "rate_limit_exceeded"
+          "rate_limit_exceeded",
+          "upstream_error"
         ]
       }
     },
@@ -299,7 +308,7 @@
             }
           }
         },
-        "x-error-codes": ["rate_limit_exceeded"]
+        "x-error-codes": ["rate_limit_exceeded", "upstream_error"]
       }
     },
     "/auth/refresh": {
@@ -341,7 +350,11 @@
             }
           }
         },
-        "x-error-codes": ["invalid_credentials", "rate_limit_exceeded"]
+        "x-error-codes": [
+          "invalid_credentials",
+          "rate_limit_exceeded",
+          "upstream_error"
+        ]
       }
     },
     "/auth/signout": {
@@ -439,7 +452,8 @@
           "weak_password",
           "email_in_use",
           "invalid_field",
-          "rate_limit_exceeded"
+          "rate_limit_exceeded",
+          "upstream_error"
         ]
       }
     },
@@ -485,7 +499,8 @@
         "x-error-codes": [
           "invalid_credentials",
           "email_not_confirmed",
-          "rate_limit_exceeded"
+          "rate_limit_exceeded",
+          "upstream_error"
         ]
       }
     },
@@ -4296,7 +4311,7 @@
       "post": {
         "operationId": "linkMyIdentity",
         "summary": "Link an Apple or Google account as a sign-in method",
-        "description": "Answers a new session: store it in place of the old one. A newly linked identity does not count as a recent sign-in for a week (step-up). Linking with an ID token works whatever the deployment's manual-linking setting is: the provider checks that setting only on unlinking. Needs a person's access token: an API key is answered 401.",
+        "description": "Answers a new session: store it in place of the old one. Needs no recent sign-in, unlike setting a password: the provider links an ID token for any live session when called directly, so a check here would not close that path. Instead a newly linked identity does not count as a recent sign-in for a week (step-up), so a link cannot be used to pass one. Linking with an ID token works whatever the deployment's manual-linking setting is: the provider checks that setting only on unlinking. Needs a person's access token: an API key is answered 401.",
         "tags": ["Account"],
         "requestBody": {
           "required": true,
@@ -4335,7 +4350,8 @@
           "session_expired",
           "invalid_credentials",
           "identity_already_linked",
-          "rate_limit_exceeded"
+          "rate_limit_exceeded",
+          "upstream_error"
         ]
       }
     },
@@ -4385,7 +4401,8 @@
           "invalid_field",
           "identity_not_found",
           "last_identity",
-          "identity_linking_disabled"
+          "identity_linking_disabled",
+          "upstream_error"
         ]
       }
     },

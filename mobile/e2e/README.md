@@ -1,10 +1,11 @@
 # Club70 end to end: the app on an emulator against a local Clutch
 
 One run proves the MVP on a real build: a new member signs up in the app
-with the 6-digit code Clutch emails (read from the local mail catcher) and
-a password, onboarding joins them to Club 70, the club puts them on a tier, they book a
-court and pay (simulated), and the booking is on Home. Then `verify.mjs` reads
-Clutch's database and checks every row the app should have written.
+with the 6-digit code Clutch emails (read from the local mail catcher) and a
+password, onboarding joins them to Club 70, the club puts them on a tier, they
+book a court and pay (simulated), and the booking is on Home. Then
+`verify.mjs` reads Clutch's database and checks every row the app should have
+written.
 
 ```
 e2e/run.sh              # seed, build the release APK, install, run, verify

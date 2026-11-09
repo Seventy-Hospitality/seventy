@@ -85,7 +85,7 @@ export function authErrorMessage(err: unknown, fallback = 'Something went wrong.
     case 'identity_not_found':
       return 'That sign-in method is no longer linked.';
     case 'identity_linking_disabled':
-      return 'Linking accounts is not available right now.';
+      return 'Removing a sign-in method is not available right now.';
     case 'mfa_required':
       return 'Your account uses an authenticator app, which this app does not support yet. Use the Club70 website for this.';
     case 'upstream_error':

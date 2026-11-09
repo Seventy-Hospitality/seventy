@@ -18,8 +18,7 @@
  * A refused step-up (`invalid_credentials`) becomes a StepUpRejectedError
  * whose message fits the method: a password, a code, or Google / Apple.
  */
-import type { AuthSession } from '../../lib/clutch';
-import { clutch } from '../../lib/clutch';
+import { clutch, type AuthSession } from '../../lib/clutch';
 import { authErrorCode, codeErrorMessage, federatedErrorMessage } from '../../lib/auth-errors';
 import { sessionStore, sessionUserId } from '../../lib/auth-session';
 import { federatedAdapters, getFederatedCredential, type OAuthProvider } from '../../lib/oauth';

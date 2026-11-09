@@ -89,9 +89,10 @@ no Supabase or Stripe key and receives no email links.
 - `client.ts`: one typed function per endpoint, grouped as `auth`, `club`,
   `bookings`, `groups`, `membership`, `paymentMethods`, `me`. Sign-in calls
   are anonymous: no Bearer, and no refresh after a 401. Transport rules: strict
-  envelope, `ClutchError.code: ErrorCode | 'unknown'`, one shared refresh
-  after a 401 and a NEW Idempotency-Key for that retry (Clutch caches the 401
-  under the first key), an Idempotency-Key on every mutation (the logical
+  envelope, `ClutchError.code: ErrorCode | 'unknown'`, a refresh only after a
+  401 `session_expired`, `auth_required` or `invalid_token` (the session store
+  shares one rotation and answers only the same member's new token) and a NEW
+  Idempotency-Key for that retry (Clutch caches the 401 under the first key), an Idempotency-Key on every mutation (the logical
   mutation's, `useMutationKey`; confirm-style calls also rotate after a 5xx;
   multipart sends always get a fresh one), `409 request_in_flight` waits with
   the same key, the club bound at construction with a startup slug check,
@@ -201,7 +202,8 @@ dashboard of its own.
 - Google and Apple providers list the app's client ids (the iOS and Android
   OAuth client ids; bundle id `club.seventy.mobile` for Apple). In Google
   Cloud, the Android client needs "custom URI scheme" enabled.
-- Manual identity linking on (Sign-in methods screen).
+- Manual identity linking on, for removing a sign-in method on the Sign-in
+  methods screen (linking with an ID token works either way).
 - `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` set on the web deployment (it becomes
   `publishable_key`).
 - No redirect URLs: the app never receives an email link.
