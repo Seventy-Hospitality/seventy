@@ -150,6 +150,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setPasswordRecovery(false);
         void rememberRecovery(null);
       }
+      if (event === 'INITIAL' && next) {
+        // The first read failed and the session turned up later: hold a
+        // pending password recovery before the app shows as signed in.
+        void recoveryPendingFor(next.user.id).then((pending) => {
+          if (cancelled) return;
+          if (pending && sessionStore.current()?.user.id === next.user.id) setPasswordRecovery(true);
+          const now = sessionStore.current();
+          setSession(now);
+          setStatus(now ? 'authenticated' : 'anonymous');
+          setRefreshTick((t) => t + 1);
+        });
+        return;
+      }
       setSession(next);
       setStatus(next ? 'authenticated' : 'anonymous');
       setRefreshTick((t) => t + 1);

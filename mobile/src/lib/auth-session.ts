@@ -135,6 +135,8 @@ export function createSessionStore(deps: {
   let readFailed = false;
   let refresher: ((refreshToken: string) => Promise<AuthSession>) | null = null;
   let inFlight: Promise<void> | null = null;
+  /** The refresh token the in-flight rotation spent. */
+  let inFlightSpent: string | null = null;
   let lastRefreshAt: number | null = null;
   const listeners = new Set<SessionListener>();
   /** Access token -> the user it was issued to (tokens this store handed out). */
@@ -190,33 +192,46 @@ export function createSessionStore(deps: {
     return reading.then(() => current);
   }
 
-  /** One rotation of the refresh token; concurrent callers share it. */
-  function rotate(): Promise<void> {
+  /**
+   * One rotation of the refresh token; concurrent callers share it. A rotation
+   * already running for a session that has since been replaced (a sign-in, a
+   * step-up) is waited out, then the current session gets its own.
+   */
+  async function rotate(): Promise<void> {
     if (!refresher) throw new Error('No session refresher is installed.');
+    if (inFlight && inFlightSpent !== current?.refresh_token) {
+      await inFlight.catch(() => undefined);
+      if (!current) return;
+    }
     const doRefresh = refresher;
-    inFlight ??= (async () => {
+    if (!inFlight) {
       const spent = current!.refresh_token;
-      try {
-        const next = toStoredSession(await doRefresh(spent), now());
-        // A sign-in replaced the session meanwhile: keep that one.
-        if (current?.refresh_token !== spent) return;
-        current = next;
-        remember(next);
-        lastRefreshAt = now();
-        await persist();
-        emit('REFRESHED');
-      } catch (err) {
-        if (!isRefusal(err)) throw err;
-        if (current?.refresh_token === spent) {
+      inFlightSpent = spent;
+      inFlight = (async () => {
+        try {
+          const next = toStoredSession(await doRefresh(spent), now());
+          // A sign-in replaced the session meanwhile: keep that one.
+          if (current?.refresh_token !== spent) return;
+          current = next;
+          remember(next);
+          lastRefreshAt = now();
+          await persist();
+          emit('REFRESHED');
+        } catch (err) {
+          // The session was replaced meanwhile: its token stands, whatever
+          // happened to the one this rotation spent.
+          if (current?.refresh_token !== spent) return;
+          if (!isRefusal(err)) throw err;
           current = null;
           await persist();
           emit('SIGNED_OUT');
         }
-      }
-    })().finally(() => {
-      inFlight = null;
-    });
-    return inFlight;
+      })().finally(() => {
+        inFlight = null;
+        inFlightSpent = null;
+      });
+    }
+    await inFlight;
   }
 
   /** The current token if it is still `owner`'s, else null. */

@@ -106,6 +106,47 @@ describe('SessionProvider', () => {
     await waitFor(() => expect(result.current.passwordRecovery).toBe(true));
   });
 
+  it('keeps the set-password hold when the session is only found after a failed first read', async () => {
+    // A launch in the background on a locked iPhone cannot read the Keychain;
+    // the session turns up on the next read, with a recovery still pending.
+    // A fresh module registry gives a store whose first read has not run yet.
+    const React = jest.requireActual('react');
+    let isolated!: {
+      SessionProvider: typeof SessionProvider;
+      useSession: typeof useSession;
+      store: typeof sessionStore;
+      secureStore: typeof SecureStore;
+      storage: { setItem(k: string, v: string): Promise<void> };
+    };
+    jest.isolateModules(() => {
+      jest.doMock('react', () => React);
+      isolated = {
+        ...(require('../session') as { SessionProvider: typeof SessionProvider; useSession: typeof useSession }),
+        store: (require('../auth-session') as { sessionStore: typeof sessionStore }).sessionStore,
+        secureStore: require('expo-secure-store'),
+        storage: (require('../secure-storage') as { chunkedSecureStorage: { setItem(k: string, v: string): Promise<void> } })
+          .chunkedSecureStorage,
+      };
+    });
+    const session = makeAuthSession();
+    await isolated.storage.setItem(
+      'club70-session',
+      JSON.stringify({ ...session, expires_at: Math.floor(Date.now() / 1000) + 3600, user: { id: ME_ID, email: null } }),
+    );
+    await isolated.secureStore.setItemAsync('club70.passwordRecovery', ME_ID);
+    (isolated.secureStore.getItemAsync as jest.Mock).mockRejectedValueOnce(new Error('Keychain locked'));
+    const IsolatedProvider = isolated.SessionProvider;
+    const { result } = renderHook(() => isolated.useSession(), {
+      wrapper: ({ children }: { children: ReactNode }) => <IsolatedProvider>{children}</IsolatedProvider>,
+    });
+    await waitFor(() => expect(result.current.status).toBe('anonymous'));
+    await act(async () => {
+      await isolated.store.load();
+    });
+    await waitFor(() => expect(result.current.status).toBe('authenticated'));
+    expect(result.current.passwordRecovery).toBe(true);
+  });
+
   it('signs in with Apple through Clutch and saves the first-sign-in name to the profile', async () => {
     const oauth = jest.requireActual('../oauth');
     jest.spyOn(oauth.appleAdapter, 'isConfigured').mockReturnValue(true);

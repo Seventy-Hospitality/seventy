@@ -184,6 +184,38 @@ describe('session store', () => {
     expect(await waiting).toBeNull();
   });
 
+  it("refreshes a new member's session on its own token, not by joining the last one's refresh", async () => {
+    // A's refresh is still running when A signs out and B signs in; B's 401 needs B's refresh.
+    const { store } = setup(fresh);
+    const pending: Array<(s: ReturnType<typeof makeAuthSession>) => void> = [];
+    const refresher = jest.fn((_refreshToken: string) => new Promise<ReturnType<typeof makeAuthSession>>((r) => pending.push(r)));
+    store.setRefresher(refresher);
+    await store.load();
+    const forA = store.refresh('a1');
+    await store.clear();
+    await store.set(makeAuthSession({ access_token: 'b1', refresh_token: 'rb1', user: { id: 'user-b', email: 'b@x.com' } }));
+    const forB = store.refresh('b1');
+    pending[0](makeAuthSession({ access_token: 'a2', refresh_token: 'r2' }));
+    await new Promise((r) => setTimeout(r, 0));
+    pending[1](makeAuthSession({ access_token: 'b2', refresh_token: 'rb2', user: { id: 'user-b', email: 'b@x.com' } }));
+    expect(await forA).toBeNull();
+    expect(await forB).toBe('b2');
+    expect(refresher.mock.calls.map((c) => c[0])).toEqual(['r1', 'rb1']);
+  });
+
+  it('answers the replacing session rather than fail when a refresh for the old one could not run', async () => {
+    // A step-up replaced the member's session while a refresh for the old one was in flight.
+    const { store } = setup(fresh);
+    let reject!: (e: unknown) => void;
+    store.setRefresher(() => new Promise((_r, j) => (reject = j)));
+    await store.load();
+    const refreshing = store.refresh('a1');
+    await store.set(makeAuthSession({ access_token: 'a3', refresh_token: 'r3' }));
+    reject(networkError());
+    expect(await refreshing).toBe('a3');
+    expect(store.current()?.refresh_token).toBe('r3');
+  });
+
   it("keeps expiry on this device's clock, so a wrong phone clock cannot loop refreshes", async () => {
     // Clutch's expires_at is an hour behind this (fast) clock; expires_in is what counts.
     const { store } = setup();
