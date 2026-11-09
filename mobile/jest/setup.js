@@ -27,7 +27,6 @@ jest.mock('expo-secure-store', () => {
 
 // Heavy native modules that are only reached at runtime, never in unit tests.
 jest.mock('@stripe/stripe-react-native', () => ({
-  StripeProvider: ({ children }) => children,
   initStripe: jest.fn(async () => undefined),
   useStripe: () => ({
     initPaymentSheet: jest.fn(),

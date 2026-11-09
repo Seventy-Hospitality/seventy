@@ -72,8 +72,9 @@ no Supabase or Stripe key and receives no email links.
   contract:gen`) from Clutch's `docs/api/openapi.json`, snapshotted in
   `clutch/openapi.json` with its source in `clutch/openapi.source.json`
   (today: a local merge of `origin/main` with `feat/api-sign-in-codes`
-  (#188) and `feat/api-publishable-key` (#187); regenerate from main with
-  `npm run contract:pull` once both merge). zod 4 schemas that ignore unknown
+  (#188) and `feat/api-publishable-key` (#187); once both merge, regenerate
+  from main with `CLUTCH_REPO=<club-management checkout> npm run
+  contract:pull && npm run contract:gen`). zod 4 schemas that ignore unknown
   fields, respect nullability and brand ids; `contract.gen.test.ts` fails when
   it is stale. Never edit it by hand.
 - `contract.pending.ts` is the only hand-written contract: operations of

@@ -37,6 +37,7 @@ import {
   type CourtAvailability,
 } from './contract.gen';
 import {
+  AuthSessionSchema,
   BookingQuoteSchema,
   CancelBookingResponseSchema,
   ClubBookingRulesSchema,
@@ -44,14 +45,13 @@ import {
   ClubPlayerSchema,
   CourtTypeBookingRulesSchema as CourtTypeRulesSchema,
   GetMyAccountDeletionResponseSchema,
+  IdentitySchema as AuthIdentitySchema,
   InvitationAnswerSchema,
+  MoveCheckoutSchema,
   PlayerRemovalSchema,
   RescheduleQuoteSchema,
-  ShareSettledSchema,
-  MoveCheckoutSchema,
   ShareCheckoutSchema,
-  AuthSessionSchema,
-  IdentitySchema as AuthIdentitySchema,
+  ShareSettledSchema,
 } from './contract.gen';
 import {
   BookingCheckoutSchema,

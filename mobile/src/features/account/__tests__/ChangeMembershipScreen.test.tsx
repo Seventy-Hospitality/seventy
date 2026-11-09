@@ -29,7 +29,6 @@ jest.mock('expo-router', () => ({
 const mockPresent = jest.fn<Promise<SheetResult>, unknown[]>();
 jest.mock('../../../lib/stripe', () => ({
   usePresentConnectedSheet: () => mockPresent,
-  usePaymentsConfigured: () => true,
 }));
 
 const PRO = makeEligibleChangeTier({ name: 'Pro' });
