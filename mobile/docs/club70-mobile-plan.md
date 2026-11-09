@@ -8,46 +8,74 @@ migrated.
 
 ## Stack
 Expo SDK 54, expo-router 6, RN 0.81, react-query 5, react-hook-form + zod 4,
-supabase-js 2 (auth only), @stripe/stripe-react-native 0.50.3. Tabs: Home /
+@stripe/stripe-react-native 0.50.3. No identity-provider SDK. Tabs: Home /
 Reserve / Groups / Account.
 
-## Two services
-- **Supabase GoTrue** (`EXPO_PUBLIC_SUPABASE_URL` + anon key) for every auth
-  flow, on the device through supabase-js. The app never calls Clutch's
-  `/api/v1/auth/*` proxy.
-- **Clutch HTTP API** (`EXPO_PUBLIC_CLUTCH_API_URL`, ending in `/api/v1`) for
-  all data, with the Supabase access token as Bearer (RLS runs as the user).
+## One service
+The app talks only to the **Clutch HTTP API** (`EXPO_PUBLIC_CLUTCH_API_URL`,
+ending in `/api/v1`): sign-in through `/auth/*` and `/me/identities`, all
+data with the member's access token as Bearer (RLS runs as the user).
+Clutch's identity provider (Supabase) and its keys stay behind that API, and
+the Stripe publishable key arrives with every payment intent. The app holds
+no Supabase or Stripe key and receives no email links.
 
-## Auth (`src/lib/supabase.ts`, `secure-storage.ts`, `session.tsx`, `oauth.ts`)
-- supabase-js owns the session: `flowType: 'pkce'`, `detectSessionInUrl: false`,
-  storage key `club70-auth` in a chunked SecureStore adapter (a session
-  outgrows SecureStore's ~2 KB value limit; operations are serialised per
-  key), auto refresh started/stopped with AppState.
-- Email links (magic link, signup confirmation, password reset) land on
-  `seventy://auth/callback?code=...&sb_flow_id=...`; `exchangeCodeForSession`
-  completes them with the PKCE verifier only this device holds, and the flow
-  id (`experimental.appendPkceFlowIdToRedirects`) keeps an earlier link valid
-  after a second email. Each email also carries a 6-digit code (`verifyOtp`)
-  for a link opened on another device; that case says so.
-- Password recovery signs in in recovery mode (`PASSWORD_RECOVERY`); the flag
-  is persisted so an app kill cannot skip it, and the root layout holds the
-  user on `/auth/set-password` until `updateUser`.
-- Sign-up to an existing address (GoTrue answers a user with no identities)
-  says so; a password sign-in to an unconfirmed address offers the code and a
-  resend; a failed reset email is reported, never shown as sent.
+## Auth (`src/lib/auth-session.ts`, `session.tsx`, `secure-storage.ts`, `oauth.ts`)
+- `auth-session.ts` owns the session `{access_token, refresh_token,
+  expires_at, user}`: one JSON value in a chunked SecureStore adapter
+  (SecureStore caps a value near 2 KB) under `club70-session`.
+  `getAccessToken()` refreshes through `POST /auth/refresh` when under 60 s
+  remain; the client forces one `refresh()` after a 401. Refreshes are
+  single-flight (refresh tokens rotate). A refresh Clutch refuses (4xx) ends
+  the session (SIGNED_OUT); one that could not run (offline, 5xx, 429) keeps
+  it. A stale refresh never overwrites or clears a session signed in
+  meanwhile. `SessionProvider` refreshes ahead of expiry while the app is in
+  the foreground and clears the query cache on sign-out or a user change.
+- Every emailed step is a **6-digit code** (`POST /auth/otp`, then
+  `/auth/otp/verify`): email sign-in (creates the account if new), sign-up
+  (code with `create_user` and the name, then `POST /auth/password` with the
+  chosen password; if that fails the member is held on set-password), an
+  unconfirmed address on password sign-in (a fresh code is sent), and
+  password reset (a code signs in, the member is held on
+  `/auth/set-password` until `POST /auth/password`; the flag is persisted so
+  an app kill cannot skip it). Clutch answers `/auth/otp` the same whether
+  or not the address has an account, so the app never says either.
+- Clutch sets a password only for a recent sign-in (about ten minutes):
+  past that, `POST /auth/password` answers `step_up_required` and the
+  set-password screen emails a fresh code to the signed-in address, signs
+  the same member in with it (a code that signs in another account is not
+  adopted) and saves the password already typed. `mfa_required` (an account
+  with an authenticator app, which the app does not support) sends the
+  member to the website; `upstream_error` asks the member to try again, and
+  the session is kept; a password the account already has is
+  `invalid_field`.
+- A refused refresh (any 4xx but 429, including an ended or banned session)
+  ends the session; 429, 5xx and network failures keep it for the next try.
+  Sign-out forgets the session whatever Clutch answers.
+- Password sign-in: `POST /auth/token`.
 - Google: the iOS / Android OAuth client with code + PKCE through the
-  reversed client id scheme (registered by `app.config.js`), nonce kept.
-  Apple: native, iOS only. Apple's first-sign-in name is written to the Clutch
+  reversed client id scheme (registered by `app.config.js`), nonce kept;
+  Apple: native, iOS only. The ID token and raw nonce go to
+  `POST /auth/id-token`. Apple's first-sign-in name is written to the Clutch
   profile; onboarding asks for a name whenever the profile has none.
-- Sign-out always works: when GoTrue cannot be reached (an expired token
-  offline) the app forgets the stored session and the cache itself. Every
+- Sign-out: `POST /auth/signout` (local scope) when Clutch answers within
+  4 s, then the session is forgotten on the device regardless. Every
   sign-out path unregisters this install's push token first.
+- Sign-in methods: `GET /me/identities`, link Google or Apple with
+  `POST /me/identities` (answers the session that carries the identity,
+  which the app adopts), unlink with `DELETE /me/identities/{id}`.
+- Step-up before account deletion: a fresh sign-in by the member's own
+  method (password, code, Google, Apple). The fresh session is adopted only
+  when it names the signed-in member; another account's is dropped, so the
+  session never switches person.
 
 ## Clutch client (`src/lib/clutch/`)
 - `contract.gen.ts` is GENERATED (`npm run contract:pull && npm run
   contract:gen`) from Clutch's `docs/api/openapi.json`, snapshotted in
   `clutch/openapi.json` with its source in `clutch/openapi.source.json`
-  (today: `origin/feat/api-contract`). zod 4 schemas that ignore unknown
+  (today: a local merge of `origin/main` with `feat/api-sign-in-codes`
+  (#188) and `feat/api-publishable-key` (#187); once both merge, regenerate
+  from main with `CLUTCH_REPO=<club-management checkout> npm run
+  contract:pull && npm run contract:gen`). zod 4 schemas that ignore unknown
   fields, respect nullability and brand ids; `contract.gen.test.ts` fails when
   it is stale. Never edit it by hand.
 - `contract.pending.ts` is the only hand-written contract: operations of
@@ -59,13 +87,16 @@ Reserve / Groups / Account.
   (`ClutchUnavailableError`) and its screen shows `FeatureUnavailable`
   ("not available in the app yet") instead of an error or a dead end. Flip an
   entry when its branch is deployed.
-- `client.ts`: one typed function per endpoint, grouped as `club`, `bookings`,
-  `groups`, `membership`, `paymentMethods`, `me`. Transport rules: strict
-  envelope, `ClutchError.code: ErrorCode | 'unknown'`, one shared refresh
-  after a 401 and a NEW Idempotency-Key for that retry (Clutch caches the 401
-  under the first key), an Idempotency-Key on every mutation (the logical
-  mutation's, `useMutationKey`; confirm-style calls also rotate after a 5xx;
-  multipart sends always get a fresh one), `409 request_in_flight` waits with
+- `client.ts`: one typed function per endpoint, grouped as `auth`, `club`,
+  `bookings`, `groups`, `membership`, `paymentMethods`, `me`. Sign-in calls
+  are anonymous: no Bearer, and no refresh after a 401. Transport rules: strict
+  envelope, `ClutchError.code: ErrorCode | 'unknown'`, a refresh only after a
+  401 `session_expired`, `auth_required` or `invalid_token` (the session store
+  shares one rotation and answers only the same member's new token) and a NEW
+  Idempotency-Key for that retry (Clutch caches the 401 under the first key),
+  an Idempotency-Key on every mutation (the logical mutation's,
+  `useMutationKey`; confirm-style calls also rotate after a 5xx; multipart
+  sends always get a fresh one), `409 request_in_flight` waits with
   the same key, the club bound at construction with a startup slug check,
   `/me/groups` filtered to the club, midnight sent as `00:00`.
 - `membership-view.ts`: `entitlement()` is the one reading of "may this member
@@ -77,12 +108,18 @@ Reserve / Groups / Account.
 ## Payments (`src/lib/stripe.tsx`)
 Clutch charges are direct charges on the club's Stripe connected account.
 Every payment result becomes a `SheetIntent` union (`stripe` with
-`clientSecret` + `stripeAccount` + optional customer/ephemeral key, or
-`simulated`). The only way to show a sheet is `presentConnectedSheet(intent)`,
-which re-initialises the SDK with `{publishableKey, stripeAccountId}` behind a
-lock and returns the completed intent id. The app never reports success: it
-hands the intent id to Clutch (`confirm` / `save`) and shows Clutch's answer.
-`EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY` is the Clutch platform key. Physical venue
+`clientSecret` + `stripeAccount` + `publishableKey` + optional
+customer/ephemeral key, or `simulated`). The only way to show a sheet is
+`presentConnectedSheet(intent)`, which initialises the SDK with the intent's
+own `{publishableKey, stripeAccountId}` behind a lock and returns the
+completed intent id; an intent without a key resolves `unconfigured`. The key
+is Clutch's platform key, sent as `publishable_key` next to every
+`client_secret` (we-are-clutch #187), with the club's `stripe_account` (null
+for a club on the platform account). Move and share checkouts are generated;
+booking checkout and card setup are outside the OpenAPI document and stay in
+`contract.pending.ts`, which prefers `stripe_account` over the older
+`stripeAccount`. The app never reports success: it hands the intent id to
+Clutch (`confirm` / `save`) and shows Clutch's answer. Physical venue
 memberships use Stripe, never IAP (App Store 3.1.3(e)).
 
 ## Push (`src/features/account/usePushRegistration.ts`, `push-verification.ts`, `src/features/notifications/`)
@@ -130,7 +167,7 @@ browser) and the contact address (mailto:contact@seventyhospitality.com).
 - **Account**: profile + avatar, notification preferences on Clutch's
   category x channel matrix, push registration (install secret, token
   rotation, retries), payment history, saved cards, tier change / cancel /
-  resume (P2), sign-in methods (link/unlink through supabase-js), delete
+  resume (P2), sign-in methods (link/unlink through `/me/identities`), delete
   account with a fresh sign-in as step-up.
 
 ## What is gated, and why (capabilities.ts)
@@ -159,22 +196,23 @@ Still missing in Clutch (not on any branch):
 - A web page for group invite links: shared links are the app's
   `seventy://groups/join?token=` deep link and need the app installed.
 
-## Supabase dashboard setup
-- Auth > URL configuration: add `seventy://auth/callback` and the glob `seventy://**` to the redirect URLs (the links carry an `sb_flow_id` query).
-- Auth > Providers > Google: enable; authorized client ids = the iOS and
-  Android OAuth client ids used by the app (comma separated); "skip nonce
-  check" off. In Google Cloud, the Android client needs "custom URI scheme"
-  enabled.
-- Auth > Providers > Apple: enable; authorized client ids = bundle id
-  `club.seventy.mobile`.
-- Auth > Email templates: keep `{{ .Token }}` in the magic link, confirmation
-  and recovery templates so the 6-digit code fallback works.
-- Auth > Settings: enable manual identity linking (Sign-in methods screen).
-- EAS: set `EXPO_PUBLIC_SUPABASE_URL` / `EXPO_PUBLIC_SUPABASE_ANON_KEY` and the
-  Stripe, Google and Apple values as EAS environment variables per profile.
+## Clutch production settings the app relies on
+These belong to Clutch (its `DEPLOYMENT.md` lists them); the app has no
+dashboard of its own.
+- The sign-in code emails: the "Magic Link" and "Confirm signup" templates
+  carry `{{ .Token }}` (a new address gets the confirmation email).
+- Google and Apple providers list the app's client ids (the iOS and Android
+  OAuth client ids; bundle id `club.seventy.mobile` for Apple). In Google
+  Cloud, the Android client needs "custom URI scheme" enabled.
+- Manual identity linking on, for removing a sign-in method on the Sign-in
+  methods screen (linking with an ID token works either way).
+- `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` set on the web deployment (it becomes
+  `publishable_key`).
+- No redirect URLs: the app never receives an email link.
 
 ## Verification
 `npm run typecheck`, `npm test` (jest, mocked at the client boundary), and
 `e2e/run.sh`: a release build on an Android emulator against a local Clutch,
-driven by Maestro from sign-up to a paid booking, then checked in Clutch's
-database (e2e/README.md). iOS is not run here (no macOS).
+driven by Maestro from a code sign-up (the code read from the local mail
+catcher) to a paid booking, then checked in Clutch's database
+(e2e/README.md). iOS is not run here (no macOS).

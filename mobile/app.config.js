@@ -5,6 +5,9 @@
  * (com.googleusercontent.apps.<id>), so each configured Google client id
  * adds that scheme next to the app's own `seventy` scheme.
  *
+ * The app's own `seventy` scheme carries deep links (group invite links,
+ * Stripe's return URL); no sign-in comes back through it.
+ *
  * CLUB70_LOCAL_E2E=1 builds a release app that may speak plain http, for the
  * end-to-end run against a local Clutch stack (e2e/README.md). Release builds
  * refuse cleartext otherwise; never set it for a build that ships.

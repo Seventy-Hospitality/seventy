@@ -1,12 +1,12 @@
 /**
  * Where a signed-in person resumes onboarding, decided from Clutch's state.
  *
- * Supabase issues a session only after the email is confirmed, so there is no
- * verify-email step, and ID verification was dropped (owner decision). What
+ * Clutch issues a session only once the emailed code confirms the address, so
+ * there is no verify-email step, and ID verification was dropped (owner decision). What
  * is left:
  *
  *   name     -> the Clutch profile has no name (accounts made from an emailed
- *               code or link): ask for it, PATCH /me/profile, re-read /me.
+ *               code): ask for it, PATCH /me/profile, re-read /me.
  *   join     -> GET /me lists no membership at this club. The gate calls
  *               POST /clubs/{club}/join (idempotent) and re-reads; it never
  *               infers membership from the join answer.

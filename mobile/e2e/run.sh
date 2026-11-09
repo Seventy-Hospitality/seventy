@@ -20,10 +20,11 @@ if [ "${SKIP_BUILD:-}" != "1" ]; then
   adb install -r android/app/build/outputs/apk/release/app-release.apk
 fi
 
-# The app calls localhost:3000 (Clutch) and 127.0.0.1:54321 (Supabase) on
-# the device; forward both to this machine.
+# The app calls only Clutch (localhost:3000 on the device); forward it to this
+# machine. The Maestro scripts run on this machine and reach the mail catcher
+# (:54324) and Supabase (:54321) directly.
 adb reverse tcp:3000 tcp:3000 >/dev/null
-adb reverse tcp:54321 tcp:54321 >/dev/null
+curl -sf -o /dev/null http://127.0.0.1:54324/api/v1/info || { echo "The mail catcher is not up on :54324 (supabase start)." >&2; exit 1; }
 
 EMAIL="member+$(date +%s)@club70.test"
 echo "Member: $EMAIL"

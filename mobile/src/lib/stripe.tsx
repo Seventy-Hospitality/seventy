@@ -5,8 +5,9 @@
  * Clutch charges are DIRECT charges on the club's Stripe connected account, so
  * a client secret only resolves when the SDK is initialised with that
  * account id. presentConnectedSheet(intent) is the ONLY way the app shows a
- * sheet: it re-initialises the SDK with `{publishableKey, stripeAccountId}`
- * for the intent's account, inits and presents the sheet, and reports the
+ * sheet: it initialises the SDK with the intent's own `{publishableKey,
+ * stripeAccountId}` (Clutch sends its platform key with every client secret,
+ * so the app holds no Stripe key), inits and presents the sheet, and reports the
  * completed intent id. The SDK's account is process-global, so presentations
  * are serialised behind a lock: two flows can never race each other's
  * account.
@@ -15,41 +16,13 @@
  * intent id back to Clutch (confirm / save), and Clutch asks Stripe; the app
  * never reports success on its own.
  *
- * Without EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY the app still runs; sheets
- * resolve `unconfigured` and flows show a notice.
+ * An intent that arrives without a key (a deployment with no Stripe key)
+ * resolves `unconfigured` and flows show a notice.
  */
-import { createContext, useCallback, useContext, type ReactNode } from 'react';
-import { initStripe, StripeProvider, useStripe } from '@stripe/stripe-react-native';
-import { STRIPE_MERCHANT_ID, STRIPE_PUBLISHABLE_KEY } from './env';
+import { useCallback } from 'react';
+import { initStripe, useStripe } from '@stripe/stripe-react-native';
+import { STRIPE_MERCHANT_ID } from './env';
 import type { StripeSheetIntent } from './clutch/contract.pending';
-
-interface PaymentsContextValue {
-  configured: boolean;
-}
-
-const PaymentsContext = createContext<PaymentsContextValue>({ configured: false });
-
-export function StripeAppProvider({ children }: { children: ReactNode }) {
-  if (!STRIPE_PUBLISHABLE_KEY) {
-    return (
-      <PaymentsContext.Provider value={{ configured: false }}>{children}</PaymentsContext.Provider>
-    );
-  }
-  return (
-    <StripeProvider
-      publishableKey={STRIPE_PUBLISHABLE_KEY}
-      merchantIdentifier={STRIPE_MERCHANT_ID ?? undefined}
-      urlScheme="seventy"
-    >
-      <PaymentsContext.Provider value={{ configured: true }}>{children}</PaymentsContext.Provider>
-    </StripeProvider>
-  );
-}
-
-/** Whether Stripe is configured (drives the "payments not configured" notice). */
-export function usePaymentsConfigured(): boolean {
-  return useContext(PaymentsContext).configured;
-}
 
 export interface SheetOptions {
   merchantDisplayName?: string;
@@ -93,15 +66,12 @@ export function isSheetUp(): boolean {
  * arm of SheetIntent: a simulated intent has no sheet by construction.
  */
 export function usePresentConnectedSheet() {
-  const { configured } = useContext(PaymentsContext);
   const { initPaymentSheet, presentPaymentSheet } = useStripe();
 
   return useCallback(
     (intent: StripeSheetIntent, options: SheetOptions = {}): Promise<SheetResult> => {
-      if (!configured || !STRIPE_PUBLISHABLE_KEY) {
-        return Promise.resolve({ status: 'unconfigured' });
-      }
-      const publishableKey = STRIPE_PUBLISHABLE_KEY;
+      const publishableKey = intent.publishableKey;
+      if (!publishableKey) return Promise.resolve({ status: 'unconfigured' });
 
       return withSheetLock(async () => {
         try {
@@ -146,6 +116,6 @@ export function usePresentConnectedSheet() {
         return { status: 'completed', intentId: intent.intentId };
       });
     },
-    [configured, initPaymentSheet, presentPaymentSheet],
+    [initPaymentSheet, presentPaymentSheet],
   );
 }

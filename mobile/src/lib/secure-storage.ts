@@ -1,12 +1,12 @@
 /**
- * The storage adapter supabase-js persists its session (and the PKCE code
- * verifier) through, backed by expo-secure-store (Keychain / Keystore).
+ * The storage the member's session is persisted through (lib/auth-session.ts),
+ * backed by expo-secure-store (Keychain / Keystore).
  *
- * SecureStore values are capped around 2 KB, and a Supabase session (two
- * tokens plus the user record with its identities) is routinely larger, so a
+ * SecureStore values are capped around 2 KB, and a session (two tokens, the
+ * access token a JWT carrying the user's claims) is routinely larger, so a
  * value is split into numbered chunks with a small header recording how many
  * there are. Reads reassemble; a missing chunk reads as "no value" rather than
- * a truncated JSON string, so supabase-js treats it as signed out instead of
+ * a truncated JSON string, so the app treats it as signed out instead of
  * crashing on a parse error. Writes clear any extra chunks left over from a
  * longer previous value. Tokens are never logged.
  */
@@ -15,7 +15,7 @@ import * as SecureStore from 'expo-secure-store';
 /** Characters per chunk; well under SecureStore's per-value limit. */
 export const CHUNK_SIZE = 1800;
 
-/** SecureStore keys allow only [A-Za-z0-9._-]; supabase keys already fit. */
+/** SecureStore keys allow only [A-Za-z0-9._-]. */
 function safeKey(key: string): string {
   return key.replace(/[^A-Za-z0-9._-]/g, '_');
 }

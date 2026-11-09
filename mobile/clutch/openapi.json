@@ -79,11 +79,201 @@
         }
       }
     },
+    "/auth/id-token": {
+      "post": {
+        "operationId": "signInWithIdToken",
+        "summary": "Sign in with an Apple or Google ID token",
+        "description": "Creates the account on a first sign-in. A token the provider cannot verify is invalid_credentials, and so is one for a banned account, with the same message: this API's answer never says which addresses are banned; the identity provider, called directly with the publishable key, still does. The app's Apple bundle id and Google client ids must be authorized on the deployment's identity provider. 429 rate_limit_exceeded: thirty a minute per client, from the same budget as password sign-in.",
+        "tags": ["Auth"],
+        "security": [{}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignInWithIdTokenRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignInWithIdTokenResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure. `error` is an ErrorCode.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-error-codes": [
+          "invalid_credentials",
+          "rate_limit_exceeded",
+          "upstream_error"
+        ]
+      }
+    },
+    "/auth/otp": {
+      "post": {
+        "operationId": "requestEmailCode",
+        "summary": "Email a sign-in code",
+        "description": "Follow with POST /auth/otp/verify. Without `create_user`, every address is answered the same 202 at once, and the email is sent after the answer: an address with no account gets none, and neither the answer nor its timing says which addresses have accounts. (The identity provider itself, called directly, still can; this is about the API's answer.) With `create_user`, an address with no account gets one (and `full_name` on its profile); its first email is the address confirmation, which carries the code too. Also the first step of a password reset: verify the code, then POST /auth/password. 400 invalid_field: a malformed address, with `create_user` (without it, a malformed address is one with no account). 429 rate_limit_exceeded: five requests a minute per address, twenty per client; spent the same for every address.",
+        "tags": ["Auth"],
+        "security": [{}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestEmailCodeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestEmailCodeResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure. `error` is an ErrorCode.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-error-codes": [
+          "invalid_field",
+          "rate_limit_exceeded",
+          "upstream_error"
+        ]
+      }
+    },
+    "/auth/otp/verify": {
+      "post": {
+        "operationId": "verifyEmailCode",
+        "summary": "Exchange an emailed code for a session",
+        "description": "A code is single use, and expires after the lifetime the deployment sets. A wrong, expired or used one is invalid_credentials, and so is any code for a banned account, with the same message: this API's answer never says which addresses are banned; the identity provider, called directly with the publishable key, still does. 400 invalid_field: a malformed address. 429 rate_limit_exceeded: five tries a minute per address from one client, thirty per client, and ten an hour and thirty a day per address from all clients together. Anyone can spend those last two by sending wrong codes for an address: code sign-in and the native password reset then stop for it until they refill. An account with a password, Apple or Google still signs in that way; one that only ever used codes cannot sign in natively until then. The web sign-in link is not affected. The per-address budget is what bounds guessing a 6-digit code through this API from many clients at once. It bounds only this API: the identity provider, called directly with the publishable key, limits code checks per client address alone.",
+        "tags": ["Auth"],
+        "security": [{}],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyEmailCodeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerifyEmailCodeResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure. `error` is an ErrorCode.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-error-codes": [
+          "invalid_credentials",
+          "invalid_field",
+          "rate_limit_exceeded",
+          "upstream_error"
+        ]
+      }
+    },
+    "/auth/password": {
+      "post": {
+        "operationId": "setPassword",
+        "summary": "Set the signed-in account's password",
+        "description": "Needs a person's access token: an API key is answered 401. An expired access token, or one whose session has ended (signed out, or its account deleted or banned), is `401 session_expired`. Needs a session that signed in moments ago, by the same freshness rule as deleting the account (a session made from an emailed code just now passes): otherwise `403 step_up_required`, whose `details` say how to sign in again (`methods`); sign in, then retry with the new access token. When that check cannot be made, or the identity provider cannot be reached, `502 upstream_error`: retry, do not sign in again. So is a deployment whose provider asks for the current password to change one (DEPLOYMENT.md asks for that setting off). A second factor is checked separately, by the provider: an account that has one, on a session that has not passed it, is `401 mfa_required`. Every other session of the account is signed out; this one stays. A password the account already has is invalid_field.",
+        "tags": ["Auth"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetPasswordRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetPasswordResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure. `error` is an ErrorCode.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-error-codes": [
+          "auth_required",
+          "session_expired",
+          "password_too_short",
+          "weak_password",
+          "invalid_field",
+          "step_up_required",
+          "mfa_required",
+          "rate_limit_exceeded",
+          "upstream_error"
+        ]
+      }
+    },
     "/auth/password-reset": {
       "post": {
         "operationId": "requestPasswordReset",
         "summary": "Send a password-reset email",
-        "description": "Always 202, whether or not the address has an account. `redirect_to` must be on the deployment's allow-list or the provider ignores it.",
+        "description": "202 whether or not the address has an account, at once: the email is sent after the answer, so its timing says nothing either. `redirect_to` must be on the deployment's allow-list or the provider ignores it. 429 rate_limit_exceeded: five requests a minute per address, twenty per client, from the same budget as the web reset form; spent the same for every address, so it says nothing about which have accounts.",
         "tags": ["Auth"],
         "security": [{}],
         "requestBody": {
@@ -117,7 +307,8 @@
               }
             }
           }
-        }
+        },
+        "x-error-codes": ["rate_limit_exceeded", "upstream_error"]
       }
     },
     "/auth/refresh": {
@@ -159,14 +350,59 @@
             }
           }
         },
-        "x-error-codes": ["invalid_credentials", "rate_limit_exceeded"]
+        "x-error-codes": [
+          "invalid_credentials",
+          "rate_limit_exceeded",
+          "upstream_error"
+        ]
+      }
+    },
+    "/auth/signout": {
+      "post": {
+        "operationId": "signOut",
+        "summary": "End the session",
+        "description": "`local` (the default) ends this session and its refresh token; `global` ends every session of the account. A session already ended is answered 200 too, as is a token whose account has been deleted: nothing is left to end. A banned account's is `401 session_expired`: the provider refuses it before revoking anything, so its sessions are not said to have ended. An expired access token is `401 session_expired`, as on every other route: refresh, then sign out, or forget the session on the device. `502 upstream_error` means the provider could not answer: retry. Needs a person's access token: an API key is answered 401. Unregister push (DELETE /me/devices) first: it needs the session.",
+        "tags": ["Auth"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignOutRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Signed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignOutResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure. `error` is an ErrorCode.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-error-codes": ["auth_required", "session_expired", "upstream_error"]
       }
     },
     "/auth/signup": {
       "post": {
         "operationId": "signUp",
         "summary": "Create an account",
-        "description": "A new account belongs to no club: follow with POST /clubs/{club}/join. With email confirmation on (production), the answer is 202 and no session: the person confirms the address, then signs in.",
+        "description": "A new account belongs to no club: follow with POST /clubs/{club}/join. With email confirmation on (production), the answer is 202 and no session: the person confirms the address, then signs in. 429 rate_limit_exceeded: five a minute per address, twenty per client, from the same budget as the web sign-up form.",
         "tags": ["Auth"],
         "security": [{}],
         "requestBody": {
@@ -216,7 +452,8 @@
           "weak_password",
           "email_in_use",
           "invalid_field",
-          "rate_limit_exceeded"
+          "rate_limit_exceeded",
+          "upstream_error"
         ]
       }
     },
@@ -224,6 +461,7 @@
       "post": {
         "operationId": "createAuthToken",
         "summary": "Exchange email and password for a session",
+        "description": "A wrong email or password is invalid_credentials, and so is a banned account, with the same message: this API's answer never says which addresses are banned; the identity provider, called directly with the publishable key, still does. 429 rate_limit_exceeded: five tries a minute per address from one client, thirty per client, from the same budget as the web sign-in form.",
         "tags": ["Auth"],
         "security": [{}],
         "requestBody": {
@@ -261,7 +499,8 @@
         "x-error-codes": [
           "invalid_credentials",
           "email_not_confirmed",
-          "rate_limit_exceeded"
+          "rate_limit_exceeded",
+          "upstream_error"
         ]
       }
     },
@@ -4068,6 +4307,103 @@
             }
           }
         }
+      },
+      "post": {
+        "operationId": "linkMyIdentity",
+        "summary": "Link an Apple or Google account as a sign-in method",
+        "description": "Answers a new session: store it in place of the old one. Needs no recent sign-in, unlike setting a password: the provider links an ID token for any live session when called directly, so a check here would not close that path. Instead a newly linked identity does not count as a recent sign-in for a week (step-up), so a link cannot be used to pass one. Linking with an ID token works whatever the deployment's manual-linking setting is: the provider checks that setting only on unlinking. Needs a person's access token: an API key is answered 401.",
+        "tags": ["Account"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkMyIdentityRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A new session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkMyIdentityResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure. `error` is an ErrorCode.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-error-codes": [
+          "auth_required",
+          "session_expired",
+          "invalid_credentials",
+          "identity_already_linked",
+          "rate_limit_exceeded",
+          "upstream_error"
+        ]
+      }
+    },
+    "/me/identities/{identityId}": {
+      "delete": {
+        "operationId": "unlinkMyIdentity",
+        "summary": "Unlink a sign-in method",
+        "description": "Needs a person's access token: an API key is answered 401. 400 invalid_field for an `identityId` that is not a UUID. 403 identity_linking_disabled when the deployment does not allow unlinking.",
+        "tags": ["Account"],
+        "parameters": [
+          {
+            "name": "identityId",
+            "in": "path",
+            "required": true,
+            "description": "`identity_id` from GET /me/identities.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Unlinked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnlinkMyIdentityResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure. `error` is an ErrorCode.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "x-error-codes": [
+          "auth_required",
+          "session_expired",
+          "invalid_field",
+          "identity_not_found",
+          "last_identity",
+          "identity_linking_disabled",
+          "upstream_error"
+        ]
       }
     },
     "/me/membership": {
@@ -5147,6 +5483,31 @@
           "published_at",
           "author_name"
         ]
+      },
+      "AuthAccepted": {
+        "description": "Accepted. What happens next arrives by email, if anything does.",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": ["ok", "message"]
+      },
+      "AuthOk": {
+        "description": "The request did what it asked.",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": ["ok"]
       },
       "AuthSession": {
         "description": "A session. The token carries no roles and no club: read them from GET /me.",
@@ -9326,6 +9687,17 @@
               }
             ]
           },
+          "publishable_key": {
+            "description": "The Stripe publishable key to initialise Stripe with, together with `stripe_account`. Null when nothing is charged (`simulated`) or this deployment has no key.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "simulated": {
             "description": "No real card is charged (a test or demo server): confirm without paying.",
             "type": "boolean"
@@ -9347,6 +9719,7 @@
           "client_secret",
           "payment_intent_id",
           "stripe_account",
+          "publishable_key",
           "simulated",
           "subtotal_cents",
           "tax_cents"
@@ -9415,7 +9788,9 @@
           "step_up_required",
           "club_creation_not_permitted",
           "platform_managed_column",
+          "identity_linking_disabled",
           "not_found",
+          "identity_not_found",
           "club_not_found",
           "court_not_found",
           "booking_not_found",
@@ -9513,6 +9888,8 @@
           "not_enrolled",
           "no_active_subscription",
           "username_taken",
+          "identity_already_linked",
+          "last_identity",
           "device_verification_invalid",
           "device_verification_unavailable",
           "advance_booking_exceeded",
@@ -10642,6 +11019,52 @@
         },
         "required": ["data"]
       },
+      "LinkMyIdentityRequest": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": ["apple", "google"]
+          },
+          "id_token": {
+            "description": "The ID token the native Apple or Google SDK issued.",
+            "type": "string",
+            "minLength": 1
+          },
+          "nonce": {
+            "description": "The raw nonce whose hash the token carries, when one was requested.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "access_token": {
+            "description": "Google's access token, when the SDK returned one.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": ["provider", "id_token"]
+      },
+      "LinkMyIdentityResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/AuthSession"
+          }
+        },
+        "required": ["data"]
+      },
       "ListBookingsResponse": {
         "type": "object",
         "properties": {
@@ -11412,6 +11835,17 @@
               }
             ]
           },
+          "publishable_key": {
+            "description": "The Stripe publishable key to initialise Stripe with, together with `stripe_account`. Null when nothing is charged (`simulated`) or this deployment has no key.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "simulated": {
             "description": "Test mode: no real card is charged; pay it in the app's test flow.",
             "type": "boolean"
@@ -11445,6 +11879,7 @@
           "client_secret",
           "payment_intent_id",
           "stripe_account",
+          "publishable_key",
           "simulated",
           "subtotal_cents",
           "tax_cents",
@@ -12862,6 +13297,17 @@
               }
             ]
           },
+          "publishable_key": {
+            "description": "The Stripe publishable key to initialise Stripe with, together with `stripe_account`. Null when nothing is charged (`simulated`) or this deployment has no key.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "simulated": {
             "description": "Test mode: no real card is charged; pay it in the app's test flow.",
             "type": "boolean"
@@ -12895,6 +13341,7 @@
           "client_secret",
           "payment_intent_id",
           "stripe_account",
+          "publishable_key",
           "simulated",
           "subtotal_cents",
           "tax_cents",
@@ -12916,6 +13363,40 @@
         "properties": {
           "data": {
             "type": "null"
+          }
+        },
+        "required": ["data"]
+      },
+      "RequestEmailCodeRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "minLength": 1
+          },
+          "create_user": {
+            "description": "Create an account for an unknown address. Default false.",
+            "type": "boolean"
+          },
+          "full_name": {
+            "description": "For a new account's profile. Ignored for an existing one.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": ["email"]
+      },
+      "RequestEmailCodeResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/AuthAccepted"
           }
         },
         "required": ["data"]
@@ -12944,17 +13425,7 @@
         "type": "object",
         "properties": {
           "data": {
-            "type": "object",
-            "properties": {
-              "ok": {
-                "type": "boolean",
-                "const": true
-              },
-              "message": {
-                "type": "string"
-              }
-            },
-            "required": ["ok", "message"]
+            "$ref": "#/components/schemas/AuthAccepted"
           }
         },
         "required": ["data"]
@@ -13333,6 +13804,26 @@
         },
         "required": ["id", "session_id", "status", "waitlist_position"]
       },
+      "SetPasswordRequest": {
+        "type": "object",
+        "properties": {
+          "password": {
+            "description": "At least 8 characters; shorter is password_too_short.",
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": ["password"]
+      },
+      "SetPasswordResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/AuthOk"
+          }
+        },
+        "required": ["data"]
+      },
       "ShareCheckout": {
         "description": "The payment for your share of someone else's booking.",
         "type": "object",
@@ -13346,6 +13837,17 @@
           },
           "stripe_account": {
             "description": "The club's connected account the intent lives on: initialise Stripe with it. Null when the intent is not on a connected account.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "publishable_key": {
+            "description": "The Stripe publishable key to initialise Stripe with, together with `stripe_account`. Null when nothing is charged (`simulated`) or this deployment has no key.",
             "anyOf": [
               {
                 "type": "string"
@@ -13382,6 +13884,7 @@
           "client_secret",
           "payment_intent_id",
           "stripe_account",
+          "publishable_key",
           "simulated",
           "subtotal_cents",
           "tax_cents",
@@ -13418,6 +13921,71 @@
           "my_due_cents",
           "my_paid_cents"
         ]
+      },
+      "SignInWithIdTokenRequest": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "enum": ["apple", "google"]
+          },
+          "id_token": {
+            "description": "The ID token the native Apple or Google SDK issued.",
+            "type": "string",
+            "minLength": 1
+          },
+          "nonce": {
+            "description": "The raw nonce whose hash the token carries, when one was requested.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "access_token": {
+            "description": "Google's access token, when the SDK returned one.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": ["provider", "id_token"]
+      },
+      "SignInWithIdTokenResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/AuthSession"
+          }
+        },
+        "required": ["data"]
+      },
+      "SignOutRequest": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "description": "Default local.",
+            "type": "string",
+            "enum": ["local", "global"]
+          }
+        }
+      },
+      "SignOutResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/AuthOk"
+          }
+        },
+        "required": ["data"]
       },
       "SignUp202Response": {
         "type": "object",
@@ -13632,6 +14200,15 @@
           }
         },
         "required": ["id", "name"]
+      },
+      "UnlinkMyIdentityResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/AuthOk"
+          }
+        },
+        "required": ["data"]
       },
       "UnregisterMyDeviceRequest": {
         "type": "object",
@@ -13878,6 +14455,30 @@
           "data": {
             "description": "Public URL, already on the profile.",
             "type": "string"
+          }
+        },
+        "required": ["data"]
+      },
+      "VerifyEmailCodeRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "minLength": 1
+          },
+          "code": {
+            "description": "The digits from the email.",
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": ["email", "code"]
+      },
+      "VerifyEmailCodeResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/AuthSession"
           }
         },
         "required": ["data"]

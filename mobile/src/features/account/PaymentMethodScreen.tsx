@@ -239,7 +239,7 @@ function AddCard() {
         case 'busy':
           return;
         case 'unconfigured':
-          setError('Payments are not configured in this build.');
+          setError('Card payments are not available right now. Please try again later.');
           return;
         case 'failed':
           setError(sheet.message || 'Your card could not be added. Please try again.');

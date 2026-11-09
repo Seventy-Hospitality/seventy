@@ -1,24 +1,24 @@
 /**
- * Session provider on Supabase GoTrue (supabase-js owns the session).
+ * Session provider on Clutch's /api/v1/auth routes. The app talks to Clutch
+ * only: no identity-provider SDK, no key, no email links.
  *
  * What lives where:
- * - supabase-js persists the session in the chunked SecureStore adapter,
- *   refreshes it (auto refresh runs while the app is in the foreground:
- *   AppState start/stopAutoRefresh), and emits auth events.
- * - This provider mirrors those events into React state and owns the
- *   app-level reactions: SIGNED_OUT (or a different user signing in) clears
- *   the react-query cache so no member's data outlives their session;
- *   PASSWORD_RECOVERY raises `passwordRecovery` so the app asks for a new
- *   password before anything else.
+ * - lib/auth-session.ts owns the tokens: persists them, refreshes them
+ *   (single-flight, rotated) and emits SIGNED_IN / REFRESHED / SIGNED_OUT.
+ * - This provider mirrors the store into React state, refreshes ahead of
+ *   expiry while the app is in the foreground, and owns the app-level
+ *   reactions: SIGNED_OUT (or a different user signing in) clears the
+ *   react-query cache so no member's data outlives their session; a password
+ *   reset (or a sign-up whose password did not save) raises
+ *   `passwordRecovery`, and the root layout holds the member on
+ *   /auth/set-password until a password is saved.
  * - Clutch data (profile, club membership) is NOT session state; it is
  *   react-query data read through lib/clutch.
  *
- * Email links (magic link, signup confirmation, password reset) are PKCE:
- * they land on seventy://auth/callback?code=... and completeAuthRedirect
- * exchanges the code with the verifier only this device holds. Every email
- * also carries a 6-digit code (verifyEmailCode / verifyRecoveryCode) for when
- * the link opens on another device. The app never calls Clutch's
- * /api/v1/auth/* proxy.
+ * Every emailed step is a 6-digit code typed into the app: sign-in by email,
+ * sign-up (the code confirms the address, then the chosen password is set),
+ * confirming an address before a password sign-in, and password reset (a
+ * code signs in, then a new password is set).
  */
 import {
   createContext,
@@ -31,9 +31,9 @@ import {
   type ReactNode,
 } from 'react';
 import { AppState } from 'react-native';
-import type { AuthChangeEvent, Session, User } from '@supabase/supabase-js';
-import { AUTH_CALLBACK_URL } from './env';
+import * as SecureStore from 'expo-secure-store';
 import { asUserId, type UserId } from './clutch/ids';
+import { sessionStore, type StoredSession } from './auth-session';
 import {
   appleAdapter,
   getFederatedCredential,
@@ -41,10 +41,8 @@ import {
   type FederatedAdapter,
 } from './oauth';
 import { queryClient } from './query-client';
-import * as SecureStore from 'expo-secure-store';
-import { AUTH_STORAGE_KEY, getSupabase, isSupabaseConfigured } from './supabase';
-import { chunkedSecureStorage } from './secure-storage';
 import { clutch } from './clutch';
+import { adoptSameMemberSession } from './same-member';
 
 export type SessionStatus = 'loading' | 'anonymous' | 'authenticated';
 
@@ -56,45 +54,39 @@ export interface OAuthConfig {
 export interface SignUpInput {
   name: string;
   email: string;
-  password: string;
 }
 
 export interface SessionContextValue {
   status: SessionStatus;
-  session: Session | null;
-  user: User | null;
+  session: StoredSession | null;
   userId: UserId | null;
   email: string | null;
-  /** A recovery link/code signed the user in: they must set a new password. */
+  /** The member must set a password before anything else (reset, or sign-up). */
   passwordRecovery: boolean;
-  /** Supabase env is present; false shows a configuration notice. */
-  configured: boolean;
   oauth: OAuthConfig;
 
   signInWithPassword(input: { email: string; password: string }): Promise<void>;
-  /**
-   * `confirmationRequired`: GoTrue sent a confirmation email; no session yet.
-   * Throws EmailAlreadyRegisteredError when the address already has an
-   * account (GoTrue answers a fake user with no identities, sends nothing).
-   */
-  signUpWithPassword(input: SignUpInput): Promise<{ confirmationRequired: boolean }>;
-  /** Email a sign-in link plus a 6-digit code (creates the account if new). */
+  /** Email a 6-digit code that creates the account (an existing one just gets a code). */
+  sendSignUpCode(input: SignUpInput): Promise<void>;
+  /** Confirm the sign-up code, then set the chosen password. */
+  confirmSignUp(input: { email: string; code: string; password: string }): Promise<void>;
+  /** Email a 6-digit sign-in code (creates the account if new). */
   sendEmailSignIn(email: string): Promise<void>;
-  /** Complete an emailed sign-in or signup confirmation with its 6-digit code. */
+  /** Sign in with an emailed code (also confirms an unconfirmed address). */
   verifyEmailCode(email: string, code: string): Promise<void>;
-  resendSignupConfirmation(email: string): Promise<void>;
-  /** The deep-link callback: exchange the PKCE code (or surface the error). */
-  completeAuthRedirect(params: {
-    code?: string;
-    /** `sb_flow_id` from the link: which stored verifier this flow uses. */
-    flowId?: string;
-    error?: string;
-    errorDescription?: string;
-  }): Promise<void>;
+  /** Email a code to an existing account only (confirming it, or stepping up). */
+  sendExistingAccountCode(email: string): Promise<void>;
+  /**
+   * Confirm the signed-in member again with an emailed code (a step-up). The
+   * fresh session is adopted only when it is the same member's; otherwise it
+   * is ended on Clutch and WrongAccountError (lib/same-member.ts) is thrown.
+   */
+  reconfirmWithCode(email: string, code: string): Promise<void>;
   signInWithGoogle(): Promise<void>;
   signInWithApple(): Promise<void>;
+  /** Email a reset code (same answer whether or not the address has an account). */
   requestPasswordReset(email: string): Promise<void>;
-  /** Complete a password reset with the emailed code (enters recovery). */
+  /** Sign in with the reset code; the member is then held until a new password is set. */
   verifyRecoveryCode(email: string, code: string): Promise<void>;
   /** Set a new password (ends recovery). */
   updatePassword(password: string): Promise<void>;
@@ -103,33 +95,13 @@ export interface SessionContextValue {
 
 const SessionContext = createContext<SessionContextValue | null>(null);
 
-/** Thrown by the auth-callback exchange when GoTrue redirected with an error. */
-export class AuthRedirectError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'AuthRedirectError';
-  }
-}
-
-export class EmailAlreadyRegisteredError extends Error {
-  readonly code = 'user_already_exists';
-  constructor() {
-    super('That email already has an account.');
-    this.name = 'EmailAlreadyRegisteredError';
-  }
-}
-
-function raise(error: unknown): void {
-  if (error) throw error;
-}
+/** How long sign-out waits for Clutch before forgetting the session anyway. */
+export const SIGN_OUT_SERVER_TIMEOUT_MS = 4000;
 
 /**
- * Recovery mode outlives an app kill: the recovery session is persisted by
- * supabase-js, so without this flag a restart would drop the user straight
- * into the app with the old password still set. Keyed by user id.
+ * Recovery mode outlives an app kill: the session is persisted, so without
+ * this flag a restart would drop the member straight into the app with no
+ * new password set. Keyed by user id.
  */
 const RECOVERY_KEY = 'club70.passwordRecovery';
 
@@ -150,199 +122,200 @@ async function recoveryPendingFor(userId: string): Promise<boolean> {
   }
 }
 
-/** Forget the session on this device without asking GoTrue (it may be unreachable). */
-async function forgetLocalSession(): Promise<void> {
-  await chunkedSecureStorage.removeItem(AUTH_STORAGE_KEY);
-  await chunkedSecureStorage.removeItem(`${AUTH_STORAGE_KEY}-user`);
+async function within<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export function SessionProvider({ children }: { children: ReactNode }) {
-  const configured = isSupabaseConfigured();
-  const [status, setStatus] = useState<SessionStatus>(configured ? 'loading' : 'anonymous');
-  const [session, setSession] = useState<Session | null>(null);
+  const [status, setStatus] = useState<SessionStatus>('loading');
+  const [session, setSession] = useState<StoredSession | null>(null);
   const [passwordRecovery, setPasswordRecovery] = useState(false);
   const lastUserId = useRef<string | null>(null);
+  const [refreshTick, setRefreshTick] = useState(0);
 
-  // Mirror supabase-js auth events into state; clear cached data on sign-out
-  // or when a different user signs in.
+  // Mirror the store into state; clear cached data on sign-out or when a
+  // different user signs in.
   useEffect(() => {
-    if (!configured) return;
-    const supabase = getSupabase();
-    const { data } = supabase.auth.onAuthStateChange((event: AuthChangeEvent, next: Session | null) => {
+    let cancelled = false;
+    const unsubscribe = sessionStore.subscribe((event, next) => {
       const nextUserId = next?.user.id ?? null;
       if (event === 'SIGNED_OUT' || (nextUserId && lastUserId.current && nextUserId !== lastUserId.current)) {
         queryClient.clear();
       }
       lastUserId.current = nextUserId;
-      if (event === 'PASSWORD_RECOVERY') {
-        setPasswordRecovery(true);
-        void rememberRecovery(nextUserId);
-      }
       if (event === 'SIGNED_OUT') {
         setPasswordRecovery(false);
         void rememberRecovery(null);
       }
-      if (event === 'INITIAL_SESSION' && nextUserId) {
-        // Restore recovery mode across an app kill (no auth calls in here:
-        // supabase-js forbids awaiting its own API inside this callback).
-        void recoveryPendingFor(nextUserId).then((pending) => {
-          if (pending) setPasswordRecovery(true);
+      if (event === 'INITIAL' && next) {
+        // The first read failed and the session turned up later: hold a
+        // pending password recovery before the app shows as signed in.
+        void recoveryPendingFor(next.user.id).then((pending) => {
+          if (cancelled) return;
+          if (pending && sessionStore.current()?.user.id === next.user.id) setPasswordRecovery(true);
+          const now = sessionStore.current();
+          setSession(now);
+          setStatus(now ? 'authenticated' : 'anonymous');
+          setRefreshTick((t) => t + 1);
         });
+        return;
       }
       setSession(next);
       setStatus(next ? 'authenticated' : 'anonymous');
+      setRefreshTick((t) => t + 1);
     });
-    return () => data.subscription.unsubscribe();
-  }, [configured]);
-
-  // Refresh tokens only while the app is in the foreground.
-  useEffect(() => {
-    if (!configured) return;
-    const auth = getSupabase().auth;
-    if (AppState.currentState === 'active') void auth.startAutoRefresh();
-    const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') void auth.startAutoRefresh();
-      else void auth.stopAutoRefresh();
+    void sessionStore.load().then(async (initial) => {
+      if (cancelled) return;
+      const userId = initial?.user.id ?? null;
+      if (userId && (await recoveryPendingFor(userId)) && !cancelled) setPasswordRecovery(true);
+      if (cancelled) return;
+      // A sign-in may have landed while storage was read: the store is current.
+      const now = sessionStore.current();
+      lastUserId.current = now?.user.id ?? null;
+      setSession(now);
+      setStatus(now ? 'authenticated' : 'anonymous');
+      setRefreshTick((t) => t + 1);
     });
     return () => {
-      sub?.remove();
-      void auth.stopAutoRefresh();
+      cancelled = true;
+      unsubscribe();
     };
-  }, [configured]);
+  }, []);
+
+  // A launch in the background (a data push on a locked iPhone) may not read
+  // the Keychain: read it again when the app comes to the foreground. The
+  // store announces a session it finds then as INITIAL.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void sessionStore.load();
+    });
+    return () => sub?.remove();
+  }, []);
+
+  // Refresh ahead of expiry, only while the app is in the foreground.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const schedule = () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      if (AppState.currentState !== 'active') return;
+      const wait = sessionStore.secondsUntilRefresh();
+      if (wait === null) return;
+      timer = setTimeout(() => {
+        // Failures keep the session (offline); the next foreground retries.
+        sessionStore.refresh().catch(() => undefined);
+      }, wait * 1000);
+    };
+    schedule();
+    const sub = AppState.addEventListener('change', schedule);
+    return () => {
+      sub?.remove();
+      if (timer) clearTimeout(timer);
+    };
+  }, [refreshTick]);
 
   const signInWithFederated = useCallback(async (adapter: FederatedAdapter) => {
     const credential = await getFederatedCredential(adapter);
-    const auth = getSupabase().auth;
-    const { error } = await auth.signInWithIdToken({
-      provider: credential.provider,
-      token: credential.token,
-      nonce: credential.nonce,
-    });
-    raise(error);
+    await sessionStore.set(
+      await clutch.auth.idToken({ provider: credential.provider, id_token: credential.token, nonce: credential.nonce }),
+    );
     // Apple shares the name only on the first authorization: put it on the
-    // Clutch profile (which Clutch created empty) and on the auth user. The
-    // sign-in already succeeded; failing to save the name must not undo it
-    // (onboarding asks for a name whenever the profile has none).
+    // Clutch profile (which Clutch created empty). The sign-in already
+    // succeeded; failing to save the name must not undo it (onboarding asks
+    // for a name whenever the profile has none).
     const name = [credential.fullName?.givenName, credential.fullName?.familyName]
       .filter(Boolean)
       .join(' ')
       .trim();
-    if (name) {
-      await Promise.allSettled([
-        clutch.me.updateProfile({ full_name: name }),
-        auth.updateUser({ data: { full_name: name } }),
-      ]);
-    }
+    if (name) await Promise.allSettled([clutch.me.updateProfile({ full_name: name })]);
   }, []);
 
-  /** Drop to signed out locally: cache, state and the stored session. */
-  const signOutLocally = useCallback(async () => {
-    await forgetLocalSession();
-    await rememberRecovery(null);
-    queryClient.clear();
-    lastUserId.current = null;
-    setPasswordRecovery(false);
-    setSession(null);
-    setStatus('anonymous');
+  const enterRecovery = useCallback(async () => {
+    const userId = sessionStore.current()?.user.id ?? null;
+    setPasswordRecovery(true);
+    await rememberRecovery(userId);
   }, []);
 
   const value = useMemo<SessionContextValue>(() => {
-    const auth = () => getSupabase().auth;
-    const user = session?.user ?? null;
     return {
       status,
       session,
-      user,
-      userId: user ? asUserId(user.id) : null,
-      email: user?.email ?? null,
+      userId: session ? asUserId(session.user.id) : null,
+      email: session?.user.email ?? null,
       passwordRecovery,
-      configured,
       oauth: {
         googleConfigured: googleAdapter.isConfigured(),
         appleConfigured: appleAdapter.isConfigured(),
       },
 
       async signInWithPassword({ email, password }) {
-        const { error } = await auth().signInWithPassword({ email: email.trim(), password });
-        raise(error);
+        await sessionStore.set(await clutch.auth.token(email.trim(), password));
       },
-      async signUpWithPassword({ name, email, password }) {
-        const { data, error } = await auth().signUp({
-          email: email.trim(),
-          password,
-          options: { emailRedirectTo: AUTH_CALLBACK_URL, data: { full_name: name.trim() } },
-        });
-        raise(error);
-        // With confirmations on, GoTrue does not reveal an existing address:
-        // it answers a user with no identities and sends no email.
-        if (!data.session && data.user && (data.user.identities?.length ?? 0) === 0) {
-          throw new EmailAlreadyRegisteredError();
+      async sendSignUpCode({ name, email }) {
+        await clutch.auth.sendCode({ email: email.trim(), create_user: true, full_name: name.trim() || null });
+      },
+      async confirmSignUp({ email, code, password }) {
+        await sessionStore.set(await clutch.auth.verifyCode(email.trim(), code.trim()));
+        try {
+          await clutch.auth.setPassword(password);
+        } catch {
+          // Signed in, but the password did not save: ask for it again
+          // before anything else rather than leave an account without one.
+          await enterRecovery();
         }
-        return { confirmationRequired: !data.session };
       },
       async sendEmailSignIn(email) {
-        const { error } = await auth().signInWithOtp({
-          email: email.trim(),
-          options: { emailRedirectTo: AUTH_CALLBACK_URL, shouldCreateUser: true },
-        });
-        raise(error);
+        await clutch.auth.sendCode({ email: email.trim(), create_user: true });
       },
       async verifyEmailCode(email, code) {
-        const { error } = await auth().verifyOtp({ email: email.trim(), token: code.trim(), type: 'email' });
-        raise(error);
+        await sessionStore.set(await clutch.auth.verifyCode(email.trim(), code.trim()));
       },
-      async resendSignupConfirmation(email) {
-        const { error } = await auth().resend({
-          type: 'signup',
-          email: email.trim(),
-          options: { emailRedirectTo: AUTH_CALLBACK_URL },
-        });
-        raise(error);
+      async sendExistingAccountCode(email) {
+        await clutch.auth.sendCode({ email: email.trim(), create_user: false });
       },
-      async completeAuthRedirect({ code, flowId, error, errorDescription }) {
-        if (error) throw new AuthRedirectError(error, errorDescription ?? error.replace(/_/g, ' '));
-        if (!code) throw new AuthRedirectError('missing_code', 'This sign-in link is incomplete.');
-        const result = await auth().exchangeCodeForSession(code, flowId ? { flowId } : undefined);
-        raise(result.error);
+      async reconfirmWithCode(email, code) {
+        const expected = sessionStore.current()?.user.id ?? null;
+        await adoptSameMemberSession(expected, await clutch.auth.verifyCode(email.trim(), code.trim()));
       },
       signInWithGoogle: () => signInWithFederated(googleAdapter),
       signInWithApple: () => signInWithFederated(appleAdapter),
       async requestPasswordReset(email) {
-        const { error } = await auth().resetPasswordForEmail(email.trim(), {
-          redirectTo: AUTH_CALLBACK_URL,
-        });
-        raise(error);
+        await clutch.auth.sendCode({ email: email.trim(), create_user: false });
       },
       async verifyRecoveryCode(email, code) {
-        const { error } = await auth().verifyOtp({
-          email: email.trim(),
-          token: code.trim(),
-          type: 'recovery',
-        });
-        raise(error);
+        await sessionStore.set(await clutch.auth.verifyCode(email.trim(), code.trim()));
+        await enterRecovery();
       },
       async updatePassword(password) {
-        const { error } = await auth().updateUser({ password });
-        raise(error);
+        await clutch.auth.setPassword(password);
         setPasswordRecovery(false);
         await rememberRecovery(null);
       },
       async signOut() {
-        // GoTrue normally removes the local session and emits SIGNED_OUT. But
-        // with an expired token and no network it first tries to refresh,
-        // fails, and returns WITHOUT removing anything; then (or on any other
-        // failure) forget the session here so signing out always works.
-        let failed = false;
-        try {
-          const { error } = await auth().signOut({ scope: 'local' });
-          failed = Boolean(error);
-        } catch {
-          failed = true;
+        // End the session on Clutch when it answers in time; forget it here
+        // regardless (an expired token offline must still sign out).
+        if (sessionStore.current()) {
+          await within(
+            clutch.auth.signOut('local').catch(() => undefined),
+            SIGN_OUT_SERVER_TIMEOUT_MS,
+          );
         }
-        if (failed) await signOutLocally();
+        await rememberRecovery(null);
+        await sessionStore.clear();
+        setPasswordRecovery(false);
       },
     };
-  }, [status, session, passwordRecovery, configured, signInWithFederated, signOutLocally]);
+  }, [status, session, passwordRecovery, signInWithFederated, enterRecovery]);
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }
