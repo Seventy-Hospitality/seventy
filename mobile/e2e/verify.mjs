@@ -17,8 +17,9 @@ const env = Object.fromEntries(
     .filter((line) => line.includes('='))
     .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]),
 );
-const SUPABASE_URL = env.EXPO_PUBLIC_SUPABASE_URL;
-const ANON = env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+// The harness reads Clutch's database directly (the app never does).
+const SUPABASE_URL = env.E2E_SUPABASE_URL;
+const CLUTCH = env.EXPO_PUBLIC_CLUTCH_API_URL;
 const SERVICE =
   process.env.SUPABASE_SERVICE_ROLE_KEY ??
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU';
@@ -38,14 +39,15 @@ async function rest(path) {
   return res.json();
 }
 
-const signIn = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+// Through Clutch's API, with the password the app set after the code.
+const signIn = await fetch(`${CLUTCH}/auth/token`, {
   method: 'POST',
-  headers: { apikey: ANON, 'content-type': 'application/json' },
+  headers: { 'content-type': 'application/json' },
   body: JSON.stringify({ email, password: 'club70-member-password' }),
 });
-const session = await signIn.json();
-check(signIn.status === 200, 'the member signed up in the app can sign in', email);
-const userId = session.user?.id;
+const session = (await signIn.json()).data;
+check(signIn.status === 200, 'the member signed up in the app can sign in with their password', email);
+const userId = session?.user?.id;
 if (!userId) process.exit(1);
 
 const [profile] = await rest(`profiles?id=eq.${userId}&select=full_name`);

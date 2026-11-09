@@ -1,7 +1,8 @@
 # Club70 end to end: the app on an emulator against a local Clutch
 
-One run proves the MVP on a real build: a new member signs up in the app,
-onboarding joins them to Club 70, the club puts them on a tier, they book a
+One run proves the MVP on a real build: a new member signs up in the app
+with the 6-digit code Clutch emails (read from the local mail catcher) and
+a password, onboarding joins them to Club 70, the club puts them on a tier, they book a
 court and pay (simulated), and the booking is on Home. Then `verify.mjs` reads
 Clutch's database and checks every row the app should have written.
 
@@ -17,7 +18,8 @@ SKIP_BUILD=1 e2e/run.sh # same, with the APK already installed
 | Clutch (Supabase + Next.js web, `/api/v1`) | your `club-management` checkout, on this machine |
 | Club 70 (club, courts, hours, rules, pricing, tier) | `seed-club70.mjs`: `POST /api/v1/clubs`, plus the two writes Clutch has no API for |
 | The app | a release APK built with `CLUB70_LOCAL_E2E=1` (allows plain http) |
-| Device to host | `adb reverse` for `:3000` (Clutch) and `:54321` (Supabase) |
+| Device to host | `adb reverse` for `:3000` (Clutch, the only service the app calls) |
+| The sign-up code | `flows/read-code.js`, from the Supabase CLI's mail catcher (Mailpit, `:54324`) |
 | UI | Maestro, `flows/mvp.yaml` |
 | The club assigning the tier | `flows/assign-tier.js`, what the admin app's bulk tier change writes |
 
