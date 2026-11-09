@@ -20,12 +20,12 @@
  *                                        apps/web/app/api/v1/_booking-contract.ts
  *   main (owned by P2, not in the P3 document): POST /bookings/{id}/payment-intent,
  *                                        GET /me/payment-methods, POST /bookings/{id}/payment-intent/pay
- *   feat/api-publishable-key (we-are-clutch #187) `publishable_key` next to every `client_secret`.
- *                                        contract.gen.ts is generated from feat/api-sign-in-codes
- *                                        (#188), which does not carry it.
+ *   feat/api-publishable-key (we-are-clutch #187) `publishable_key` and `stripe_account` on the
+ *                                        two payment routes outside the document (booking checkout,
+ *                                        setup intent). The routes in the document are generated.
  */
 import { z } from 'zod';
-import { MoveCheckoutSchema, ShareCheckoutSchema } from './contract.gen';
+import type { MoveCheckout, ShareCheckout } from './contract.gen';
 import {
   BookingIdSchema,
   CardIdSchema,
@@ -53,17 +53,12 @@ export const PENDING_ERROR_CODES = [
 // ─── feat/api-publishable-key: the Stripe key travels with the intent ──────
 
 /**
- * Clutch's platform publishable key, next to every `client_secret`. Null when
- * the deployment has no key (payments simulated or off). Optional until the
- * branch is deployed: an answer without it reads as null, and a sheet with no
- * key resolves `unconfigured`.
+ * Clutch's platform publishable key, next to the `client_secret` of the routes
+ * outside the OpenAPI document. Null when nothing is charged or the deployment
+ * has no key. Read as optional so a deployment without #187 degrades to "no
+ * key" (the sheet resolves `unconfigured`) instead of failing to parse.
  */
 const PublishableKey = { publishable_key: z.string().nullable().optional() };
-
-export const MoveCheckoutWithKeySchema = MoveCheckoutSchema.extend(PublishableKey);
-export type MoveCheckoutWithKey = z.infer<typeof MoveCheckoutWithKeySchema>;
-export const ShareCheckoutWithKeySchema = ShareCheckoutSchema.extend(PublishableKey);
-export type ShareCheckoutWithKey = z.infer<typeof ShareCheckoutWithKeySchema>;
 
 // ─── Push payloads (packages/notifications; not API responses) ──────────────
 
@@ -92,7 +87,10 @@ export const LegacyBookingCheckoutSchema = z.object({
   clientSecret: z.string(),
   paymentIntentId: z.string(),
   simulated: z.boolean(),
+  /** The original camelCase account: absent for a club on the platform account. */
   stripeAccount: z.string().optional(),
+  /** #187: the account in snake_case, null for a club on the platform account. Preferred. */
+  stripe_account: z.string().nullable().optional(),
   taxAmountCents: z.number().int().optional(),
   subtotalCents: z.number().int().optional(),
   /** What the card is charged, tax included (Clutch states it since #181). */
@@ -360,13 +358,13 @@ export function bookingCheckoutToSheet(c: BookingCheckout | LegacyBookingCheckou
     intentType: 'payment',
     clientSecret: c.clientSecret,
     intentId,
-    stripeAccount: c.stripeAccount ?? null,
+    stripeAccount: c.stripe_account !== undefined ? c.stripe_account : (c.stripeAccount ?? null),
     publishableKey: c.publishable_key ?? null,
   };
 }
 
 /** A P4 share or move checkout as a SheetIntent. */
-export function snakeCheckoutToSheet(c: ShareCheckoutWithKey | MoveCheckoutWithKey): SheetIntent {
+export function snakeCheckoutToSheet(c: ShareCheckout | MoveCheckout): SheetIntent {
   if (c.simulated) return { mode: 'simulated', intentType: 'payment', intentId: c.payment_intent_id };
   return {
     mode: 'stripe',
@@ -374,6 +372,6 @@ export function snakeCheckoutToSheet(c: ShareCheckoutWithKey | MoveCheckoutWithK
     clientSecret: c.client_secret,
     intentId: c.payment_intent_id,
     stripeAccount: c.stripe_account,
-    publishableKey: c.publishable_key ?? null,
+    publishableKey: c.publishable_key,
   };
 }

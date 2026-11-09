@@ -83,7 +83,7 @@
       "post": {
         "operationId": "signInWithIdToken",
         "summary": "Sign in with an Apple or Google ID token",
-        "description": "Creates the account on a first sign-in. The app's Apple bundle id and Google client ids must be authorized on the deployment's identity provider.",
+        "description": "Creates the account on a first sign-in. A token the provider cannot verify is invalid_credentials, and so is one for a banned account, with the same message: this API's answer never says which addresses are banned; the identity provider, called directly with the publishable key, still does. The app's Apple bundle id and Google client ids must be authorized on the deployment's identity provider. 429 rate_limit_exceeded: thirty a minute per client, from the same budget as password sign-in.",
         "tags": ["Auth"],
         "security": [{}],
         "requestBody": {
@@ -124,8 +124,8 @@
     "/auth/otp": {
       "post": {
         "operationId": "requestEmailCode",
-        "summary": "Email a 6-digit sign-in code",
-        "description": "Follow with POST /auth/otp/verify. Without `create_user`, an address with no account is answered the same 202 and gets no email, so this cannot tell who has an account. With it, an address with no account gets one (and `full_name` on its profile); its first email is the address confirmation, which carries the code too. Also the first step of a password reset: verify the code, then POST /auth/password.",
+        "summary": "Email a sign-in code",
+        "description": "Follow with POST /auth/otp/verify. Without `create_user`, every address is answered the same 202 at once, and the email is sent after the answer: an address with no account gets none, and neither the answer nor its timing says which addresses have accounts. (The identity provider itself, called directly, still can; this is about the API's answer.) With `create_user`, an address with no account gets one (and `full_name` on its profile); its first email is the address confirmation, which carries the code too. Also the first step of a password reset: verify the code, then POST /auth/password. 400 invalid_field: a malformed address, with `create_user` (without it, a malformed address is one with no account). 429 rate_limit_exceeded: five requests a minute per address, twenty per client; spent the same for every address.",
         "tags": ["Auth"],
         "security": [{}],
         "requestBody": {
@@ -167,7 +167,7 @@
       "post": {
         "operationId": "verifyEmailCode",
         "summary": "Exchange an emailed code for a session",
-        "description": "A code is single use and expires after an hour. A wrong or expired one is invalid_credentials.",
+        "description": "A code is single use, and expires after the lifetime the deployment sets. A wrong, expired or used one is invalid_credentials, and so is any code for a banned account, with the same message: this API's answer never says which addresses are banned; the identity provider, called directly with the publishable key, still does. 400 invalid_field: a malformed address. 429 rate_limit_exceeded: five tries a minute per address from one client, thirty per client, and ten an hour and thirty a day per address from all clients together. Anyone can spend those last two by sending wrong codes for an address: code sign-in and the native password reset then stop for it until they refill. An account with a password, Apple or Google still signs in that way; one that only ever used codes cannot sign in natively until then. The web sign-in link is not affected. The per-address budget is what bounds guessing a 6-digit code through this API from many clients at once. It bounds only this API: the identity provider, called directly with the publishable key, limits code checks per client address alone.",
         "tags": ["Auth"],
         "security": [{}],
         "requestBody": {
@@ -202,14 +202,18 @@
             }
           }
         },
-        "x-error-codes": ["invalid_credentials", "rate_limit_exceeded"]
+        "x-error-codes": [
+          "invalid_credentials",
+          "invalid_field",
+          "rate_limit_exceeded"
+        ]
       }
     },
     "/auth/password": {
       "post": {
         "operationId": "setPassword",
         "summary": "Set the signed-in account's password",
-        "description": "Needs a session no older than a day; an older one is step_up_required (sign in again, e.g. with an emailed code, and retry). Sessions elsewhere stay signed in.",
+        "description": "Needs a person's access token: an API key is answered 401. An expired access token, or one whose session has ended (signed out, or its account deleted or banned), is `401 session_expired`. Needs a session that signed in moments ago, by the same freshness rule as deleting the account (a session made from an emailed code just now passes): otherwise `403 step_up_required`, whose `details` say how to sign in again (`methods`); sign in, then retry with the new access token. When that check cannot be made, or the identity provider cannot be reached, `502 upstream_error`: retry, do not sign in again. So is a deployment whose provider asks for the current password to change one (DEPLOYMENT.md asks for that setting off). A second factor is checked separately, by the provider: an account that has one, on a session that has not passed it, is `401 mfa_required`. Every other session of the account is signed out; this one stays. A password the account already has is invalid_field.",
         "tags": ["Auth"],
         "requestBody": {
           "required": true,
@@ -248,7 +252,11 @@
           "session_expired",
           "password_too_short",
           "weak_password",
-          "step_up_required"
+          "invalid_field",
+          "step_up_required",
+          "mfa_required",
+          "rate_limit_exceeded",
+          "upstream_error"
         ]
       }
     },
@@ -256,7 +264,7 @@
       "post": {
         "operationId": "requestPasswordReset",
         "summary": "Send a password-reset email",
-        "description": "Always 202, whether or not the address has an account. `redirect_to` must be on the deployment's allow-list or the provider ignores it.",
+        "description": "202 whether or not the address has an account, at once: the email is sent after the answer, so its timing says nothing either. `redirect_to` must be on the deployment's allow-list or the provider ignores it. 429 rate_limit_exceeded: five requests a minute per address, twenty per client, from the same budget as the web reset form; spent the same for every address, so it says nothing about which have accounts.",
         "tags": ["Auth"],
         "security": [{}],
         "requestBody": {
@@ -290,7 +298,8 @@
               }
             }
           }
-        }
+        },
+        "x-error-codes": ["rate_limit_exceeded"]
       }
     },
     "/auth/refresh": {
@@ -339,7 +348,7 @@
       "post": {
         "operationId": "signOut",
         "summary": "End the session",
-        "description": "`local` (the default) ends this session and its refresh token; `global` ends every session of the account. A session already ended is answered 200 too. Unregister push (DELETE /me/devices) first: it needs the session.",
+        "description": "`local` (the default) ends this session and its refresh token; `global` ends every session of the account. A session already ended is answered 200 too, as is a token whose account has been deleted: nothing is left to end. A banned account's is `401 session_expired`: the provider refuses it before revoking anything, so its sessions are not said to have ended. An expired access token is `401 session_expired`, as on every other route: refresh, then sign out, or forget the session on the device. `502 upstream_error` means the provider could not answer: retry. Needs a person's access token: an API key is answered 401. Unregister push (DELETE /me/devices) first: it needs the session.",
         "tags": ["Auth"],
         "requestBody": {
           "required": true,
@@ -373,14 +382,14 @@
             }
           }
         },
-        "x-error-codes": ["auth_required", "session_expired"]
+        "x-error-codes": ["auth_required", "session_expired", "upstream_error"]
       }
     },
     "/auth/signup": {
       "post": {
         "operationId": "signUp",
         "summary": "Create an account",
-        "description": "A new account belongs to no club: follow with POST /clubs/{club}/join. With email confirmation on (production), the answer is 202 and no session: the person confirms the address, then signs in.",
+        "description": "A new account belongs to no club: follow with POST /clubs/{club}/join. With email confirmation on (production), the answer is 202 and no session: the person confirms the address, then signs in. 429 rate_limit_exceeded: five a minute per address, twenty per client, from the same budget as the web sign-up form.",
         "tags": ["Auth"],
         "security": [{}],
         "requestBody": {
@@ -438,6 +447,7 @@
       "post": {
         "operationId": "createAuthToken",
         "summary": "Exchange email and password for a session",
+        "description": "A wrong email or password is invalid_credentials, and so is a banned account, with the same message: this API's answer never says which addresses are banned; the identity provider, called directly with the publishable key, still does. 429 rate_limit_exceeded: five tries a minute per address from one client, thirty per client, from the same budget as the web sign-in form.",
         "tags": ["Auth"],
         "security": [{}],
         "requestBody": {
@@ -4286,7 +4296,7 @@
       "post": {
         "operationId": "linkMyIdentity",
         "summary": "Link an Apple or Google account as a sign-in method",
-        "description": "Answers a new session: store it in place of the old one. A newly linked identity does not count as a recent sign-in for a week (step-up).",
+        "description": "Answers a new session: store it in place of the old one. A newly linked identity does not count as a recent sign-in for a week (step-up). Linking with an ID token works whatever the deployment's manual-linking setting is: the provider checks that setting only on unlinking. Needs a person's access token: an API key is answered 401.",
         "tags": ["Account"],
         "requestBody": {
           "required": true,
@@ -4321,9 +4331,11 @@
           }
         },
         "x-error-codes": [
+          "auth_required",
+          "session_expired",
           "invalid_credentials",
           "identity_already_linked",
-          "identity_linking_disabled"
+          "rate_limit_exceeded"
         ]
       }
     },
@@ -4331,6 +4343,7 @@
       "delete": {
         "operationId": "unlinkMyIdentity",
         "summary": "Unlink a sign-in method",
+        "description": "Needs a person's access token: an API key is answered 401. 400 invalid_field for an `identityId` that is not a UUID. 403 identity_linking_disabled when the deployment does not allow unlinking.",
         "tags": ["Account"],
         "parameters": [
           {
@@ -4340,7 +4353,7 @@
             "description": "`identity_id` from GET /me/identities.",
             "schema": {
               "type": "string",
-              "minLength": 1
+              "format": "uuid"
             }
           }
         ],
@@ -4367,6 +4380,9 @@
           }
         },
         "x-error-codes": [
+          "auth_required",
+          "session_expired",
+          "invalid_field",
           "identity_not_found",
           "last_identity",
           "identity_linking_disabled"
@@ -5450,6 +5466,20 @@
           "published_at",
           "author_name"
         ]
+      },
+      "AuthAccepted": {
+        "description": "Accepted. What happens next arrives by email, if anything does.",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": ["ok", "message"]
       },
       "AuthOk": {
         "description": "The request did what it asked.",
@@ -9640,6 +9670,17 @@
               }
             ]
           },
+          "publishable_key": {
+            "description": "The Stripe publishable key to initialise Stripe with, together with `stripe_account`. Null when nothing is charged (`simulated`) or this deployment has no key.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "simulated": {
             "description": "No real card is charged (a test or demo server): confirm without paying.",
             "type": "boolean"
@@ -9661,6 +9702,7 @@
           "client_secret",
           "payment_intent_id",
           "stripe_account",
+          "publishable_key",
           "simulated",
           "subtotal_cents",
           "tax_cents"
@@ -11776,6 +11818,17 @@
               }
             ]
           },
+          "publishable_key": {
+            "description": "The Stripe publishable key to initialise Stripe with, together with `stripe_account`. Null when nothing is charged (`simulated`) or this deployment has no key.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "simulated": {
             "description": "Test mode: no real card is charged; pay it in the app's test flow.",
             "type": "boolean"
@@ -11809,6 +11862,7 @@
           "client_secret",
           "payment_intent_id",
           "stripe_account",
+          "publishable_key",
           "simulated",
           "subtotal_cents",
           "tax_cents",
@@ -13226,6 +13280,17 @@
               }
             ]
           },
+          "publishable_key": {
+            "description": "The Stripe publishable key to initialise Stripe with, together with `stripe_account`. Null when nothing is charged (`simulated`) or this deployment has no key.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "simulated": {
             "description": "Test mode: no real card is charged; pay it in the app's test flow.",
             "type": "boolean"
@@ -13259,6 +13324,7 @@
           "client_secret",
           "payment_intent_id",
           "stripe_account",
+          "publishable_key",
           "simulated",
           "subtotal_cents",
           "tax_cents",
@@ -13313,17 +13379,7 @@
         "type": "object",
         "properties": {
           "data": {
-            "type": "object",
-            "properties": {
-              "ok": {
-                "type": "boolean",
-                "const": true
-              },
-              "message": {
-                "type": "string"
-              }
-            },
-            "required": ["ok", "message"]
+            "$ref": "#/components/schemas/AuthAccepted"
           }
         },
         "required": ["data"]
@@ -13352,17 +13408,7 @@
         "type": "object",
         "properties": {
           "data": {
-            "type": "object",
-            "properties": {
-              "ok": {
-                "type": "boolean",
-                "const": true
-              },
-              "message": {
-                "type": "string"
-              }
-            },
-            "required": ["ok", "message"]
+            "$ref": "#/components/schemas/AuthAccepted"
           }
         },
         "required": ["data"]
@@ -13783,6 +13829,17 @@
               }
             ]
           },
+          "publishable_key": {
+            "description": "The Stripe publishable key to initialise Stripe with, together with `stripe_account`. Null when nothing is charged (`simulated`) or this deployment has no key.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "simulated": {
             "description": "Test mode: no real card is charged; pay it in the app's test flow.",
             "type": "boolean"
@@ -13810,6 +13867,7 @@
           "client_secret",
           "payment_intent_id",
           "stripe_account",
+          "publishable_key",
           "simulated",
           "subtotal_cents",
           "tax_cents",
@@ -14130,14 +14188,7 @@
         "type": "object",
         "properties": {
           "data": {
-            "type": "object",
-            "properties": {
-              "ok": {
-                "type": "boolean",
-                "const": true
-              }
-            },
-            "required": ["ok"]
+            "$ref": "#/components/schemas/AuthOk"
           }
         },
         "required": ["data"]
@@ -14399,7 +14450,7 @@
             "minLength": 1
           },
           "code": {
-            "description": "The 6 digits from the email.",
+            "description": "The digits from the email.",
             "type": "string",
             "minLength": 1
           }
