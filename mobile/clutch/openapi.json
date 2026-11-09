@@ -9386,14 +9386,12 @@
             "type": "string"
           },
           "details": {
-            "description": "Structured values for codes that carry one.",
+            "description": "Structured values for codes that carry one: a field name, or a whole record (step_up_required's sign-in methods, account_deletion_blocked's blockers).",
             "type": "object",
             "propertyNames": {
               "type": "string"
             },
-            "additionalProperties": {
-              "type": "string"
-            }
+            "additionalProperties": {}
           },
           "request_id": {
             "description": "On internal_error: the X-Request-Id to quote.",
