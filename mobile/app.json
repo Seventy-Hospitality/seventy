@@ -29,7 +29,15 @@
           "cameraPermission": "Club70 needs access to your camera to take your avatar and group cover photos."
         }
       ],
-      "expo-notifications"
+      "expo-notifications",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 160,
+          "backgroundColor": "#1e2a20"
+        }
+      ]
     ],
     "web": {
       "bundler": "metro"
@@ -42,10 +50,18 @@
         "UIBackgroundModes": [
           "remote-notification"
         ]
+      },
+      "config": {
+        "usesNonExemptEncryption": false
       }
     },
     "android": {
-      "package": "club.seventy.mobile"
-    }
+      "package": "club.seventy.mobile",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#1e2a20"
+      }
+    },
+    "icon": "./assets/icon.png"
   }
 }
