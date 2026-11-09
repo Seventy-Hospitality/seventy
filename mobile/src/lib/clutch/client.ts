@@ -14,9 +14,13 @@
  *   (unknown fields are ignored, missing or mistyped ones fail as a
  *   ClutchError of kind 'contract').
  * - Errors are ClutchError with `code: ErrorCode | 'unknown'`.
- * - 401 -> ONE refresh (shared by concurrent callers) -> retry once with a
- *   NEW Idempotency-Key: Clutch caches every answer below 500 under a key,
- *   the 401 included, so retrying with the same key would replay the 401.
+ * - 401 session_expired / auth_required / invalid_token -> ONE refresh for
+ *   the member the request was sent as (the session store shares it between
+ *   concurrent callers) -> retry once with a NEW Idempotency-Key: Clutch
+ *   caches every answer below 500 under a key, the 401 included, so retrying
+ *   with the same key would replay the 401. A refresh that answers no token
+ *   (signed out, or another member signed in meanwhile) means no retry. Any
+ *   other 401 (mfa_required, invalid_credentials) is the answer.
  * - Every mutation carries an Idempotency-Key: the caller's (one per logical
  *   mutation, useMutationKey) or a fresh one. 409 request_in_flight waits and
  *   retries with the same key. A multipart upload gets a fresh key per send
@@ -26,6 +30,7 @@
 import { z } from 'zod';
 import {
   AddBookingPlayersResponseSchema,
+  AuthSessionSchema,
   CancelBookingResponseSchema,
   ConfirmBookingResponseSchema,
   ConfirmPaidMoveResponseSchema,
@@ -58,13 +63,16 @@ import {
   JoinClubResponseSchema,
   JoinGroupResponseSchema,
   LeaveGroupResponseSchema,
+  LinkMyIdentityResponseSchema,
   ListClubCourtsResponseSchema,
   ListClubMembershipTiersResponseSchema,
   ListMyBookingsResponseSchema,
+  ListMyIdentitiesResponseSchema,
   ListMyNotificationsResponseSchema,
   ListMyPaymentsResponseSchema,
   ListMyWaiversResponseSchema,
   MarkMyNotificationsReadResponseSchema,
+  MoveCheckoutSchema,
   PreviewGroupInviteResponseSchema,
   QuoteBookingResponseSchema,
   QuoteRescheduleResponseSchema,
@@ -72,30 +80,26 @@ import {
   ReleaseBookingHoldResponseSchema,
   RemoveBookingPlayerResponseSchema,
   RemoveGroupMemberResponseSchema,
-  UpdateMyPreferencesResponseSchema,
+  RequestEmailCodeResponseSchema,
   RescheduleBookingResponseSchema,
   RespondToBookingInvitationResponseSchema,
   RespondToGroupInvitationResponseSchema,
   SearchClubPlayersResponseSchema,
+  SetPasswordResponseSchema,
+  ShareCheckoutSchema,
+  SignInWithIdTokenResponseSchema,
+  SignOutResponseSchema,
   SignWaiverResponseSchema,
+  UnlinkMyIdentityResponseSchema,
   UnregisterMyDeviceResponseSchema,
   UpdateGroupMemberResponseSchema,
   UpdateGroupResponseSchema,
+  UpdateMyPreferencesResponseSchema,
   UpdateMyProfileResponseSchema,
   UploadGroupCoverResponseSchema,
   UploadMyAvatarResponseSchema,
-  VerifyMyDeviceResponseSchema,
-  AuthSessionSchema,
-  ListMyIdentitiesResponseSchema,
-  LinkMyIdentityResponseSchema,
-  RequestEmailCodeResponseSchema,
-  SetPasswordResponseSchema,
-  SignInWithIdTokenResponseSchema,
-  SignOutResponseSchema,
-  UnlinkMyIdentityResponseSchema,
   VerifyEmailCodeResponseSchema,
-  MoveCheckoutSchema,
-  ShareCheckoutSchema,
+  VerifyMyDeviceResponseSchema,
   type BookingInvitation,
   type ClubDetail,
   type MemberBooking,
@@ -140,11 +144,12 @@ export interface AuthPort {
   /** The current access token, or null when signed out. */
   getAccessToken(): Promise<string | null>;
   /**
-   * Refresh the session once after a 401. Resolves the new access token, or
-   * null when the session is definitively gone (the store signs out).
-   * Rejects when the refresh could not be attempted (network): transient.
+   * Refresh after a 401 the request got with `staleToken`. Resolves that
+   * member's new access token, or null when their session is gone (signed
+   * out, or another member's session replaced it). Rejects when the refresh
+   * could not be attempted (network): transient.
    */
-  refreshAccessToken(): Promise<string | null>;
+  refreshAccessToken(staleToken: string): Promise<string | null>;
 }
 
 /** A native ID token from Google or Apple, with the RAW nonce its claim hashes. */
@@ -208,9 +213,14 @@ interface RequestSpec<S extends z.ZodType> {
   idempotencyKey?: string;
   /** A sign-in call: no Bearer, no refresh after a 401 (the 401 is the answer). */
   anonymous?: boolean;
+  /** Act with this token instead of the session's (never refreshed). */
+  bearer?: string;
 }
 
 const IN_FLIGHT_RETRY_DELAYS_MS = [400, 800, 1600, 3200];
+
+/** 401 codes a fresh access token can cure; any other 401 is the answer. */
+const REFRESHABLE_401_CODES: ReadonlySet<string> = new Set(['session_expired', 'auth_required', 'invalid_token']);
 
 /** The `data` schema of a generated `{ data }` response schema. */
 /** POST /me/devices: registered (200), or waiting for the pushed code (202). */
@@ -275,15 +285,6 @@ export function createClutchClient(options: ClutchClientOptions) {
   const doFetch: typeof fetch = options.fetch ?? ((...args) => fetch(...args));
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const base = baseUrl.replace(/\/+$/, '');
-
-  let refreshInFlight: Promise<string | null> | null = null;
-
-  function refreshOnce(): Promise<string | null> {
-    refreshInFlight ??= authPort.refreshAccessToken().finally(() => {
-      refreshInFlight = null;
-    });
-    return refreshInFlight;
-  }
 
   function need(capability: Capability): void {
     if (!capabilities[capability]) throw new ClutchUnavailableError(capability);
@@ -357,6 +358,12 @@ export function createClutchClient(options: ClutchClientOptions) {
     });
   }
 
+  /** A 401 whose code a refresh can cure (an unreadable body counts). */
+  async function refreshable(res: Response): Promise<boolean> {
+    const peek = ErrorSchema.safeParse(await readJson(res.clone()));
+    return !peek.success || REFRESHABLE_401_CODES.has(peek.data.error);
+  }
+
   const SuccessEnvelope = z.object({ data: z.unknown(), count: z.number().int().optional() }).strict();
 
   async function request<S extends z.ZodType>(
@@ -367,13 +374,13 @@ export function createClutchClient(options: ClutchClientOptions) {
       mutating ? (spec.form ? newIdempotencyKey() : (spec.idempotencyKey ?? newIdempotencyKey())) : undefined;
     let key = keyFor();
 
-    let token = spec.anonymous ? null : await authPort.getAccessToken();
+    let token = spec.anonymous ? null : (spec.bearer ?? (await authPort.getAccessToken()));
     let res = await send(spec, token, key);
 
-    if (res.status === 401 && token) {
+    if (res.status === 401 && token && !spec.bearer && (await refreshable(res))) {
       let refreshed: string | null;
       try {
-        refreshed = await refreshOnce();
+        refreshed = await authPort.refreshAccessToken(token);
       } catch {
         throw new ClutchError({
           code: 'network_error',
@@ -1243,9 +1250,19 @@ export function createClutchClient(options: ClutchClientOptions) {
     setPassword: (password: string) =>
       call({ method: 'POST', path: '/auth/password', body: { password }, schema: dataOf(SetPasswordResponseSchema) }),
 
-    /** End this session on the server (`local`: this device only). */
-    signOut: (scope: 'local' | 'global' = 'local') =>
-      call({ method: 'POST', path: '/auth/signout', body: { scope }, schema: dataOf(SignOutResponseSchema) }),
+    /**
+     * End this session on the server (`local`: this device only). With
+     * `accessToken`, end that session instead of the stored one (a session
+     * the app is discarding).
+     */
+    signOut: (scope: 'local' | 'global' = 'local', opts?: { accessToken?: string }) =>
+      call({
+        method: 'POST',
+        path: '/auth/signout',
+        body: { scope },
+        schema: dataOf(SignOutResponseSchema),
+        bearer: opts?.accessToken,
+      }),
 
     /** The ways this account signs in (email, google, apple). */
     identities: () => call({ method: 'GET', path: '/me/identities', schema: dataOf(ListMyIdentitiesResponseSchema) }),

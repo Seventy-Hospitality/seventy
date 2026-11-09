@@ -66,6 +66,13 @@ describe('SignInMethodsScreen', () => {
     expect(mockSetSession).not.toHaveBeenCalled();
   });
 
+  it('says Google could not confirm it, not "email or password", when the token is refused', async () => {
+    mockClutch.auth.linkIdentity.mockRejectedValue(clutchError('invalid_credentials', 401));
+    renderWithProviders(<SignInMethodsScreen />);
+    fireEvent.press(await screen.findByLabelText('Link Google'));
+    expect(await screen.findByText('Google could not confirm that sign-in. Please try again.')).toBeTruthy();
+  });
+
   it('unlinks by identity id after confirming', async () => {
     mockClutch.auth.identities.mockResolvedValue([makeAuthIdentity(), GOOGLE]);
     mockClutch.auth.unlinkIdentity.mockResolvedValue({ ok: true });

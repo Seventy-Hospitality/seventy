@@ -1,10 +1,19 @@
 import { createClutchClient, ClubMismatchError, type AuthPort } from '../client';
 import { ClutchError } from '../errors';
 import { asBookingId, asClubId, asCourtId, asGroupId } from '../ids';
-import { makeChargedBooking, makeClub, makeGroupSummary, makeMyBooking, makeBookingInvitation } from '../fixtures';
+import {
+  makeAuthSession,
+  makeBookingInvitation,
+  makeChargedBooking,
+  makeClub,
+  makeGroupSummary,
+  makeMyBooking,
+} from '../fixtures';
 import { ClutchUnavailableError, CAPABILITIES } from '../capabilities';
 
 const CLUB = asClubId('15e24f5f-ee39-4154-8ad6-06942d06cb8a');
+
+type Client = ReturnType<typeof createClutchClient>;
 
 interface FakeResponse {
   ok: boolean;
@@ -162,24 +171,46 @@ describe('auth', () => {
     expect(calls[1].headers['Idempotency-Key']).toBe('idem-1');
   });
 
-  it('shares one refresh between concurrent 401s', async () => {
-    let release: (token: string) => void = () => undefined;
-    const refresh = jest.fn(() => new Promise<string>((r) => (release = r)));
-    const { client } = setup(
+  it('asks the session to refresh for the token each request was refused with', async () => {
+    // The session store runs one refresh for concurrent callers (auth-session tests).
+    const refresh = jest.fn(async () => 'token-2');
+    const { client, calls } = setup(
       [
         reply(401, { error: 'session_expired', message: 'x' }),
-        reply(401, { error: 'session_expired', message: 'x' }),
+        reply(401, { error: 'auth_required', message: 'x' }),
         reply(200, { data: [] }),
         reply(200, { data: [] }),
       ],
       { refreshAccessToken: refresh },
     );
-    const a = client.club.courts();
-    const b = client.club.courts();
-    await new Promise((r) => setTimeout(r, 0));
-    release('token-2');
-    await Promise.all([a, b]);
-    expect(refresh).toHaveBeenCalledTimes(1);
+    await Promise.all([client.club.courts(), client.club.courts()]);
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(refresh).toHaveBeenNthCalledWith(1, 'token-1');
+    expect(refresh).toHaveBeenNthCalledWith(2, 'token-1');
+    expect(calls.slice(2).map((c) => c.headers.Authorization)).toEqual(['Bearer token-2', 'Bearer token-2']);
+  });
+
+  it('never retries as someone else: no token from the refresh means no retry', async () => {
+    // e.g. the member signed out and another signed in while this was in flight.
+    const { client, calls } = setup([reply(401, { error: 'session_expired', message: 'x' })], {
+      refreshAccessToken: jest.fn(async () => null),
+    });
+    await client.me.unregisterDevice('push-token').catch(() => undefined);
+    expect(calls).toHaveLength(1);
+  });
+
+  it.each(['mfa_required', 'invalid_credentials'])('answers a 401 %s without refreshing', async (code) => {
+    const { client, calls, port } = setup([reply(401, { error: code, message: 'x' })]);
+    const err = (await client.auth.setPassword('new-password-1').catch((e: unknown) => e)) as ClutchError;
+    expect(err.code).toBe(code);
+    expect(port.refreshAccessToken).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(1);
+  });
+
+  it('refreshes after a 401 whose body cannot be read', async () => {
+    const { client, port } = setup([reply(401, 'gateway said no'), reply(200, { data: [] })]);
+    await client.club.courts();
+    expect(port.refreshAccessToken).toHaveBeenCalledWith('token-1');
   });
 
   it('surfaces the 401 when the session is definitively gone', async () => {
@@ -334,5 +365,77 @@ describe('capabilities', () => {
       client.bookings.quote({ court_id: asCourtId('c1'), date: '2026-10-20', start_time: '18:00', end_time: '19:00' }),
     ).toThrow(ClutchUnavailableError);
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe('sign-in calls', () => {
+  const session = { data: makeAuthSession() };
+  const accepted = { data: { ok: true, message: 'If that address has an account, a code is on its way.' } };
+  const ok = { data: { ok: true } };
+
+  it.each([
+    ['token', (c: Client) => c.auth.token('a@x.com', 'pw-123456'), '/auth/token', { email: 'a@x.com', password: 'pw-123456' }, { data: makeAuthSession() }],
+    ['refresh', (c: Client) => c.auth.refresh('refresh-9'), '/auth/refresh', { refresh_token: 'refresh-9' }, { data: makeAuthSession() }],
+    [
+      'sendCode',
+      (c: Client) => c.auth.sendCode({ email: 'a@x.com', create_user: true, full_name: 'Alex' }),
+      '/auth/otp',
+      { email: 'a@x.com', create_user: true, full_name: 'Alex' },
+      accepted,
+    ],
+    ['verifyCode', (c: Client) => c.auth.verifyCode('a@x.com', '123456'), '/auth/otp/verify', { email: 'a@x.com', code: '123456' }, session],
+    [
+      'idToken',
+      (c: Client) => c.auth.idToken({ provider: 'apple', id_token: 'jwt', nonce: 'raw-nonce' }),
+      '/auth/id-token',
+      { provider: 'apple', id_token: 'jwt', nonce: 'raw-nonce' },
+      session,
+    ],
+  ])('%s is anonymous: POST %s with its body and no Bearer', async (_name, run, path, body, answer) => {
+    const { client, calls, port } = setup([reply(200, answer)]);
+    await run(client);
+    expect(calls[0].method).toBe('POST');
+    expect(calls[0].url).toBe(`https://clutch.test/api/v1${path}`);
+    expect(calls[0].body).toEqual(body);
+    expect(calls[0].headers.Authorization).toBeUndefined();
+    expect(port.getAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('never refreshes after an anonymous call is refused: the 401 is the answer', async () => {
+    const { client, calls, port } = setup([reply(401, { error: 'invalid_credentials', message: 'Wrong.' })]);
+    const err = (await client.auth.token('a@x.com', 'wrong-pass').catch((e: unknown) => e)) as ClutchError;
+    expect(err.code).toBe('invalid_credentials');
+    expect(port.refreshAccessToken).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(1);
+  });
+
+  it.each([
+    ['setPassword', (c: Client) => c.auth.setPassword('pw-123456'), 'POST', '/auth/password', { password: 'pw-123456' }, ok],
+    ['signOut', (c: Client) => c.auth.signOut('global'), 'POST', '/auth/signout', { scope: 'global' }, ok],
+    [
+      'linkIdentity',
+      (c: Client) => c.auth.linkIdentity({ provider: 'google', id_token: 'jwt', nonce: 'n' }),
+      'POST',
+      '/me/identities',
+      { provider: 'google', id_token: 'jwt', nonce: 'n' },
+      session,
+    ],
+    ['unlinkIdentity', (c: Client) => c.auth.unlinkIdentity('id/1'), 'DELETE', '/me/identities/id%2F1', {}, ok],
+  ])("%s acts as the member: %s %s with the member's Bearer", async (_name, run, method, path, body, answer) => {
+    const { client, calls } = setup([reply(200, answer)]);
+    await run(client);
+    expect(calls[0].method).toBe(method);
+    expect(calls[0].url).toBe(`https://clutch.test/api/v1${path}`);
+    expect(calls[0].body).toEqual(body);
+    expect(calls[0].headers.Authorization).toBe('Bearer token-1');
+    expect(calls[0].headers['Idempotency-Key']).toBeDefined();
+  });
+
+  it("lists the member's identities with their Bearer", async () => {
+    const identity = { provider: 'email', identity_id: 'i1', created_at: null, last_sign_in_at: null, email: 'a@x.com' };
+    const { client, calls } = setup([reply(200, { data: [identity] })]);
+    expect(await client.auth.identities()).toEqual([identity]);
+    expect(calls[0].url).toBe('https://clutch.test/api/v1/me/identities');
+    expect(calls[0].headers.Authorization).toBe('Bearer token-1');
   });
 });

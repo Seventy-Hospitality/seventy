@@ -172,6 +172,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  // A launch in the background (a data push on a locked iPhone) may not read
+  // the Keychain: read it again when the app comes to the foreground. The
+  // store announces a session it finds then as INITIAL.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void sessionStore.load();
+    });
+    return () => sub?.remove();
+  }, []);
+
   // Refresh ahead of expiry, only while the app is in the foreground.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;

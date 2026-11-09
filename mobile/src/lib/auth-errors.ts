@@ -37,6 +37,19 @@ export function passwordErrorMessage(err: unknown): string {
   }
 }
 
+/**
+ * A Google or Apple sign-in (signing in, linking, the step-up before deleting
+ * the account). `invalid_credentials` here is an ID token Clutch could not
+ * verify, never an email and password.
+ */
+export function federatedErrorMessage(err: unknown, provider: 'google' | 'apple', fallback?: string): string {
+  const label = provider === 'google' ? 'Google' : 'Apple';
+  if (authErrorCode(err) === 'invalid_credentials') {
+    return `${label} could not confirm that sign-in. Please try again.`;
+  }
+  return authErrorMessage(err, fallback ?? `${label} sign-in failed. Please try again.`);
+}
+
 /** Clutch wants a recent sign-in before this (set a password, delete the account). */
 export function isStepUpRequired(err: unknown): boolean {
   return authErrorCode(err) === 'step_up_required';

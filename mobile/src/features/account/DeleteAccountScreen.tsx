@@ -41,6 +41,7 @@ import { blockerSentences, clutchErrorMessage, deletionBlockersFrom, hasDeletion
 import { requestPushResync, unregisterPushForSignOut } from './usePushRegistration';
 import {
   sendStepUpCode,
+  StepUpRejectedError,
   StepUpWrongAccountError,
   stepUpMethods,
   stepUpWithCode,
@@ -212,6 +213,10 @@ function DeleteFlow({
         return;
       }
       if (err instanceof OAuthCancelledError) return;
+      if (err instanceof StepUpRejectedError) {
+        setError(err.message);
+        return;
+      }
       if (isClutchError(err)) {
         switch (err.code) {
           case 'step_up_required':

@@ -1,4 +1,4 @@
-import { createSessionStore, REFRESH_MARGIN_S, SESSION_STORAGE_KEY } from '../auth-session';
+import { createSessionStore, MIN_REFRESH_INTERVAL_S, REFRESH_MARGIN_S, SESSION_STORAGE_KEY } from '../auth-session';
 import { makeAuthSession, ME_ID } from '../clutch/fixtures';
 import { clutchError, networkError } from '../clutch/testing';
 
@@ -145,6 +145,73 @@ describe('session store', () => {
     reject(clutchError('invalid_credentials', 401));
     expect(await refreshing).toBe('other');
     expect(store.current()?.refresh_token).toBe('r-other');
+  });
+
+  it("never answers another member's token for a request sent as the first", async () => {
+    // A signs out while a refresh for their 401 is in flight; B signs in.
+    const { store } = setup(fresh);
+    let resolve!: (s: ReturnType<typeof makeAuthSession>) => void;
+    store.setRefresher(() => new Promise((r) => (resolve = r)));
+    await store.load();
+    const forA = store.refresh('a1');
+    await store.clear();
+    await store.set(makeAuthSession({ access_token: 'b1', refresh_token: 'rb1', user: { id: 'user-b', email: 'b@x.com' } }));
+    resolve(makeAuthSession({ access_token: 'a2', refresh_token: 'r2' }));
+    expect(await forA).toBeNull();
+    expect(store.current()?.access_token).toBe('b1');
+    // A token refused after B signed in that was A's still answers nothing.
+    expect(await store.refresh('a1')).toBeNull();
+  });
+
+  it("answers the same member's newer token without refreshing again", async () => {
+    const { store } = setup(fresh);
+    const refresher = jest.fn(async () => makeAuthSession({ access_token: 'a2', refresh_token: 'r2' }));
+    store.setRefresher(refresher);
+    expect(await store.refresh('a1')).toBe('a2');
+    expect(await store.refresh('a1')).toBe('a2');
+    expect(refresher).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not hand a token to a waiter whose member was replaced mid-refresh', async () => {
+    const { store, advance } = setup(fresh);
+    let resolve!: (s: ReturnType<typeof makeAuthSession>) => void;
+    store.setRefresher(() => new Promise((r) => (resolve = r)));
+    advance(3600 - 10);
+    const waiting = store.getAccessToken();
+    await new Promise((r) => setTimeout(r, 0));
+    await store.set(makeAuthSession({ access_token: 'b1', refresh_token: 'rb1', user: { id: 'user-b', email: 'b@x.com' } }));
+    resolve(makeAuthSession({ access_token: 'a2', refresh_token: 'r2' }));
+    expect(await waiting).toBeNull();
+  });
+
+  it("keeps expiry on this device's clock, so a wrong phone clock cannot loop refreshes", async () => {
+    // Clutch's expires_at is an hour behind this (fast) clock; expires_in is what counts.
+    const { store } = setup();
+    await store.set(makeAuthSession({ expires_at: NOW - 3600, expires_in: 3600 }));
+    expect(store.current()?.expires_at).toBe(NOW + 3600);
+    expect(store.secondsUntilRefresh()).toBe(3600 - REFRESH_MARGIN_S);
+  });
+
+  it('never schedules or runs another refresh right after one', async () => {
+    const { store, advance } = setup(fresh);
+    // A server that answers sessions already due for refresh.
+    const refresher = jest.fn(async () => makeAuthSession({ access_token: 'a2', refresh_token: 'r2', expires_in: 30 }));
+    store.setRefresher(refresher);
+    await store.refresh();
+    expect(store.secondsUntilRefresh()).toBe(MIN_REFRESH_INTERVAL_S);
+    expect(await store.getAccessToken()).toBe('a2');
+    expect(refresher).toHaveBeenCalledTimes(1);
+    advance(MIN_REFRESH_INTERVAL_S);
+    expect(store.secondsUntilRefresh()).toBe(0);
+  });
+
+  it('reads storage again after a failed read, and announces the session it finds', async () => {
+    const { store, storage, events } = setup(fresh);
+    storage.getItem.mockRejectedValueOnce(new Error('Keychain locked'));
+    expect(await store.load()).toBeNull();
+    expect(await store.load()).toMatchObject({ access_token: 'a1' });
+    expect(storage.getItem).toHaveBeenCalledTimes(2);
+    expect(events).toEqual(['INITIAL']);
   });
 
   it('clears locally and says so once', async () => {

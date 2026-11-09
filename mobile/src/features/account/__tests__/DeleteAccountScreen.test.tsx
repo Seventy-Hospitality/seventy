@@ -26,6 +26,7 @@ jest.mock('../../../lib/session', () => ({
 
 const mockSetSession = jest.fn(async () => undefined);
 jest.mock('../../../lib/auth-session', () => ({
+  sessionUserId: jest.requireActual('../../../lib/auth-session').sessionUserId,
   sessionStore: { set: (...args: unknown[]) => mockSetSession(...(args as [])), setRefresher: jest.fn() },
 }));
 
@@ -47,6 +48,7 @@ beforeEach(() => {
   mockClutch.me.deleteAccount.mockResolvedValue({ deleted: true });
   mockClutch.me.accountDeletion.mockResolvedValue(makeDeletionPreview());
   mockClutch.me.unregisterDevice.mockResolvedValue({ removed: true });
+  mockAuth.signOut.mockResolvedValue({ ok: true });
 });
 
 async function confirmWithPassword() {
@@ -152,6 +154,28 @@ describe('DeleteAccountScreen', () => {
     expect(mockClutch.me.deleteAccount).not.toHaveBeenCalled();
     expect(mockSetSession).not.toHaveBeenCalled();
     expect(mockSignOut).not.toHaveBeenCalled();
+    // The other account's fresh session is ended on Clutch, not left running.
+    expect(mockAuth.signOut).toHaveBeenCalledWith('local', { accessToken: 'access-1' });
+  });
+
+  it("names the member from the token's subject when the session carries no user", async () => {
+    const payload = Buffer.from(JSON.stringify({ sub: 'user-1' })).toString('base64url');
+    mockAuth.token.mockResolvedValue(makeAuthSession({ user: null, access_token: `h.${payload}.s` }));
+    renderWithProviders(<DeleteAccountScreen />);
+    await confirmWithPassword();
+
+    await waitFor(() => expect(mockClutch.me.deleteAccount).toHaveBeenCalled());
+    expect(mockSetSession).toHaveBeenCalled();
+    expect(mockAuth.signOut).not.toHaveBeenCalled();
+  });
+
+  it('says the password was wrong, not "email or password", when the step-up is refused', async () => {
+    mockAuth.token.mockRejectedValue(clutchError('invalid_credentials', 401));
+    renderWithProviders(<DeleteAccountScreen />);
+    await confirmWithPassword();
+
+    expect(await screen.findByText('Incorrect password.')).toBeTruthy();
+    expect(mockClutch.me.deleteAccount).not.toHaveBeenCalled();
   });
 });
 

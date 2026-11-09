@@ -14,7 +14,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { clutch, type Identity as AuthIdentity } from '../../lib/clutch';
 import { sessionStore } from '../../lib/auth-session';
-import { authErrorCode, authErrorMessage } from '../../lib/auth-errors';
+import { authErrorCode, authErrorMessage, federatedErrorMessage } from '../../lib/auth-errors';
 import { federatedAdapters, getFederatedCredential, OAuthCancelledError, type OAuthProvider } from '../../lib/oauth';
 import { useSession } from '../../lib/session';
 import { PrimaryButton, Skeleton, useToast } from '../../components';
@@ -75,9 +75,12 @@ function SignInMethodsView({ identities }: { identities: AuthIdentity[] }) {
       void refresh();
       toast({ variant: 'success', message: `${labelOf(provider)} linked.` });
     },
-    onError: (err) => {
+    onError: (err, provider) => {
       if (err instanceof OAuthCancelledError) return;
-      toast({ variant: 'error', message: authErrorMessage(err, 'We could not link that account. Please try again.') });
+      toast({
+        variant: 'error',
+        message: federatedErrorMessage(err, provider, 'We could not link that account. Please try again.'),
+      });
     },
   });
 

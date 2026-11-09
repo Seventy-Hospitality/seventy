@@ -21,12 +21,12 @@ export { createMutationKey, useMutationKey, type MutationKey } from './mutation-
 /**
  * The session store owns the tokens: getAccessToken() refreshes first when
  * the token is about to expire, and after a 401 the client forces one
- * refresh(). A refresh Clutch refuses ends the session (SIGNED_OUT clears the
+ * refresh(staleToken) for the member the request was sent as. A refresh Clutch refuses ends the session (SIGNED_OUT clears the
  * query cache in SessionProvider); a network failure keeps it and throws.
  */
 const sessionAuth: AuthPort = {
   getAccessToken: () => sessionStore.getAccessToken(),
-  refreshAccessToken: () => sessionStore.refresh(),
+  refreshAccessToken: (staleToken) => sessionStore.refresh(staleToken),
 };
 
 export const clutch = createClutchClient({
