@@ -92,6 +92,30 @@ describe('session store', () => {
     expect(events).toEqual(['SIGNED_OUT']);
   });
 
+  it('ends the session on any refusal of the refresh, without refreshing again', async () => {
+    const { store, events } = setup(fresh);
+    const refresher = jest.fn(async () => {
+      throw clutchError('session_expired', 401);
+    });
+    store.setRefresher(refresher);
+    expect(await store.refresh()).toBeNull();
+    expect(refresher).toHaveBeenCalledTimes(1);
+    expect(store.current()).toBeNull();
+    expect(events).toEqual(['SIGNED_OUT']);
+  });
+
+  it('keeps the session when Clutch could not answer the refresh (502) or limits it (429)', async () => {
+    for (const err of [clutchError('upstream_error', 502), clutchError('rate_limit_exceeded', 429)]) {
+      const { store, events } = setup(fresh);
+      store.setRefresher(async () => {
+        throw err;
+      });
+      await expect(store.refresh()).rejects.toBe(err);
+      expect(store.current()?.refresh_token).toBe('r1');
+      expect(events).toEqual([]);
+    }
+  });
+
   it('keeps the session when the refresh could not reach Clutch', async () => {
     const { store, events } = setup(fresh);
     store.setRefresher(async () => {

@@ -144,6 +144,17 @@ describe('SessionProvider', () => {
     expect(result.current.status).toBe('anonymous');
   });
 
+  it('signs out once, without retrying, when Clutch says the session already ended', async () => {
+    mockClutch.auth.token.mockResolvedValue(makeAuthSession());
+    mockClutch.auth.signOut.mockRejectedValue(clutchError('session_expired', 401));
+    const { result } = await renderSession();
+    await act(() => result.current.signInWithPassword({ email: 'a@b.com', password: 'pw' }));
+    await act(() => result.current.signOut());
+    expect(mockClutch.auth.signOut).toHaveBeenCalledTimes(1);
+    expect(result.current.status).toBe('anonymous');
+    expect(sessionStore.current()).toBeNull();
+  });
+
   it('goes anonymous when the store ends the session (a refused refresh)', async () => {
     mockClutch.auth.token.mockResolvedValue(makeAuthSession());
     const { result } = await renderSession();

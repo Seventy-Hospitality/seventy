@@ -39,6 +39,17 @@ no Supabase or Stripe key and receives no email links.
   `/auth/set-password` until `POST /auth/password`; the flag is persisted so
   an app kill cannot skip it). Clutch answers `/auth/otp` the same whether
   or not the address has an account, so the app never says either.
+- Clutch sets a password only for a recent sign-in (about ten minutes):
+  past that, `POST /auth/password` answers `step_up_required` and the
+  set-password screen emails a fresh code to the signed-in address, signs
+  the same member in with it and saves the password already typed.
+  `mfa_required` (an account with an authenticator app, which the app does
+  not support) sends the member to the website; `upstream_error` is retried
+  with the session kept; a password the account already has is
+  `invalid_field`.
+- A refused refresh (any 4xx but 429, including an ended or banned session)
+  ends the session; 429, 5xx and network failures keep it for the next try.
+  Sign-out forgets the session whatever Clutch answers.
 - Password sign-in: `POST /auth/token`.
 - Google: the iOS / Android OAuth client with code + PKCE through the
   reversed client id scheme (registered by `app.config.js`), nonce kept;
@@ -60,8 +71,9 @@ no Supabase or Stripe key and receives no email links.
 - `contract.gen.ts` is GENERATED (`npm run contract:pull && npm run
   contract:gen`) from Clutch's `docs/api/openapi.json`, snapshotted in
   `clutch/openapi.json` with its source in `clutch/openapi.source.json`
-  (today: `origin/feat/api-sign-in-codes`, we-are-clutch #188; regenerate
-  from main once it merges). zod 4 schemas that ignore unknown
+  (today: a local merge of `origin/main` with `feat/api-sign-in-codes`
+  (#188) and `feat/api-publishable-key` (#187); regenerate from main with
+  `npm run contract:pull` once both merge). zod 4 schemas that ignore unknown
   fields, respect nullability and brand ids; `contract.gen.test.ts` fails when
   it is stale. Never edit it by hand.
 - `contract.pending.ts` is the only hand-written contract: operations of
@@ -98,7 +110,11 @@ customer/ephemeral key, or `simulated`). The only way to show a sheet is
 own `{publishableKey, stripeAccountId}` behind a lock and returns the
 completed intent id; an intent without a key resolves `unconfigured`. The key
 is Clutch's platform key, sent as `publishable_key` next to every
-`client_secret` (we-are-clutch #187). The app never reports success: it hands
+`client_secret` (we-are-clutch #187), with the club's `stripe_account` (null
+for a club on the platform account). Move and share checkouts are generated;
+booking checkout and card setup are outside the OpenAPI document and stay in
+`contract.pending.ts`, which prefers `stripe_account` over the older
+`stripeAccount`. The app never reports success: it hands
 the intent id to Clutch (`confirm` / `save`) and shows Clutch's answer. Physical venue
 memberships use Stripe, never IAP (App Store 3.1.3(e)).
 

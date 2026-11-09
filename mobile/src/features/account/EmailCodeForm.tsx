@@ -54,6 +54,7 @@ export function EmailCodeForm({
         render={({ field: { onBlur, onChange, value }, fieldState }) => (
           <FormField label="6-digit code" error={fieldState.error?.message}>
             <Input
+              accessibilityLabel="6-digit code"
               autoComplete="one-time-code"
               textContentType="oneTimeCode"
               keyboardType="number-pad"

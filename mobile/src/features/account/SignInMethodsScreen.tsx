@@ -14,7 +14,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { clutch, type Identity as AuthIdentity } from '../../lib/clutch';
 import { sessionStore } from '../../lib/auth-session';
-import { authErrorMessage } from '../../lib/auth-errors';
+import { authErrorCode, authErrorMessage } from '../../lib/auth-errors';
 import { federatedAdapters, getFederatedCredential, OAuthCancelledError, type OAuthProvider } from '../../lib/oauth';
 import { useSession } from '../../lib/session';
 import { PrimaryButton, Skeleton, useToast } from '../../components';
@@ -89,8 +89,11 @@ function SignInMethodsView({ identities }: { identities: AuthIdentity[] }) {
       void refresh();
       toast({ variant: 'success', message: `${labelOf(identity.provider)} unlinked.` });
     },
-    onError: (err) =>
-      toast({ variant: 'error', message: authErrorMessage(err, 'We could not unlink that account. Please try again.') }),
+    onError: (err) => {
+      // Gone already (another device unlinked it): show the list as it is now.
+      if (authErrorCode(err) === 'identity_not_found') void refresh();
+      toast({ variant: 'error', message: authErrorMessage(err, 'We could not unlink that account. Please try again.') });
+    },
   });
 
   const confirmUnlink = (identity: AuthIdentity) => {

@@ -58,11 +58,11 @@ describe('SignInMethodsScreen', () => {
     await waitFor(() => expect(mockSetSession).toHaveBeenCalledWith(session));
   });
 
-  it('says so when that Google account belongs to another login', async () => {
+  it('says so when that Google account is already linked', async () => {
     mockClutch.auth.linkIdentity.mockRejectedValue(clutchError('identity_already_linked', 409));
     renderWithProviders(<SignInMethodsScreen />);
     fireEvent.press(await screen.findByLabelText('Link Google'));
-    expect(await screen.findByText('That account is already linked to another Club70 login.')).toBeTruthy();
+    expect(await screen.findByText('That sign-in method is already linked to an account.')).toBeTruthy();
     expect(mockSetSession).not.toHaveBeenCalled();
   });
 
@@ -76,6 +76,21 @@ describe('SignInMethodsScreen', () => {
     expect(await screen.findByText('Linked · alex@gmail.com')).toBeTruthy();
     fireEvent.press(screen.getByLabelText('Unlink Google'));
     await waitFor(() => expect(mockClutch.auth.unlinkIdentity).toHaveBeenCalledWith('identity-google'));
+    alert.mockRestore();
+  });
+
+  it('re-reads the list when the method was already unlinked elsewhere', async () => {
+    mockClutch.auth.identities.mockResolvedValue([makeAuthIdentity(), GOOGLE]);
+    mockClutch.auth.unlinkIdentity.mockRejectedValue(clutchError('identity_not_found', 404));
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation((_t, _m, buttons) => {
+      buttons?.find((b) => b.style === 'destructive')?.onPress?.();
+    });
+    renderWithProviders(<SignInMethodsScreen />);
+    expect(await screen.findByText('Linked · alex@gmail.com')).toBeTruthy();
+    const reads = mockClutch.auth.identities.mock.calls.length;
+    fireEvent.press(screen.getByLabelText('Unlink Google'));
+    expect(await screen.findByText('That sign-in method is no longer linked.')).toBeTruthy();
+    await waitFor(() => expect(mockClutch.auth.identities.mock.calls.length).toBeGreaterThan(reads));
     alert.mockRestore();
   });
 });
