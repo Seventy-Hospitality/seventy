@@ -1,124 +1,102 @@
-import { useMemo, useState } from 'react';
 import { useRouter } from 'expo-router';
-import { useQueries, useQuery } from '@tanstack/react-query';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { api, type AvailabilitySlot } from '../../lib/api';
-import { getUpcomingDateKeys } from '../../lib/format';
-import { AppScreen } from '../../components/AppScreen';
-import { ChoiceChip } from '../../components/ChoiceChip';
-import { EmptyStateView } from '../../components/EmptyStateView';
-import { SectionCard } from '../../components/SectionCard';
-import { colors, radius, spacing } from '../../theme/tokens';
+import { Ionicons } from '@expo/vector-icons';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useQuery } from '@tanstack/react-query';
+import { entitlement } from '../../lib/clutch';
+import { useClub } from '../../lib/club';
+import { membershipQuery } from '../../lib/queries';
+import { AppScreen, EmptyStateView, PrimaryButton, Skeleton } from '../../components';
+import { colors, fonts, spacing } from '../../theme/tokens';
+import { sportLabel } from './booking';
+import { courtCountFor, sportsFrom } from './court-picker';
+import { membershipGateCopy } from './membership-gate';
+import { MembershipInactiveState } from './MembershipInactiveState';
+import { SportTile } from './SportIcon';
 
-type FacilityType = 'court' | 'shower';
-
-function summarizeAvailability(slots: AvailabilitySlot[]) {
-  if (slots.length === 0) {
-    return 'No open slots';
-  }
-  if (slots.length === 1) {
-    return `${slots[0].startTime} available`;
-  }
-  return `${slots[0].startTime}, ${slots[1]?.startTime ?? slots[0].endTime}, +${Math.max(slots.length - 2, 0)} more`;
-}
-
+/**
+ * The Reserve tab: the club's sports (distinct court types, in court order)
+ * with how many courts each has. Picking a sport opens the booking wizard for
+ * that court_type. A member who may not book (entitlement() over GET
+ * /me/membership) sees why and where to fix it above the list; the wizard
+ * enforces the same gate.
+ */
 export function ReserveScreen() {
-  const router = useRouter();
-  const [facilityType, setFacilityType] = useState<FacilityType>('court');
-  const [selectedDate, setSelectedDate] = useState(getUpcomingDateKeys(7)[0]);
-
-  const facilitiesQuery = useQuery({
-    queryKey: ['facilities', facilityType],
-    queryFn: () => (facilityType === 'court' ? api.listCourts() : api.listShowers()),
-  });
-
-  const availabilityQueries = useQueries({
-    queries: (facilitiesQuery.data ?? []).map((facility) => ({
-      queryKey: ['availability', facilityType, facility.id, selectedDate],
-      queryFn: () =>
-        facilityType === 'court'
-          ? api.getCourtAvailability(facility.id, selectedDate)
-          : api.getShowerAvailability(facility.id, selectedDate),
-    })),
-  });
-
-  const facilitiesWithAvailability = useMemo(() => {
-    return (facilitiesQuery.data ?? []).map((facility, index) => ({
-      facility,
-      slots: availabilityQueries[index]?.data ?? [],
-      loading: availabilityQueries[index]?.isLoading ?? false,
-    }));
-  }, [availabilityQueries, facilitiesQuery.data]);
+  const club = useClub();
+  const membership = useQuery(membershipQuery);
+  const access = membership.data ? entitlement(membership.data) : null;
+  const gate = access && access !== 'entitled' ? membershipGateCopy(access) : null;
+  const courts = club.data?.courts ?? [];
+  const sports = sportsFrom(courts);
 
   return (
-    <AppScreen>
+    <AppScreen
+      refreshing={club.isRefetching}
+      onRefresh={() => {
+        void club.refetch();
+        void membership.refetch();
+      }}
+    >
       <View style={styles.header}>
         <Text style={styles.title}>Reserve</Text>
-        <Text style={styles.subtitle}>Choose a day, then open a facility to lock in a time.</Text>
+        <Text style={styles.subtitle}>Book a court in advance</Text>
       </View>
 
-      <SectionCard>
-        <View style={styles.segmentRow}>
-          <ChoiceChip label="Courts" active={facilityType === 'court'} onPress={() => setFacilityType('court')} />
-          <ChoiceChip label="Showers" active={facilityType === 'shower'} onPress={() => setFacilityType('shower')} />
-        </View>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.dateRail}>
-          {getUpcomingDateKeys(7).map((dateKey) => (
-            <ChoiceChip
-              key={dateKey}
-              label={dateKey.slice(5)}
-              active={selectedDate === dateKey}
-              onPress={() => setSelectedDate(dateKey)}
-            />
-          ))}
-        </ScrollView>
-      </SectionCard>
-
-      <SectionCard
-        title={facilityType === 'court' ? 'Open Courts' : 'Open Showers'}
-        subtitle="Availability snapshots update for the selected day."
-      >
-        {facilitiesQuery.isLoading ? (
-          <View style={styles.center}>
-            <ActivityIndicator color={colors.accent} />
-          </View>
-        ) : facilitiesWithAvailability.length === 0 ? (
-          <EmptyStateView
-            title="Nothing to reserve"
-            description="Facilities will appear here as soon as they are enabled."
+      {gate ? (
+        <View style={styles.errorBox}>
+          <MembershipInactiveState
+            title={gate.title}
+            description={gate.description}
+            actionLabel={gate.actionLabel}
+            href={gate.href}
           />
-        ) : (
-          <View style={styles.list}>
-            {facilitiesWithAvailability.map(({ facility, loading, slots }) => (
-              <Pressable
-                key={facility.id}
-                onPress={() =>
-                  router.push({
-                    pathname: '/reserve/[facilityType]/[facilityId]',
-                    params: {
-                      facilityType,
-                      facilityId: facility.id,
-                      name: facility.name,
-                      date: selectedDate,
-                    },
-                  })
-                }
-                style={({ pressed }) => [styles.facilityCard, pressed ? styles.facilityCardPressed : null]}
-              >
-                <View style={styles.facilityHeader}>
-                  <Text style={styles.facilityName}>{facility.name}</Text>
-                  <Text style={styles.facilityMeta}>
-                    {loading ? 'Loading slots...' : `${slots.length} open`}
-                  </Text>
-                </View>
-                <Text style={styles.facilitySummary}>{loading ? 'Checking availability' : summarizeAvailability(slots)}</Text>
-                <Text style={styles.facilityHint}>Tap to view the full day</Text>
-              </Pressable>
-            ))}
-          </View>
-        )}
-      </SectionCard>
+        </View>
+      ) : null}
+
+      {club.isPending ? (
+        <View style={styles.list} accessibilityLabel="Loading sports">
+          {[0, 1, 2].map((i) => (
+            <Skeleton key={i} height={78} borderRadius={16} />
+          ))}
+        </View>
+      ) : club.isError ? (
+        <View style={styles.errorBox} accessibilityRole="alert">
+          <Text style={styles.errorText}>We could not load the club's courts.</Text>
+          <PrimaryButton label="Try again" variant="secondary" onPress={() => void club.refetch()} />
+        </View>
+      ) : sports.length === 0 ? (
+        <EmptyStateView title="Nothing to book yet" description="The club has not opened any courts for booking." />
+      ) : (
+        <View style={styles.list}>
+          {sports.map((sport) => (
+            <SportRow key={sport} sport={sport} courtCount={courtCountFor(courts, sport)} />
+          ))}
+        </View>
+      )}
     </AppScreen>
+  );
+}
+
+function SportRow({ sport, courtCount }: { sport: string; courtCount: number }) {
+  const router = useRouter();
+  const courtsLabel = courtCount === 1 ? '1 court' : `${courtCount} courts`;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Book ${sportLabel(sport)}, ${courtsLabel}`}
+      onPress={() => router.push(`/reserve/${encodeURIComponent(sport)}`)}
+      style={({ pressed }) => [styles.row, pressed ? styles.rowPressed : null]}
+    >
+      <SportTile sport={sport} />
+      <View style={styles.rowText}>
+        <Text style={styles.rowTitle} numberOfLines={1}>
+          {sportLabel(sport)}
+        </Text>
+        <Text style={styles.rowSubtitle} numberOfLines={1}>
+          {courtsLabel}
+        </Text>
+      </View>
+      <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+    </Pressable>
   );
 }
 
@@ -128,59 +106,55 @@ const styles = StyleSheet.create({
   },
   title: {
     color: colors.text,
-    fontSize: 28,
-    fontWeight: '800',
+    fontFamily: fonts.displayHeavy,
+    fontSize: 30,
   },
   subtitle: {
     color: colors.textMuted,
+    fontFamily: fonts.body,
     fontSize: 14,
-  },
-  segmentRow: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-  },
-  dateRail: {
-    gap: spacing.sm,
-  },
-  center: {
-    paddingVertical: spacing.lg,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   list: {
     gap: spacing.sm,
   },
-  facilityCard: {
-    backgroundColor: colors.surface,
-    borderRadius: radius.md,
-    padding: spacing.md,
-    gap: spacing.xs,
-  },
-  facilityCardPressed: {
-    opacity: 0.92,
-  },
-  facilityHeader: {
+  row: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    gap: spacing.sm,
+    gap: spacing.md,
+    padding: spacing.md,
+    borderRadius: 16,
+    backgroundColor: colors.bgElevated,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
-  facilityName: {
+  rowPressed: {
+    opacity: 0.9,
+  },
+  rowText: {
+    flex: 1,
+    gap: 3,
+  },
+  rowTitle: {
     color: colors.text,
+    fontFamily: fonts.bodySemibold,
     fontSize: 16,
-    fontWeight: '700',
   },
-  facilityMeta: {
-    color: colors.accent,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  facilitySummary: {
-    color: colors.sand,
+  rowSubtitle: {
+    color: colors.textMuted,
+    fontFamily: fonts.body,
     fontSize: 13,
   },
-  facilityHint: {
-    color: colors.textMuted,
-    fontSize: 12,
+  errorBox: {
+    gap: spacing.md,
+    padding: spacing.md,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bgElevated,
+  },
+  errorText: {
+    color: colors.text,
+    fontFamily: fonts.body,
+    fontSize: 14,
   },
 });
