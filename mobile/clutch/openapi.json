@@ -83,7 +83,7 @@
       "post": {
         "operationId": "signInWithIdToken",
         "summary": "Sign in with an Apple or Google ID token",
-        "description": "Creates the account on a first sign-in. A token the provider cannot verify is invalid_credentials, and so is one for a banned account, with the same message: this API's answer never says which addresses are banned; the identity provider, called directly with the publishable key, still does. The app's Apple bundle id and Google client ids must be authorized on the deployment's identity provider. 429 rate_limit_exceeded: thirty a minute per client, from the same budget as password sign-in.",
+        "description": "Creates the account on a first sign-in. A token the provider cannot verify is invalid_credentials, and so is one for a banned account, with the same message: this API's answer never says which addresses are banned; the identity provider, called directly with its own publishable key, still does. The app's Apple bundle id and Google client ids must be authorized on the deployment's identity provider. 429 rate_limit_exceeded: thirty a minute per client, from the same budget as password sign-in.",
         "tags": ["Auth"],
         "security": [{}],
         "requestBody": {
@@ -175,7 +175,7 @@
       "post": {
         "operationId": "verifyEmailCode",
         "summary": "Exchange an emailed code for a session",
-        "description": "A code is single use, and expires after the lifetime the deployment sets. A wrong, expired or used one is invalid_credentials, and so is any code for a banned account, with the same message: this API's answer never says which addresses are banned; the identity provider, called directly with the publishable key, still does. 400 invalid_field: a malformed address. 429 rate_limit_exceeded: five tries a minute per address from one client, thirty per client, and ten an hour and thirty a day per address from all clients together. Anyone can spend those last two by sending wrong codes for an address: code sign-in and the native password reset then stop for it until they refill. An account with a password, Apple or Google still signs in that way; one that only ever used codes cannot sign in natively until then. The web sign-in link is not affected. The per-address budget is what bounds guessing a 6-digit code through this API from many clients at once. It bounds only this API: the identity provider, called directly with the publishable key, limits code checks per client address alone.",
+        "description": "A code is single use, and expires after the lifetime the deployment sets. A wrong, expired or used one is invalid_credentials, and so is any code for a banned account, with the same message: this API's answer never says which addresses are banned; the identity provider, called directly with its own publishable key, still does. 400 invalid_field: a malformed address. 429 rate_limit_exceeded: five tries a minute per address from one client, thirty per client, and ten an hour and thirty a day per address from all clients together. Anyone can spend those last two by sending wrong codes for an address: code sign-in and the native password reset then stop for it until they refill. An account with a password, Apple or Google still signs in that way; one that only ever used codes cannot sign in natively until then. The web sign-in link is not affected. The per-address budget is what bounds guessing a 6-digit code through this API from many clients at once. It bounds only this API: the identity provider, called directly with its own publishable key, limits code checks per client address alone.",
         "tags": ["Auth"],
         "security": [{}],
         "requestBody": {
@@ -461,7 +461,7 @@
       "post": {
         "operationId": "createAuthToken",
         "summary": "Exchange email and password for a session",
-        "description": "A wrong email or password is invalid_credentials, and so is a banned account, with the same message: this API's answer never says which addresses are banned; the identity provider, called directly with the publishable key, still does. 429 rate_limit_exceeded: five tries a minute per address from one client, thirty per client, from the same budget as the web sign-in form.",
+        "description": "A wrong email or password is invalid_credentials, and so is a banned account, with the same message: this API's answer never says which addresses are banned; the identity provider, called directly with its own publishable key, still does. 429 rate_limit_exceeded: five tries a minute per address from one client, thirty per client, from the same budget as the web sign-in form.",
         "tags": ["Auth"],
         "security": [{}],
         "requestBody": {
