@@ -252,7 +252,7 @@ function CheckoutView({ tier }: { tier: CheckoutTier }) {
             setPhase('idle');
             return;
           case 'unconfigured':
-            setError('Payments are not configured in this build.');
+            setError('Card payments are not available right now. Please try again later.');
             setPhase('idle');
             return;
           case 'failed':

@@ -15,15 +15,20 @@ import { EmailCodeForm } from './EmailCodeForm';
 import { authStyles as styles } from './auth-styles';
 
 /**
- * Create a Club70 login (a Supabase account). Joining the club and choosing a
- * tier happen next, in onboarding. With email confirmation on, GoTrue sends a
- * link plus a code and issues no session until one is used.
+ * Create a Club70 login through Clutch. Clutch emails a 6-digit code that
+ * creates the account and confirms the address in one step; the chosen
+ * password is set right after (if it does not save, the member is asked for
+ * it again before anything else). Joining the club and choosing a tier happen
+ * next, in onboarding.
+ *
+ * Clutch does not say whether the address already had an account (an existing
+ * one simply gets a sign-in code), so neither does this screen.
  */
 export function SignUpScreen() {
   const router = useRouter();
-  const { status, signUpWithPassword, verifyEmailCode, resendSignupConfirmation } = useSession();
+  const { status, sendSignUpCode, confirmSignUp } = useSession();
   const { toast } = useToast();
-  const [confirmEmail, setConfirmEmail] = useState<string | null>(null);
+  const [pending, setPending] = useState<{ name: string; email: string; password: string } | null>(null);
 
   const form = useZodForm(signUpSchema, { defaultValues: { name: '', email: '', password: '' } });
 
@@ -31,21 +36,17 @@ export function SignUpScreen() {
 
   const onSubmit = form.handleSubmit(async (values) => {
     try {
-      const { confirmationRequired } = await signUpWithPassword(values);
-      if (confirmationRequired) setConfirmEmail(values.email.trim());
+      await sendSignUpCode({ name: values.name, email: values.email });
+      setPending({ name: values.name, email: values.email.trim(), password: values.password });
     } catch (err) {
-      const code = authErrorCode(err);
-      if (code === 'user_already_exists' || code === 'email_exists') {
+      if (authErrorCode(err) === 'invalid_field') {
         form.setError('email', { message: authErrorMessage(err) });
-        return;
-      }
-      if (code === 'weak_password') {
-        form.setError('password', { message: authErrorMessage(err) });
         return;
       }
       toast({ variant: 'error', message: authErrorMessage(err, 'Unable to create your account right now.') });
     }
   });
+  const confirmEmail = pending?.email ?? null;
 
   return (
     <AppScreen contentStyle={styles.content}>
@@ -61,10 +62,10 @@ export function SignUpScreen() {
         {confirmEmail ? (
           <EmailCodeForm
             email={confirmEmail}
-            intro="Tap the link in the email on this phone, or enter the code we sent to"
+            intro="Enter the code we sent to"
             submitLabel="Confirm"
-            onSubmitCode={(code) => verifyEmailCode(confirmEmail, code)}
-            onResend={() => resendSignupConfirmation(confirmEmail)}
+            onSubmitCode={(code) => confirmSignUp({ email: confirmEmail, code, password: pending!.password })}
+            onResend={() => sendSignUpCode({ name: pending!.name, email: confirmEmail })}
           />
         ) : (
           <View style={styles.form}>

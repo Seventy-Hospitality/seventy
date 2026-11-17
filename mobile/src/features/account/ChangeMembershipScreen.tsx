@@ -212,7 +212,7 @@ function ManageView({ plan, data }: { plan: PlanSummary; data: MyMembershipBilli
           setPhase({ name: 'pay', intent, target });
           return;
         case 'unconfigured':
-          setNotice('Payments are not configured in this build.');
+          setNotice('Card payments are not available right now. Please try again later.');
           setPhase({ name: 'pay', intent, target });
           return;
         case 'failed':

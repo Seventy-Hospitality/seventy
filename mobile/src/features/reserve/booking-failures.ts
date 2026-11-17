@@ -607,6 +607,10 @@ export function describeBookingFailure(error: unknown, context: FailureContext =
     case 'refunds_pending':
     case 'account_deletion_failed':
     case 'checkin_unavailable':
+    case 'identity_already_linked':
+    case 'last_identity':
+    case 'identity_not_found':
+    case 'identity_linking_disabled':
     case 'unknown':
       return REREAD;
 

@@ -30,7 +30,6 @@ jest.mock('../../../lib/session', () => ({
 
 const mockPresent = jest.fn<Promise<SheetResult>, unknown[]>();
 jest.mock('../../../lib/stripe', () => ({
-  usePaymentsConfigured: () => true,
   usePresentConnectedSheet: () => mockPresent,
 }));
 

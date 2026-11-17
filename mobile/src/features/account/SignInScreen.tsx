@@ -17,17 +17,10 @@ import { authStyles as styles } from './auth-styles';
 type Mode = 'password' | 'email';
 
 export function SignInScreen() {
-  const {
-    status,
-    configured,
-    signInWithPassword,
-    sendEmailSignIn,
-    verifyEmailCode,
-    resendSignupConfirmation,
-  } = useSession();
+  const { status, signInWithPassword, sendEmailSignIn, verifyEmailCode, sendExistingAccountCode } = useSession();
   const [mode, setMode] = useState<Mode>('password');
   const [emailSentTo, setEmailSentTo] = useState<string | null>(null);
-  /** A password sign-in GoTrue refused because the address is not confirmed yet. */
+  /** A password sign-in Clutch refused because the address is not confirmed yet. */
   const [unconfirmed, setUnconfirmed] = useState<string | null>(null);
 
   const passwordForm = useZodForm(signInSchema, { defaultValues: { email: '', password: '' } });
@@ -43,7 +36,10 @@ export function SignInScreen() {
       await signInWithPassword(values);
     } catch (err) {
       if (authErrorCode(err) === 'email_not_confirmed') {
-        setUnconfirmed(values.email.trim());
+        const email = values.email.trim();
+        setUnconfirmed(email);
+        // The sign-up code may be long gone: send a fresh one to confirm with.
+        sendExistingAccountCode(email).catch(() => undefined);
         return;
       }
       passwordForm.setError('password', { message: authErrorMessage(err, 'Unable to sign in right now.') });
@@ -67,12 +63,6 @@ export function SignInScreen() {
         <Text style={styles.subtitle}>Sign in to book courts, see your groups, and manage your membership.</Text>
       </View>
 
-      {!configured ? (
-        <SectionCard>
-          <Text style={styles.subtitle}>Sign-in is not configured for this build.</Text>
-        </SectionCard>
-      ) : null}
-
       <SectionCard>
         <SegmentedControl
           label="Sign-in method"
@@ -92,10 +82,10 @@ export function SignInScreen() {
           <View style={styles.form}>
             <EmailCodeForm
               email={unconfirmed}
-              intro="Confirm your email first. Tap the link we sent on this phone, or enter the code sent to"
+              intro="Confirm your email first. Enter the code we sent to"
               submitLabel="Confirm and sign in"
               onSubmitCode={(code) => verifyEmailCode(unconfirmed, code)}
-              onResend={() => resendSignupConfirmation(unconfirmed)}
+              onResend={() => sendExistingAccountCode(unconfirmed)}
             />
             <PrimaryButton label="Back" variant="ghost" onPress={() => setUnconfirmed(null)} />
           </View>
@@ -147,7 +137,7 @@ export function SignInScreen() {
         ) : emailSentTo ? (
           <EmailCodeForm
             email={emailSentTo}
-            intro="Tap the link in the email on this phone, or enter the code we sent to"
+            intro="Enter the code we sent to"
             submitLabel="Sign In"
             onSubmitCode={(code) => verifyEmailCode(emailSentTo, code)}
             onResend={() => sendEmailSignIn(emailSentTo)}
@@ -161,7 +151,7 @@ export function SignInScreen() {
                 <FormField
                   label="Email"
                   error={fieldState.error?.message}
-                  hint="We email a sign-in link and a 6-digit code."
+                  hint="We email you a 6-digit code."
                 >
                   <Input
                     autoCapitalize="none"

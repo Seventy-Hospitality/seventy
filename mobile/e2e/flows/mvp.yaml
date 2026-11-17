@@ -1,7 +1,8 @@
 # Club70 MVP on a real build against a local Clutch (e2e/run.sh passes the env).
-# A new member signs up, onboarding joins them to Club 70 and has them sign
-# the club's waiver, the club puts them on a tier, they book a court and pay
-# (simulated), and the booking is on Home.
+# A new member signs up (the emailed code, read from the local mail catcher,
+# confirms the address; then the password is set), onboarding joins them to
+# Club 70 and has them sign the club's waiver, the club puts them on a tier,
+# they book a court and pay (simulated), and the booking is on Home.
 appId: club.seventy.mobile
 env:
   NAME: Alex Morgan
@@ -21,6 +22,21 @@ env:
 - hideKeyboard
 - tapOn:
     text: Create Account
+    index: -1
+
+# ── The emailed code (there is no link to tap) ──
+- extendedWaitUntil:
+    visible: Confirm your email
+    timeout: 20000
+- runScript:
+    file: read-code.js
+    env:
+      EMAIL: ${EMAIL}
+- tapOn: "123456"
+- inputText: ${output.code}
+- hideKeyboard
+- tapOn:
+    text: Confirm
     index: -1
 
 # ── Onboarding: join (automatic), then the club's waiver ──

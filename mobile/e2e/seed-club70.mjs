@@ -150,8 +150,7 @@ if (!tier) {
 
 process.stdout.write(
   [
-    `EXPO_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321`,
-    `EXPO_PUBLIC_SUPABASE_ANON_KEY=${ANON_KEY}`,
+    `E2E_SUPABASE_URL=${SUPABASE_URL}`,
     `EXPO_PUBLIC_CLUTCH_API_URL=http://localhost:3000/api/v1`,
     `EXPO_PUBLIC_CLUB_ID=${club.id}`,
     `EXPO_PUBLIC_CLUB_SLUG=${SLUG}`,

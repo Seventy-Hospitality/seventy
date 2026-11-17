@@ -13,16 +13,16 @@ import { EmailCodeForm } from './EmailCodeForm';
 import { authStyles as styles } from './auth-styles';
 
 /**
- * Password reset. GoTrue emails a link (PKCE, back to this app) and a code;
- * either signs the user in in recovery mode, and the root layout then routes
- * to /auth/set-password before anything else.
+ * Password reset. Clutch emails a 6-digit code; the code signs the member in
+ * in recovery mode, and the root layout then holds them on /auth/set-password
+ * until a new password is saved.
  */
 export function ForgotPasswordScreen() {
   const { requestPasswordReset, verifyRecoveryCode } = useSession();
   const [sentTo, setSentTo] = useState<string | null>(null);
   const form = useZodForm(emailOnlySchema, { defaultValues: { email: '' } });
 
-  // GoTrue answers the same whether or not the address exists (no
+  // Clutch answers the same whether or not the address exists (no
   // enumeration), so success says "if an account exists". A failure (no
   // network, rate limit) is a real failure: say so and stay on the form.
   const onSubmit = form.handleSubmit(async ({ email }) => {
@@ -39,14 +39,14 @@ export function ForgotPasswordScreen() {
       <View style={styles.hero}>
         <Text style={styles.kicker}>Club70</Text>
         <Text style={styles.title}>Reset your password</Text>
-        <Text style={styles.subtitle}>We will email you a link and a code to set a new password.</Text>
+        <Text style={styles.subtitle}>We will email you a code to set a new password.</Text>
       </View>
 
       <SectionCard>
         {sentTo ? (
           <EmailCodeForm
             email={sentTo}
-            intro="If an account exists, the email is on its way. Tap its link on this phone, or enter the code sent to"
+            intro="If an account exists, the code is on its way. Enter the code sent to"
             onSubmitCode={(code) => verifyRecoveryCode(sentTo, code)}
             onResend={() => requestPasswordReset(sentTo)}
           />
@@ -71,7 +71,7 @@ export function ForgotPasswordScreen() {
               )}
             />
             <PrimaryButton
-              label="Send Reset Email"
+              label="Send Reset Code"
               loading={form.formState.isSubmitting}
               onPress={() => void onSubmit()}
             />

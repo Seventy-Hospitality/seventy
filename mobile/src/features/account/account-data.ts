@@ -4,19 +4,13 @@
  * preferences, payments, check-in token) use the keys in lib/queries.ts.
  */
 import { infiniteQueryOptions, queryOptions, type QueryClient } from '@tanstack/react-query';
-import type { UserIdentity } from '@supabase/supabase-js';
 import { clutch } from '../../lib/clutch';
 import { membershipQuery, queryKeys } from '../../lib/queries';
-import { getSupabase } from '../../lib/supabase';
 
-/** Sign-in identities straight from Supabase GoTrue (email, google, apple). */
+/** The account's sign-in identities (email, google, apple), from GET /me/identities. */
 export const identitiesQuery = queryOptions({
   queryKey: ['account', 'identities'] as const,
-  queryFn: async (): Promise<UserIdentity[]> => {
-    const { data, error } = await getSupabase().auth.getUserIdentities();
-    if (error) throw error;
-    return data.identities;
-  },
+  queryFn: () => clutch.auth.identities(),
   staleTime: 30_000,
 });
 

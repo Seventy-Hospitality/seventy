@@ -21,7 +21,6 @@ jest.mock('../../../lib/clutch', () => {
 });
 jest.mock('../../../lib/session', () => ({ useSession: () => ({ userId: null }) }));
 jest.mock('../../../lib/stripe', () => ({
-  usePaymentsConfigured: () => true,
   usePresentConnectedSheet: () => jest.fn(),
 }));
 const mockRouter = { push: jest.fn(), replace: jest.fn(), back: jest.fn(), canGoBack: () => true };

@@ -3,7 +3,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSession } from '../../lib/session';
 import { OAuthCancelledError } from '../../lib/oauth';
-import { authErrorMessage } from '../../lib/auth-errors';
+import { federatedErrorMessage } from '../../lib/auth-errors';
 import { useToast } from '../../components/toast-context';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
 
@@ -26,10 +26,7 @@ export function OAuthButtons() {
       if (!(err instanceof OAuthCancelledError)) {
         toast({
           variant: 'error',
-          message: authErrorMessage(
-            err,
-            `${provider === 'google' ? 'Google' : 'Apple'} sign-in failed. Please try again.`,
-          ),
+          message: federatedErrorMessage(err, provider),
         });
       }
     } finally {

@@ -7,15 +7,20 @@
  * available are gated by capabilities.ts and refuse locally.
  *
  * Transport rules (each one is a test in __tests__/client.test.ts):
- * - Every request carries the Supabase access token (AuthPort) as Bearer.
+ * - Every request carries the member's access token (AuthPort) as Bearer,
+ *   except the sign-in calls (`auth.*` marked anonymous), which carry none.
  * - Strict envelope: success is `{data, count?}`, failure `{error, message,
  *   details?, request_id?}`; `data` is parsed with the endpoint's schema
  *   (unknown fields are ignored, missing or mistyped ones fail as a
  *   ClutchError of kind 'contract').
  * - Errors are ClutchError with `code: ErrorCode | 'unknown'`.
- * - 401 -> ONE refresh (shared by concurrent callers) -> retry once with a
- *   NEW Idempotency-Key: Clutch caches every answer below 500 under a key,
- *   the 401 included, so retrying with the same key would replay the 401.
+ * - 401 session_expired / auth_required / invalid_token -> ONE refresh for
+ *   the member the request was sent as (the session store shares it between
+ *   concurrent callers) -> retry once with a NEW Idempotency-Key: Clutch
+ *   caches every answer below 500 under a key, the 401 included, so retrying
+ *   with the same key would replay the 401. A refresh that answers no token
+ *   (signed out, or another member signed in meanwhile) means no retry. Any
+ *   other 401 (mfa_required, invalid_credentials) is the answer.
  * - Every mutation carries an Idempotency-Key: the caller's (one per logical
  *   mutation, useMutationKey) or a fresh one. 409 request_in_flight waits and
  *   retries with the same key. A multipart upload gets a fresh key per send
@@ -25,6 +30,7 @@
 import { z } from 'zod';
 import {
   AddBookingPlayersResponseSchema,
+  AuthSessionSchema,
   CancelBookingResponseSchema,
   ConfirmBookingResponseSchema,
   ConfirmPaidMoveResponseSchema,
@@ -32,8 +38,6 @@ import {
   CreateBookingResponseSchema,
   CreateGroupInviteLinkResponseSchema,
   CreateGroupResponseSchema,
-  CreateMovePaymentIntentResponseSchema,
-  CreateSharePaymentIntentResponseSchema,
   DeleteGroupResponseSchema,
   DeleteMyAccountResponseSchema,
   DeviceVerificationRequiredSchema,
@@ -59,13 +63,16 @@ import {
   JoinClubResponseSchema,
   JoinGroupResponseSchema,
   LeaveGroupResponseSchema,
+  LinkMyIdentityResponseSchema,
   ListClubCourtsResponseSchema,
   ListClubMembershipTiersResponseSchema,
   ListMyBookingsResponseSchema,
+  ListMyIdentitiesResponseSchema,
   ListMyNotificationsResponseSchema,
   ListMyPaymentsResponseSchema,
   ListMyWaiversResponseSchema,
   MarkMyNotificationsReadResponseSchema,
+  MoveCheckoutSchema,
   PreviewGroupInviteResponseSchema,
   QuoteBookingResponseSchema,
   QuoteRescheduleResponseSchema,
@@ -73,18 +80,25 @@ import {
   ReleaseBookingHoldResponseSchema,
   RemoveBookingPlayerResponseSchema,
   RemoveGroupMemberResponseSchema,
-  UpdateMyPreferencesResponseSchema,
+  RequestEmailCodeResponseSchema,
   RescheduleBookingResponseSchema,
   RespondToBookingInvitationResponseSchema,
   RespondToGroupInvitationResponseSchema,
   SearchClubPlayersResponseSchema,
+  SetPasswordResponseSchema,
+  ShareCheckoutSchema,
+  SignInWithIdTokenResponseSchema,
+  SignOutResponseSchema,
   SignWaiverResponseSchema,
+  UnlinkMyIdentityResponseSchema,
   UnregisterMyDeviceResponseSchema,
   UpdateGroupMemberResponseSchema,
   UpdateGroupResponseSchema,
+  UpdateMyPreferencesResponseSchema,
   UpdateMyProfileResponseSchema,
   UploadGroupCoverResponseSchema,
   UploadMyAvatarResponseSchema,
+  VerifyEmailCodeResponseSchema,
   VerifyMyDeviceResponseSchema,
   type BookingInvitation,
   type ClubDetail,
@@ -125,16 +139,25 @@ import type {
 
 // ─── Ports ───────────────────────────────────────────────────────────────────
 
-/** How the client reads and refreshes the Supabase session (lib/clutch/index.ts). */
+/** How the client reads and refreshes the member's session (lib/auth-session.ts). */
 export interface AuthPort {
   /** The current access token, or null when signed out. */
   getAccessToken(): Promise<string | null>;
   /**
-   * Refresh the session once after a 401. Resolves the new access token, or
-   * null when the session is definitively gone (supabase-js signs out).
-   * Rejects when the refresh could not be attempted (network): transient.
+   * Refresh after a 401 the request got with `staleToken`. Resolves that
+   * member's new access token, or null when their session is gone (signed
+   * out, or another member's session replaced it). Rejects when the refresh
+   * could not be attempted (network): transient.
    */
-  refreshAccessToken(): Promise<string | null>;
+  refreshAccessToken(staleToken: string): Promise<string | null>;
+}
+
+/** A native ID token from Google or Apple, with the RAW nonce its claim hashes. */
+export interface IdTokenGrant {
+  provider: 'google' | 'apple';
+  id_token: string;
+  nonce?: string | null;
+  access_token?: string | null;
 }
 
 export interface ClutchClientOptions {
@@ -188,9 +211,16 @@ interface RequestSpec<S extends z.ZodType> {
   form?: FormData;
   schema: S;
   idempotencyKey?: string;
+  /** A sign-in call: no Bearer, no refresh after a 401 (the 401 is the answer). */
+  anonymous?: boolean;
+  /** Act with this token instead of the session's (never refreshed). */
+  bearer?: string;
 }
 
 const IN_FLIGHT_RETRY_DELAYS_MS = [400, 800, 1600, 3200];
+
+/** 401 codes a fresh access token can cure; any other 401 is the answer. */
+const REFRESHABLE_401_CODES: ReadonlySet<string> = new Set(['session_expired', 'auth_required', 'invalid_token']);
 
 /** The `data` schema of a generated `{ data }` response schema. */
 /** POST /me/devices: registered (200), or waiting for the pushed code (202). */
@@ -247,7 +277,7 @@ export function createClutchClient(options: ClutchClientOptions) {
     baseUrl,
     clubId,
     expectedClubSlug,
-    auth,
+    auth: authPort,
     newIdempotencyKey,
     capabilities = CAPABILITIES,
     timeoutMs = 30_000,
@@ -255,15 +285,6 @@ export function createClutchClient(options: ClutchClientOptions) {
   const doFetch: typeof fetch = options.fetch ?? ((...args) => fetch(...args));
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const base = baseUrl.replace(/\/+$/, '');
-
-  let refreshInFlight: Promise<string | null> | null = null;
-
-  function refreshOnce(): Promise<string | null> {
-    refreshInFlight ??= auth.refreshAccessToken().finally(() => {
-      refreshInFlight = null;
-    });
-    return refreshInFlight;
-  }
 
   function need(capability: Capability): void {
     if (!capabilities[capability]) throw new ClutchUnavailableError(capability);
@@ -337,6 +358,12 @@ export function createClutchClient(options: ClutchClientOptions) {
     });
   }
 
+  /** A 401 whose code a refresh can cure (an unreadable body counts). */
+  async function refreshable(res: Response): Promise<boolean> {
+    const peek = ErrorSchema.safeParse(await readJson(res.clone()));
+    return !peek.success || REFRESHABLE_401_CODES.has(peek.data.error);
+  }
+
   const SuccessEnvelope = z.object({ data: z.unknown(), count: z.number().int().optional() }).strict();
 
   async function request<S extends z.ZodType>(
@@ -347,13 +374,13 @@ export function createClutchClient(options: ClutchClientOptions) {
       mutating ? (spec.form ? newIdempotencyKey() : (spec.idempotencyKey ?? newIdempotencyKey())) : undefined;
     let key = keyFor();
 
-    let token = await auth.getAccessToken();
+    let token = spec.anonymous ? null : (spec.bearer ?? (await authPort.getAccessToken()));
     let res = await send(spec, token, key);
 
-    if (res.status === 401 && token) {
+    if (res.status === 401 && token && !spec.bearer && (await refreshable(res))) {
       let refreshed: string | null;
       try {
-        refreshed = await refreshOnce();
+        refreshed = await authPort.refreshAccessToken(token);
       } catch {
         throw new ClutchError({
           code: 'network_error',
@@ -596,7 +623,7 @@ export function createClutchClient(options: ClutchClientOptions) {
         method: 'POST',
         path: `/bookings/${enc(id)}/reschedule/payment-intent`,
         body: moveBody(move),
-        schema: dataOf(CreateMovePaymentIntentResponseSchema),
+        schema: MoveCheckoutSchema,
         idempotencyKey: opts?.idempotencyKey,
       });
     },
@@ -619,7 +646,7 @@ export function createClutchClient(options: ClutchClientOptions) {
       return call({
         method: 'POST',
         path: `/bookings/${enc(id)}/shares/payment-intent`,
-        schema: dataOf(CreateSharePaymentIntentResponseSchema),
+        schema: ShareCheckoutSchema,
         idempotencyKey: opts?.idempotencyKey,
       });
     },
@@ -1168,7 +1195,92 @@ export function createClutchClient(options: ClutchClientOptions) {
     },
   };
 
-  return { clubId, capabilities, club, bookings, groups, membership, paymentMethods, me };
+  // ── Sign-in (/auth/*, /me/identities; the session itself lives in lib/auth-session.ts) ──
+
+  const auth = {
+    /** Email and password for a session. */
+    token: (email: string, password: string) =>
+      call({ method: 'POST', path: '/auth/token', body: { email, password }, schema: AuthSessionSchema, anonymous: true }),
+
+    /** A refresh token for a new session (refresh tokens rotate). */
+    refresh: (refreshToken: string) =>
+      call({
+        method: 'POST',
+        path: '/auth/refresh',
+        body: { refresh_token: refreshToken },
+        schema: AuthSessionSchema,
+        anonymous: true,
+      }),
+
+    /**
+     * Email a 6-digit code. `create_user` makes an account for a new address
+     * (sign-up); without it an unknown address gets nothing, and the answer is
+     * the same either way.
+     */
+    sendCode: (input: { email: string; create_user?: boolean; full_name?: string | null }) =>
+      call({
+        method: 'POST',
+        path: '/auth/otp',
+        body: input,
+        schema: dataOf(RequestEmailCodeResponseSchema),
+        anonymous: true,
+      }),
+
+    /** The emailed code for a session. A wrong or used code is invalid_credentials. */
+    verifyCode: (email: string, code: string) =>
+      call({
+        method: 'POST',
+        path: '/auth/otp/verify',
+        body: { email, code },
+        schema: dataOf(VerifyEmailCodeResponseSchema),
+        anonymous: true,
+      }),
+
+    /** A Google or Apple ID token for a session. */
+    idToken: (grant: IdTokenGrant) =>
+      call({
+        method: 'POST',
+        path: '/auth/id-token',
+        body: grant,
+        schema: dataOf(SignInWithIdTokenResponseSchema),
+        anonymous: true,
+      }),
+
+    /** Set the signed-in member's password (also how a reset ends). */
+    setPassword: (password: string) =>
+      call({ method: 'POST', path: '/auth/password', body: { password }, schema: dataOf(SetPasswordResponseSchema) }),
+
+    /**
+     * End this session on the server (`local`: this device only). With
+     * `accessToken`, end that session instead of the stored one (a session
+     * the app is discarding).
+     */
+    signOut: (scope: 'local' | 'global' = 'local', opts?: { accessToken?: string }) =>
+      call({
+        method: 'POST',
+        path: '/auth/signout',
+        body: { scope },
+        schema: dataOf(SignOutResponseSchema),
+        bearer: opts?.accessToken,
+      }),
+
+    /** The ways this account signs in (email, google, apple). */
+    identities: () => call({ method: 'GET', path: '/me/identities', schema: dataOf(ListMyIdentitiesResponseSchema) }),
+
+    /** Link a Google or Apple account; answers the session that now carries it. */
+    linkIdentity: (grant: IdTokenGrant) =>
+      call({ method: 'POST', path: '/me/identities', body: grant, schema: dataOf(LinkMyIdentityResponseSchema) }),
+
+    /** Unlink one; Clutch refuses the last one. */
+    unlinkIdentity: (identityId: string) =>
+      call({
+        method: 'DELETE',
+        path: `/me/identities/${enc(identityId)}`,
+        schema: dataOf(UnlinkMyIdentityResponseSchema),
+      }),
+  };
+
+  return { clubId, capabilities, auth, club, bookings, groups, membership, paymentMethods, me };
 }
 
 export type ClutchClient = ReturnType<typeof createClutchClient>;

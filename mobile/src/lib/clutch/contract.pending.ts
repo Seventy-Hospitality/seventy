@@ -20,6 +20,9 @@
  *                                        apps/web/app/api/v1/_booking-contract.ts
  *   main (owned by P2, not in the P3 document): POST /bookings/{id}/payment-intent,
  *                                        GET /me/payment-methods, POST /bookings/{id}/payment-intent/pay
+ *   feat/api-publishable-key (we-are-clutch #187) `publishable_key` and `stripe_account` on the
+ *                                        two payment routes outside the document (booking checkout,
+ *                                        setup intent). The routes in the document are generated.
  */
 import { z } from 'zod';
 import type { MoveCheckout, ShareCheckout } from './contract.gen';
@@ -46,6 +49,16 @@ export const PENDING_ERROR_CODES = [
   'setup_incomplete',
   'card_in_use_by_subscription',
 ] as const;
+
+// ─── feat/api-publishable-key: the Stripe key travels with the intent ──────
+
+/**
+ * Clutch's platform publishable key, next to the `client_secret` of the routes
+ * outside the OpenAPI document. Null when nothing is charged or the deployment
+ * has no key. Read as optional so a deployment without #187 degrades to "no
+ * key" (the sheet resolves `unconfigured`) instead of failing to parse.
+ */
+const PublishableKey = { publishable_key: z.string().nullable().optional() };
 
 // ─── Push payloads (packages/notifications; not API responses) ──────────────
 
@@ -74,11 +87,15 @@ export const LegacyBookingCheckoutSchema = z.object({
   clientSecret: z.string(),
   paymentIntentId: z.string(),
   simulated: z.boolean(),
+  /** The original camelCase account: absent for a club on the platform account. */
   stripeAccount: z.string().optional(),
+  /** #187: the account in snake_case, null for a club on the platform account. Preferred. */
+  stripe_account: z.string().nullable().optional(),
   taxAmountCents: z.number().int().optional(),
   subtotalCents: z.number().int().optional(),
   /** What the card is charged, tax included (Clutch states it since #181). */
   total_cents: z.number().int().optional(),
+  ...PublishableKey,
 });
 export type LegacyBookingCheckout = z.infer<typeof LegacyBookingCheckoutSchema>;
 
@@ -97,6 +114,7 @@ export const SheetBundleSchema = z.object({
   /** The connected account to initialise Stripe with; null for the platform. */
   stripe_account: z.string().nullable(),
   simulated: z.boolean(),
+  ...PublishableKey,
 });
 export type SheetBundle = z.infer<typeof SheetBundleSchema>;
 
@@ -263,6 +281,8 @@ export type SheetIntent =
       clientSecret: string;
       intentId: string;
       stripeAccount: string | null;
+      /** The key to initialise Stripe with (from the same answer); null: no sheet. */
+      publishableKey: string | null;
       customer?: { id: string; ephemeralKeySecret: string };
     }
   | { mode: 'simulated'; intentType: 'payment' | 'setup'; intentId: string | null };
@@ -293,6 +313,7 @@ export function bundleToSheet(bundle: SheetBundle, simulatedIntentId: string | n
     clientSecret: bundle.client_secret,
     intentId: intentIdFromClientSecret(bundle.client_secret),
     stripeAccount: bundle.stripe_account,
+    publishableKey: bundle.publishable_key ?? null,
     customer: customerOf(bundle.customer_id, bundle.ephemeral_key_secret),
   };
 }
@@ -328,6 +349,7 @@ export function bookingCheckoutToSheet(c: BookingCheckout | LegacyBookingCheckou
       clientSecret: c.client_secret,
       intentId,
       stripeAccount: c.stripe_account,
+      publishableKey: c.publishable_key ?? null,
       customer: customerOf(c.customer_id, c.ephemeral_key_secret),
     };
   }
@@ -336,7 +358,8 @@ export function bookingCheckoutToSheet(c: BookingCheckout | LegacyBookingCheckou
     intentType: 'payment',
     clientSecret: c.clientSecret,
     intentId,
-    stripeAccount: c.stripeAccount ?? null,
+    stripeAccount: c.stripe_account !== undefined ? c.stripe_account : (c.stripeAccount ?? null),
+    publishableKey: c.publishable_key ?? null,
   };
 }
 
@@ -349,5 +372,6 @@ export function snakeCheckoutToSheet(c: ShareCheckout | MoveCheckout): SheetInte
     clientSecret: c.client_secret,
     intentId: c.payment_intent_id,
     stripeAccount: c.stripe_account,
+    publishableKey: c.publishable_key,
   };
 }

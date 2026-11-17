@@ -1,20 +1,21 @@
 /**
- * Native federated sign-in (Google + Apple) for Supabase GoTrue.
+ * Native federated sign-in (Google + Apple), exchanged through Clutch's
+ * POST /auth/id-token (and POST /me/identities to link).
  *
- * Nonce contract (GoTrue's signInWithIdToken): the app mints a random RAW
- * nonce, hands the platform SDK `sha256(raw)` as hex (so the ID token's
- * `nonce` claim carries the hash), and gives GoTrue the ID token plus the RAW
- * nonce. GoTrue hashes the raw nonce and compares it with the claim, so a
- * token minted for another sign-in cannot be replayed here.
+ * Nonce contract (the identity provider's id_token grant, behind Clutch): the
+ * app mints a random RAW nonce, hands the platform SDK `sha256(raw)` as hex
+ * (so the ID token's `nonce` claim carries the hash), and sends Clutch the ID
+ * token plus the RAW nonce. The provider hashes the raw nonce and compares it
+ * with the claim, so a token minted for another sign-in cannot be replayed.
  *
  * Degradation: each adapter reports `isConfigured()` from the env client IDs
  * (Apple is also available natively on iOS). When not configured the sign-in
  * buttons render disabled and `authenticate()` is never called, so no SDK is
  * initialized. The provider SDKs are imported lazily inside `authenticate()`.
  *
- * The Supabase dashboard must list these client ids as authorized for the
+ * Clutch's auth settings must list these client ids as authorized for the
  * Google provider (iOS, Android and web client ids, comma separated) and the
- * bundle id / services id for Apple, or GoTrue rejects the token audience.
+ * bundle id / services id for Apple, or the token audience is rejected.
  */
 import { Platform } from 'react-native';
 import * as Crypto from 'expo-crypto';
@@ -23,7 +24,7 @@ import {
   GOOGLE_IOS_CLIENT_ID,
 } from './env';
 
-/** Lowercase-hex SHA-256 (the form GoTrue compares the nonce claim against). */
+/** Lowercase-hex SHA-256 (the form the nonce claim is compared against). */
 export async function sha256Hex(value: string): Promise<string> {
   return Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, value, {
     encoding: Crypto.CryptoEncoding.HEX,
@@ -70,7 +71,7 @@ export interface FederatedAdapter {
  * (`com.googleusercontent.apps.<id>:/oauthredirect`), which app.config.js
  * registers from the same env values; the flow is authorization code + PKCE,
  * and the code is exchanged on the device (installed-app clients have no
- * secret). The ID token carries the nonce we sent, so GoTrue's nonce check
+ * secret). The ID token carries the nonce we sent, so the nonce check
  * stays on. On Android the client must have "custom URI scheme" enabled in
  * the Google Cloud console.
  */
@@ -174,12 +175,12 @@ export const federatedAdapters: Record<OAuthProvider, FederatedAdapter> = {
   apple: appleAdapter,
 };
 
-/** The raw ID token + raw nonce ready for supabase.auth.signInWithIdToken. */
+/** The raw ID token + raw nonce, ready for POST /auth/id-token or /me/identities. */
 export interface FederatedCredential {
   provider: OAuthProvider;
   /** OIDC ID token from the platform SDK. */
   token: string;
-  /** The RAW nonce (GoTrue hashes it and compares with the token's claim). */
+  /** The RAW nonce (hashed server-side and compared with the token's claim). */
   nonce: string;
   fullName?: { givenName?: string; familyName?: string };
 }
@@ -191,7 +192,7 @@ export function createRawNonce(): string {
 
 /**
  * Drive the platform SDK with sha256(raw nonce) and return the ID token with
- * the RAW nonce, ready for signInWithIdToken or linkIdentity.
+ * the RAW nonce, ready for POST /auth/id-token or /me/identities.
  */
 export async function getFederatedCredential(
   adapter: FederatedAdapter,
