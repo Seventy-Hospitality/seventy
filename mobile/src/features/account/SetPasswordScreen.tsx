@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useRouter } from 'expo-router';
 import { Controller } from 'react-hook-form';
-import { Text, View } from 'react-native';
+import { Text, View, type TextInput } from 'react-native';
 import { useSession } from '../../lib/session';
 import { WrongAccountError } from '../../lib/same-member';
 import { authErrorMessage, isStepUpRequired, passwordErrorMessage } from '../../lib/auth-errors';
@@ -32,6 +32,7 @@ export function SetPasswordScreen() {
   const form = useZodForm(newPasswordSchema, { defaultValues: { password: '', confirm: '' } });
   /** The password waiting for a fresh code, while the code form shows. */
   const [pending, setPending] = useState<string | null>(null);
+  const confirmRef = useRef<TextInput>(null);
 
   const finish = async (password: string) => {
     await updatePassword(password);
@@ -117,6 +118,10 @@ export function SetPasswordScreen() {
                 <PasswordInput
                   accessibilityLabel="New password"
                   autoComplete="new-password"
+                  textContentType="newPassword"
+                  returnKeyType="next"
+                  submitBehavior="submit"
+                  onSubmitEditing={() => confirmRef.current?.focus()}
                   hasError={Boolean(fieldState.error)}
                   onBlur={onBlur}
                   onChangeText={onChange}
@@ -131,8 +136,12 @@ export function SetPasswordScreen() {
             render={({ field: { onBlur, onChange, value }, fieldState }) => (
               <FormField label="Confirm password" error={fieldState.error?.message}>
                 <PasswordInput
+                  ref={confirmRef}
                   accessibilityLabel="Confirm password"
                   autoComplete="new-password"
+                  textContentType="newPassword"
+                  returnKeyType="go"
+                  onSubmitEditing={() => void onSubmit()}
                   hasError={Boolean(fieldState.error)}
                   onBlur={onBlur}
                   onChangeText={onChange}

@@ -11,6 +11,10 @@ export const authStyles = StyleSheet.create({
   body: { ...typography.body, color: colors.text },
   form: { gap: spacing.md },
   link: { color: colors.accent, ...typography.bodyStrong, textAlign: 'center' },
+  /** Pressable around a `link` Text: a 44pt-tall target. */
+  linkButton: { minHeight: 44, justifyContent: 'center', paddingHorizontal: spacing.xs },
+  /** A failure that is not about one field (network, server). */
+  formError: { ...typography.body, color: colors.danger },
   success: { color: colors.accent, ...typography.caption, textAlign: 'center' },
   dividerRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   divider: { flex: 1, height: 1, backgroundColor: colors.border },

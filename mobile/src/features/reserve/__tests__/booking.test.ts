@@ -5,6 +5,7 @@ import {
   clubNow,
   formatMoney,
   formatPrice,
+  formatStripDay,
   formatTimeRangeCompact,
   hasStarted,
   pruneSelection,
@@ -95,5 +96,16 @@ describe('midnight end times', () => {
 
   it('formats a range ending at midnight', () => {
     expect(formatTimeRangeCompact('23:00', '00:00')).toBe('11:00PM-12:00AM');
+  });
+});
+
+describe('formatStripDay', () => {
+  it('carries the month, and a full date for screen readers', () => {
+    expect(formatStripDay('2026-07-06')).toEqual({
+      weekday: 'MON',
+      day: '6',
+      month: 'JUL',
+      label: 'Monday, July 6',
+    });
   });
 });

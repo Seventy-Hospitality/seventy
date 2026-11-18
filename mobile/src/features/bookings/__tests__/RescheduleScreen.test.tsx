@@ -184,5 +184,24 @@ describe('RescheduleScreen with P4', () => {
     fireEvent.press(await screen.findByText('Pay $10.80 and move'));
     expect(await screen.findByText('Check again')).toBeTruthy();
     expect(mockPresent).toHaveBeenCalledTimes(1);
+    // Back and Close are locked while it clears; this is the way out.
+    fireEvent.press(screen.getByText('Leave and check later'));
+    expect(mockRouter.back).toHaveBeenCalled();
+  });
+
+  it('says why Continue is dimmed until the time changes', async () => {
+    renderScreen();
+    expect(await screen.findByText('This is the current time. Pick a new time.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Continue' }).props.accessibilityState).toMatchObject({ disabled: true });
+  });
+
+  it('holds Save change, dimmed, while the move is being priced', async () => {
+    mockClutch.bookings.rescheduleQuote.mockReturnValue(new Promise(() => undefined));
+    renderScreen();
+    await pickLaterHour();
+    expect(await screen.findByText('Getting the price...')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Save change' }).props.accessibilityState).toMatchObject({
+      disabled: true,
+    });
   });
 });

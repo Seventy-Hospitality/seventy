@@ -24,7 +24,8 @@ export function Chip({ label, leading, onRemove }: ChipProps) {
           accessibilityRole="button"
           accessibilityLabel={`Remove ${label}`}
           onPress={onRemove}
-          hitSlop={8}
+          // The 14pt icon reaches 44pt with the slop.
+          hitSlop={15}
           style={styles.remove}
         >
           <Ionicons name="close" size={14} color={colors.textMuted} />

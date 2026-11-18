@@ -33,6 +33,7 @@ import {
 import { queryKeys } from '../../../lib/queries';
 import type { SheetResult } from '../../../lib/stripe';
 import { ToastProvider } from '../../../components';
+import { addDaysToDateKey, todayDateKey } from '../../reserve/booking';
 import { paymentLedger } from '../../reserve/payment-ledger';
 import { acceptedKey } from '../accepted-bookings';
 import { BookingDetailScreen } from '../BookingDetailScreen';
@@ -109,7 +110,23 @@ describe('BookingDetailScreen: what everyone sees', () => {
     );
     expect(await screen.findByText('Court 1')).toBeTruthy();
     expect(screen.getByText('6:00-7:00PM')).toBeTruthy();
-    expect(screen.getByLabelText('Player 1, Accepted')).toBeTruthy();
+    expect(screen.getByLabelText('Player 1, accepted')).toBeTruthy();
+  });
+
+  it('tells nameless players apart by their place, answer and share', async () => {
+    renderDetail(
+      makeBookingDetail({
+        date: FUTURE,
+        user_id: ME,
+        players: [
+          makeBookingPlayer({ user_id: OTHER, status: 'accepted', share_cents: 1000, payment_status: 'paid' }),
+          makeBookingPlayer({ user_id: asUserId('00000000-0000-4000-8000-000000000077'), status: 'invited' }),
+        ],
+      }),
+    );
+    expect(await screen.findByLabelText('Player 1, accepted, share $10.00, paid')).toBeTruthy();
+    expect(screen.getByLabelText('Player 2, invited, has not answered yet')).toBeTruthy();
+    expect(screen.getByText('Has not answered yet')).toBeTruthy();
   });
 
   it("names the booker from the member's pending invitation", async () => {
@@ -146,6 +163,8 @@ describe('BookingDetailScreen: the booker', () => {
     mockClutch.bookings.cancel.mockResolvedValue(makeCancelledBooking({ payment_status: 'refunded' }));
 
     fireEvent.press(await screen.findByLabelText('Cancel booking'));
+    // Far ahead: outside the club's 24-hour cancellation window.
+    expect(await screen.findByText(/more than 24 hours before the start/)).toBeTruthy();
     const confirmButtons = await screen.findAllByText('Cancel booking');
     fireEvent.press(confirmButtons[confirmButtons.length - 1]);
 
@@ -156,6 +175,17 @@ describe('BookingDetailScreen: the booker', () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.bookings });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.home });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.availability(FUTURE) });
+  });
+
+  it('says a booking inside the cancellation window gets no refund', async () => {
+    // Tomorrow at 00:00 on the club's clock is always under 24 hours away
+    // and never started.
+    const tomorrow = addDaysToDateKey(todayDateKey('America/New_York'), 1);
+    renderDetail(makeBookingDetail({ date: tomorrow, start_time: '00:00:00', end_time: '01:00:00', user_id: ME }));
+    fireEvent.press(await screen.findByLabelText('Cancel booking'));
+    expect(
+      await screen.findByText(/starts in less than 24 hours, inside the club's cancellation window, so you will not get a refund/),
+    ).toBeTruthy();
   });
 
   it('lets go of a pending hold through the pending-only release (P4), never cancel', async () => {
@@ -219,7 +249,8 @@ describe('BookingDetailScreen: the booker', () => {
     renderDetail(detail);
     mockClutch.bookings.removePlayer.mockResolvedValue(makePlayerRemoval({ user_id: OTHER }));
 
-    fireEvent.press(await screen.findByLabelText('Remove Player 1'));
+    fireEvent.press(await screen.findByLabelText('Remove Player 1, accepted'));
+    expect(await screen.findByText(/Remove Player 1 \(accepted\) from the booking\?/)).toBeTruthy();
     fireEvent.press(await screen.findByText('Remove from booking'));
     await waitFor(() =>
       expect(mockClutch.bookings.removePlayer).toHaveBeenCalledWith(detail.id, OTHER, {
@@ -232,7 +263,7 @@ describe('BookingDetailScreen: the booker', () => {
     setParity(false);
     renderDetail(makeBookingDetail({ date: FUTURE, user_id: ME, players: [makeBookingPlayer({ user_id: OTHER })] }));
     expect(await screen.findByText('Removing players is not available in the app yet')).toBeTruthy();
-    expect(screen.queryByLabelText('Remove Player 1')).toBeNull();
+    expect(screen.queryByLabelText(/^Remove Player 1/)).toBeNull();
   });
 });
 

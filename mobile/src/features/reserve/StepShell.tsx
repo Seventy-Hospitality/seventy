@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { colors, fonts, spacing } from '../../theme/tokens';
 
 interface StepShellProps {
@@ -13,15 +13,17 @@ interface StepShellProps {
 /**
  * One wizard step's layout: a title + optional subtitle, a scrollable body,
  * and a pinned footer for the primary action. Keeps the steps consistent.
+ * The footer rides above the keyboard (iOS; Android resizes the window).
  */
 export function StepShell({ title, subtitle, children, footer }: StepShellProps) {
   return (
-    <View style={styles.root}>
+    <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="interactive"
       >
         <Text
           accessibilityRole="header"
@@ -33,7 +35,7 @@ export function StepShell({ title, subtitle, children, footer }: StepShellProps)
         {children}
       </ScrollView>
       {footer ? <View style={styles.footer}>{footer}</View> : null}
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 

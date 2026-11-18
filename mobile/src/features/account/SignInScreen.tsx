@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Link, Redirect } from 'expo-router';
 import { Controller } from 'react-hook-form';
-import { Text, View } from 'react-native';
+import { Text, View, type TextInput } from 'react-native';
 import { useSession } from '../../lib/session';
 import { authErrorCode, authErrorMessage } from '../../lib/auth-errors';
 import { signInSchema, emailOnlySchema, useZodForm } from '../../lib/forms';
@@ -25,6 +25,7 @@ export function SignInScreen() {
 
   const passwordForm = useZodForm(signInSchema, { defaultValues: { email: '', password: '' } });
   const emailForm = useZodForm(emailOnlySchema, { defaultValues: { email: '' } });
+  const passwordRef = useRef<TextInput>(null);
 
   if (status === 'authenticated') {
     // '/' funnels through the onboarding gate (join club, tier, then tabs).
@@ -78,8 +79,9 @@ export function SignInScreen() {
           ]}
         />
 
+        {/* Keyed: each branch has its own form, so React must not reuse one's fields for another. */}
         {mode === 'password' && unconfirmed ? (
-          <View style={styles.form}>
+          <View key="confirm" style={styles.form}>
             <EmailCodeForm
               email={unconfirmed}
               intro="Confirm your email first. Enter the code we sent to"
@@ -90,17 +92,23 @@ export function SignInScreen() {
             <PrimaryButton label="Back" variant="ghost" onPress={() => setUnconfirmed(null)} />
           </View>
         ) : mode === 'password' ? (
-          <View style={styles.form}>
+          <View key="password" style={styles.form}>
             <Controller
               control={passwordForm.control}
               name="email"
               render={({ field: { onBlur, onChange, value }, fieldState }) => (
                 <FormField label="Email" error={fieldState.error?.message}>
                   <Input
+                    accessibilityLabel="Email"
                     autoCapitalize="none"
+                    autoCorrect={false}
                     autoComplete="email"
+                    textContentType="username"
                     keyboardType="email-address"
                     placeholder="you@club70.com"
+                    returnKeyType="next"
+                    submitBehavior="submit"
+                    onSubmitEditing={() => passwordRef.current?.focus()}
                     hasError={Boolean(fieldState.error)}
                     onBlur={onBlur}
                     onChangeText={onChange}
@@ -115,8 +123,13 @@ export function SignInScreen() {
               render={({ field: { onBlur, onChange, value }, fieldState }) => (
                 <FormField label="Password" error={fieldState.error?.message}>
                   <PasswordInput
-                    autoComplete="password"
+                    ref={passwordRef}
+                    accessibilityLabel="Password"
+                    autoComplete="current-password"
+                    textContentType="password"
                     placeholder="Your password"
+                    returnKeyType="go"
+                    onSubmitEditing={() => void onPassword()}
                     hasError={Boolean(fieldState.error)}
                     onBlur={onBlur}
                     onChangeText={onChange}
@@ -135,15 +148,18 @@ export function SignInScreen() {
             </Link>
           </View>
         ) : emailSentTo ? (
-          <EmailCodeForm
-            email={emailSentTo}
-            intro="Enter the code we sent to"
-            submitLabel="Sign In"
-            onSubmitCode={(code) => verifyEmailCode(emailSentTo, code)}
-            onResend={() => sendEmailSignIn(emailSentTo)}
-          />
+          <View key="code" style={styles.form}>
+            <EmailCodeForm
+              email={emailSentTo}
+              intro="Enter the code we sent to"
+              submitLabel="Sign In"
+              onSubmitCode={(code) => verifyEmailCode(emailSentTo, code)}
+              onResend={() => sendEmailSignIn(emailSentTo)}
+            />
+            <PrimaryButton label="Use a different email" variant="ghost" onPress={() => setEmailSentTo(null)} />
+          </View>
         ) : (
-          <View style={styles.form}>
+          <View key="email" style={styles.form}>
             <Controller
               control={emailForm.control}
               name="email"
@@ -154,10 +170,15 @@ export function SignInScreen() {
                   hint="We email you a 6-digit code."
                 >
                   <Input
+                    accessibilityLabel="Email"
                     autoCapitalize="none"
+                    autoCorrect={false}
                     autoComplete="email"
+                    textContentType="emailAddress"
                     keyboardType="email-address"
                     placeholder="you@club70.com"
+                    returnKeyType="go"
+                    onSubmitEditing={() => void onEmail()}
                     hasError={Boolean(fieldState.error)}
                     onBlur={onBlur}
                     onChangeText={onChange}
@@ -174,12 +195,6 @@ export function SignInScreen() {
           </View>
         )}
       </SectionCard>
-
-      <View style={styles.dividerRow}>
-        <View style={styles.divider} />
-        <Text style={styles.dividerLabel}>or</Text>
-        <View style={styles.divider} />
-      </View>
 
       <OAuthButtons />
 

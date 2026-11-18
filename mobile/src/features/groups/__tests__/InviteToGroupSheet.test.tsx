@@ -57,6 +57,24 @@ describe('InviteToGroupSheet without member search (P4 off, today)', () => {
     expect(await screen.findByText('seventy://groups/join?token=tok-abc')).toBeTruthy();
   });
 
+  it('asks before resetting the link, since that revokes every shared one', async () => {
+    const owned = makeGroup({ name: 'Baddies', my_role: 'owner', members: [makeGroupMember()] });
+    renderWithProviders(<InviteToGroupSheet group={owned} open onClose={jest.fn()} />);
+    fireEvent.press(screen.getByRole('button', { name: 'QR Code' }));
+    fireEvent.press(await screen.findByRole('button', { name: 'Reset link' }));
+    expect(screen.getByText(/Every link you have already shared stops working/)).toBeTruthy();
+    expect(mockClutch.groups.inviteLink).not.toHaveBeenCalledWith(owned.id, { rotate: true }, expect.anything());
+
+    fireEvent.press(screen.getByRole('button', { name: 'Keep the current link' }));
+    expect(screen.queryByText(/Every link you have already shared stops working/)).toBeNull();
+
+    fireEvent.press(screen.getByRole('button', { name: 'Reset link' }));
+    fireEvent.press(screen.getByRole('button', { name: 'Reset link' }));
+    await waitFor(() =>
+      expect(mockClutch.groups.inviteLink).toHaveBeenCalledWith(owned.id, { rotate: true }, expect.anything()),
+    );
+  });
+
   it('a link refusal says what happened', async () => {
     mockClutch.groups.inviteLink.mockRejectedValue(clutchError('not_authorized', 403));
     renderWithProviders(<InviteToGroupSheet group={group} open onClose={jest.fn()} />);
@@ -74,6 +92,9 @@ describe('InviteToGroupSheet with member search (P4 on)', () => {
     mockClutch.groups.invite.mockResolvedValue({ invited: [makeClubPlayer().user_id] });
     const onClose = jest.fn();
     renderWithProviders(<InviteToGroupSheet group={group} open onClose={onClose} />);
+    expect(screen.getByRole('button', { name: 'Add players' }).props.accessibilityState).toMatchObject({
+      disabled: true,
+    });
     fireEvent.press(await screen.findByRole('checkbox', { name: 'Invite Sam Lee' }));
     fireEvent.press(screen.getByRole('button', { name: 'Add 1 player' }));
     await waitFor(() =>

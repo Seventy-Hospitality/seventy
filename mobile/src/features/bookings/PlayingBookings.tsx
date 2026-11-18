@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { BookingCard, FeatureUnavailable, PrimaryButton, Sheet, useToast } from '../../components';
 import { clutch } from '../../lib/clutch';
 import { colors, fonts, spacing } from '../../theme/tokens';
+import { formatDateLong, formatTimeRangeCompact } from '../reserve/booking';
 import { describeBookingFailure } from '../reserve/booking-failures';
 import { usePlayingBookings, type PlayingBooking } from './accepted-bookings';
 import { SharePayBox } from './PayBoxes';
@@ -12,8 +13,8 @@ import { useLeaveBooking } from './useLeaveBooking';
 /**
  * "Games you're playing": bookings this member accepted an invitation to
  * (usePlayingBookings; Clutch has no list of these yet). Each shows as a
- * booking card with Pay share and Leave, both Clutch P4 actions offered only
- * with bookingParity on. Renders nothing while there are none, so a home or
+ * booking card with Pay share and a small Leave link, both Clutch P4 actions
+ * offered only with bookingParity on. Renders nothing while there are none, so a home or
  * bookings list can drop it in unconditionally.
  */
 export function PlayingBookingsSection({ title = "Games you're playing" }: { title?: string }) {
@@ -37,13 +38,22 @@ export function PlayingBookingRow({ entry }: { entry: PlayingBooking }) {
   const parity = clutch.capabilities.bookingParity;
   const { booking, myDue } = entry;
   const owes = !!myDue && myDue.due_cents > 0 && booking.status === 'confirmed';
+  const when = `${formatDateLong(booking.date)}, ${formatTimeRangeCompact(booking.start_time, booking.end_time)}`;
 
   return (
     <View style={styles.row}>
       <BookingCard booking={entry.card} onPress={() => router.push(`/bookings/${booking.id}`)} />
       {owes && myDue ? <SharePayBox booking={booking} due={myDue} /> : null}
       {parity ? (
-        <PrimaryButton label="Leave" variant="ghost" onPress={() => setLeaveOpen(true)} />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Leave the booking on ${when}`}
+          onPress={() => setLeaveOpen(true)}
+          hitSlop={4}
+          style={({ pressed }) => [styles.leaveLink, pressed ? styles.pressed : null]}
+        >
+          <Text style={styles.leaveLabel}>Leave</Text>
+        </Pressable>
       ) : (
         <FeatureUnavailable
           capability="bookingParity"
@@ -61,7 +71,9 @@ export function PlayingBookingRow({ entry }: { entry: PlayingBooking }) {
       >
         <View style={styles.dialog}>
           <Text style={styles.dialogText}>
-            Leave this booking? You give up your spot and would need a new invitation to rejoin.
+            Leave the booking on {when}
+            {booking.court?.name ? ` at ${booking.court.name}` : ''}? You give up your spot and would need a
+            new invitation to rejoin.
           </Text>
           <PrimaryButton
             label="Leave booking"
@@ -98,6 +110,9 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   row: { gap: spacing.xs },
+  leaveLink: { alignSelf: 'flex-end', minHeight: 44, justifyContent: 'center', paddingHorizontal: spacing.sm },
+  leaveLabel: { color: colors.textLink, fontFamily: fonts.bodySemibold, fontSize: 14 },
+  pressed: { opacity: 0.7 },
   dialog: { gap: spacing.md, paddingBottom: spacing.sm },
   dialogText: { color: colors.text, fontFamily: fonts.body, fontSize: 15, lineHeight: 21 },
 });

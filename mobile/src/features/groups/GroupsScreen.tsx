@@ -160,6 +160,8 @@ function JoinByLinkSheet({ open, onClose }: { open: boolean; onClose: () => void
             }}
             autoCapitalize="none"
             autoCorrect={false}
+            keyboardType="url"
+            textContentType="URL"
             hasError={error !== null}
             returnKeyType="go"
             onSubmitEditing={submit}

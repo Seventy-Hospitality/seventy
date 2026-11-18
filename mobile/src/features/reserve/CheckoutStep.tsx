@@ -38,8 +38,12 @@ export interface CheckoutStepProps {
   holdSession: HoldSession;
   /** Clutch confirmed the booking; `charge` is what checkout showed for it. */
   onConfirmed: (booking: BookingFacts, charge: Charge | null) => void;
-  /** The time cannot be had (taken, hold ended, released): back to times. */
-  onPickAnotherTime: (message: string | null) => void;
+  /**
+   * The time cannot be had (taken, hold ended, released): back to times.
+   * `keepTimes` keeps the chosen times selected (a hold that ran out: the
+   * times may still be free, and the time step drops any that are not).
+   */
+  onPickAnotherTime: (message: string | null, options?: { keepTimes?: boolean }) => void;
   /** A payment is clearing and the member leaves: open the booking to check it there. */
   onLeaveToBooking: (bookingId: BookingId) => void;
 }
@@ -175,7 +179,7 @@ export function CheckoutStep({
           title="Your hold ended"
           message="The court is no longer held for you. If a payment went through, the club returns it to your card."
         >
-          <PrimaryButton label="Choose a new time" onPress={() => onPickAnotherTime(null)} />
+          <PrimaryButton label="Choose a new time" onPress={() => onPickAnotherTime(null, { keepTimes: true })} />
         </Notice>
       </StepShell>
     );
@@ -368,6 +372,8 @@ const styles = StyleSheet.create({
   },
   release: {
     alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
     paddingVertical: spacing.sm,
   },
   releaseLabel: {

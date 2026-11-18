@@ -145,6 +145,32 @@ export function timesFor(
     }));
 }
 
+/**
+ * Start times where every court of the sport is booked (none free, at least
+ * one booked by someone else), in time order: shown as taken so the member
+ * sees why a range has a gap. Past and maintenance-only starts stay hidden.
+ */
+export function takenTimesFor(
+  grid: AvailabilityGrid,
+  sport: string,
+  opts: PickOptions = {},
+): { start: string; end: string }[] {
+  const byStart = new Map<string, { end: string; free: boolean; booked: boolean }>();
+  for (const court of courtsOf(grid, sport)) {
+    for (const slot of court.slots) {
+      const start = toHHMM(slot.start_time);
+      const entry = byStart.get(start) ?? { end: toHHMM(slot.end_time), free: false, booked: false };
+      if (isFreeSlot(court, slot, opts)) entry.free = true;
+      else if (slot.status === 'booked') entry.booked = true;
+      byStart.set(start, entry);
+    }
+  }
+  return [...byStart.entries()]
+    .filter(([, entry]) => entry.booked && !entry.free)
+    .sort(([a], [b]) => timeToMinutes(a) - timeToMinutes(b))
+    .map(([start, { end }]) => ({ start, end }));
+}
+
 /** True when `court` is free for every slot of [start, end), with no gap. */
 function freeForRange(
   court: CourtAvailability,

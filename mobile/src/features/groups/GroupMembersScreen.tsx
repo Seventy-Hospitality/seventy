@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -24,6 +24,7 @@ import {
   transferErrorMessage,
 } from './groups-lib';
 import { InviteToGroupSheet } from './InviteToGroupSheet';
+import { useSheetHandoff } from './useSheetHandoff';
 
 /**
  * The group roster (Figma members 105:6876): a row per member with the Owner
@@ -71,7 +72,17 @@ export function GroupMembersScreen({ groupId }: { groupId: GroupId }) {
   return <MembersView group={detail.data} />;
 }
 
-function MembersFrame({ children, action }: { children: React.ReactNode; action?: React.ReactNode }) {
+function MembersFrame({
+  children,
+  action,
+  refreshing = false,
+  onRefresh,
+}: {
+  children: React.ReactNode;
+  action?: React.ReactNode;
+  refreshing?: boolean;
+  onRefresh?: () => void;
+}) {
   const router = useRouter();
   const goBack = () => {
     if (router.canGoBack()) router.back();
@@ -79,7 +90,20 @@ function MembersFrame({ children, action }: { children: React.ReactNode; action?
   };
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right', 'bottom']}>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          onRefresh ? (
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor={colors.accent}
+              colors={[colors.accent]}
+            />
+          ) : undefined
+        }
+      >
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Back to group"
@@ -112,6 +136,9 @@ function MembersView({ group }: { group: Group }) {
   const [memberMenu, setMemberMenu] = useState<GroupMember | null>(null);
   const [confirm, setConfirm] = useState<{ action: 'transfer' | 'remove'; entry: GroupMember } | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
+  // The same read the screen gated on, for pull-to-refresh.
+  const detail = useQuery(groupQuery(group.id));
+  const handoff = useSheetHandoff();
 
   const canManage = group.permissions.can_manage_members;
   const canInvite = group.permissions.can_invite;
@@ -167,6 +194,8 @@ function MembersView({ group }: { group: Group }) {
 
   return (
     <MembersFrame
+      refreshing={detail.isRefetching}
+      onRefresh={() => void detail.refetch()}
       action={
         canInvite ? (
           <Pressable
@@ -235,8 +264,10 @@ function MembersView({ group }: { group: Group }) {
                 variant="secondary"
                 onPress={() => {
                   const entry = memberMenu;
-                  setMemberMenu(null);
-                  setConfirm({ action: 'transfer', entry });
+                  handoff(
+                    () => setMemberMenu(null),
+                    () => setConfirm({ action: 'transfer', entry }),
+                  );
                 }}
               />
               <PrimaryButton
@@ -244,8 +275,10 @@ function MembersView({ group }: { group: Group }) {
                 variant="danger"
                 onPress={() => {
                   const entry = memberMenu;
-                  setMemberMenu(null);
-                  setConfirm({ action: 'remove', entry });
+                  handoff(
+                    () => setMemberMenu(null),
+                    () => setConfirm({ action: 'remove', entry }),
+                  );
                 }}
               />
             </View>
@@ -340,7 +373,9 @@ const styles = StyleSheet.create({
   backLink: {
     flexDirection: 'row',
     alignItems: 'center',
+    alignSelf: 'flex-start',
     gap: 2,
+    minHeight: 44,
     marginLeft: -4,
   },
   backLinkText: {
@@ -359,8 +394,8 @@ const styles = StyleSheet.create({
     fontSize: 28,
   },
   addButton: {
-    width: 40,
-    height: 40,
+    width: 44,
+    height: 44,
     borderRadius: radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
@@ -428,8 +463,8 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   menuButton: {
-    width: 32,
-    height: 32,
+    width: 44,
+    height: 44,
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: radius.pill,

@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -37,6 +37,8 @@ import { releaseHoldIfPending } from '../reserve/hold-release';
 import { paymentLedger, usePaymentLedger } from '../reserve/payment-ledger';
 import { rememberAcceptedBooking } from './accepted-bookings';
 import {
+  minutesUntilStart,
+  playerFacts,
   playerDisplayName,
   rosterOf,
   viewerOf,
@@ -60,8 +62,9 @@ import { useRespondToBooking } from './useRespondToBooking';
  *
  * Every P4 action is offered only with clutch.capabilities.bookingParity on;
  * otherwise its place says it is not available in the app yet. Players carry
- * no names in the contract: each row reads "Player" (the booker's name shows
- * from the pending invitation, when there is one).
+ * no names in the contract: each row reads "Player 1", "Player 2"... with
+ * their answer and share beside it (the booker's name shows from the pending
+ * invitation, when there is one).
  */
 export function BookingDetailScreen({ bookingId }: { bookingId: BookingId }) {
   const detail = useQuery(bookingQuery(bookingId));
@@ -86,7 +89,7 @@ export function BookingDetailScreen({ bookingId }: { bookingId: BookingId }) {
       <DetailFrame>
         <EmptyStateView
           title="Booking not found"
-          description="This booking does not exist, was removed (a hold that ran out is), or you are not part of it."
+          description="This booking may have been cancelled, or a court hold ran out before it was paid. It is also hidden if you are not part of it."
         />
       </DetailFrame>
     );
@@ -115,11 +118,21 @@ export function BookingDetailScreen({ bookingId }: { bookingId: BookingId }) {
       booking={detail.data}
       timezone={usableTimezone(club.data.timezone)}
       cancellationHours={bookingRulesOf(club.data).cancellation_hours}
+      refreshing={detail.isRefetching}
+      onRefresh={() => void detail.refetch()}
     />
   );
 }
 
-function DetailFrame({ children }: { children: ReactNode }) {
+function DetailFrame({
+  children,
+  refreshing = false,
+  onRefresh,
+}: {
+  children: ReactNode;
+  refreshing?: boolean;
+  onRefresh?: () => void;
+}) {
   const router = useRouter();
   const goBack = () => {
     if (router.canGoBack()) router.back();
@@ -127,7 +140,20 @@ function DetailFrame({ children }: { children: ReactNode }) {
   };
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right', 'bottom']}>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          onRefresh ? (
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor={colors.accent}
+              colors={[colors.accent]}
+            />
+          ) : undefined
+        }
+      >
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Back"
@@ -151,10 +177,14 @@ function BookingDetailView({
   booking,
   timezone,
   cancellationHours,
+  refreshing,
+  onRefresh,
 }: {
   booking: BookingDetail;
   timezone: string;
   cancellationHours: number | null;
+  refreshing: boolean;
+  onRefresh: () => void;
 }) {
   const { userId } = useSession();
   const router = useRouter();
@@ -290,12 +320,29 @@ function BookingDetailView({
   }
 
   const roster = rosterOf(booking);
+  // Players have no names: number them by their place on the roster.
+  const rosterName = (player: BookingPlayer) =>
+    player.user_id === userId ? 'You' : `${playerDisplayName(player)} ${roster.findIndex((entry) => entry.user_id === player.user_id) + 1}`;
+  // "invited, has not answered yet": the status and facts in a sentence.
+  const describePlayer = (player: BookingPlayer) =>
+    [playerStatusLabel(player.status), ...playerFacts(player, booking.currency)].join(', ').toLowerCase();
   const sport = booking.court?.court_type ?? 'court';
+  // Inside the cancellation window a paid booking is past its refund.
+  const insideCancellationWindow =
+    booking.status === 'confirmed' &&
+    !!cancellationHours &&
+    minutesUntilStart(booking, timezone) < cancellationHours * 60;
   const myDue = viewer.myDue;
   const bookerPays = viewer.isBooker && !!myDue && (viewer.payMode !== null || paymentInFlight);
 
   return (
-    <DetailFrame>
+    <DetailFrame
+      refreshing={refreshing}
+      onRefresh={() => {
+        onRefresh();
+        if (invitations.isEnabled) void invitations.refetch();
+      }}
+    >
       <StatusBanners booking={booking} viewer={viewer} paymentInFlight={paymentInFlight} />
 
       <BookingSummaryCard
@@ -341,6 +388,7 @@ function BookingDetailView({
             accessibilityLabel="Invite more players"
             hitSlop={8}
             onPress={() => router.push(`/bookings/${booking.id}/invite`)}
+            style={styles.linkTarget}
           >
             <Text style={styles.sectionLink}>Invite more</Text>
           </Pressable>
@@ -353,19 +401,24 @@ function BookingDetailView({
         </Text>
       ) : (
         <View style={styles.roster} accessibilityLabel="Players">
-          {roster.map((player, index) => {
-            const isSelf = player.user_id === userId;
-            const name = isSelf ? 'You' : `${playerDisplayName(player)} ${index + 1}`;
+          {roster.map((player) => {
+            const name = rosterName(player);
+            const facts = playerFacts(player, booking.currency).join(', ');
             return (
-              <View
-                key={player.user_id}
-                style={styles.playerRow}
-                accessibilityLabel={`${name}, ${playerStatusLabel(player.status)}`}
-              >
-                <Avatar name={name} size="md" />
-                <Text style={styles.playerName} numberOfLines={1}>
-                  {name}
-                </Text>
+              <View key={player.user_id} style={styles.playerRow}>
+                <View
+                  style={styles.playerIdentity}
+                  accessible
+                  accessibilityLabel={`${name}, ${describePlayer(player)}`}
+                >
+                  <Avatar name={name} size="md" />
+                  <View style={styles.playerText}>
+                    <Text style={styles.playerName} numberOfLines={1}>
+                      {name}
+                    </Text>
+                    {facts ? <Text style={styles.playerDetail}>{facts}</Text> : null}
+                  </View>
+                </View>
                 <Badge
                   label={playerStatusLabel(player.status)}
                   variant={playerStatusVariant(player.status)}
@@ -373,8 +426,8 @@ function BookingDetailView({
                 {viewer.canRemovePlayers && parity ? (
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityLabel={`Remove ${name}`}
-                    hitSlop={8}
+                    accessibilityLabel={`Remove ${name}, ${describePlayer(player)}`}
+                    hitSlop={4}
                     onPress={() => setRemoveTarget(player)}
                     style={({ pressed }) => [styles.menuButton, pressed ? styles.pressed : null]}
                   >
@@ -474,9 +527,13 @@ function BookingDetailView({
             {formatTimeRangeCompact(booking.start_time, booking.end_time)}?
           </Text>
           <Text style={styles.dialogHint}>
-            {cancellationHours
-              ? `The club's cancellation policy applies (${cancellationHours} hours before the start). The club decides any refund and returns it to your card.`
-              : "The club's cancellation policy applies. The club decides any refund and returns it to your card."}
+            {booking.status === 'pending'
+              ? 'This court is only held and not paid yet, so there is nothing to refund.'
+              : insideCancellationWindow
+                ? `This booking starts in less than ${cancellationHours} hours, inside the club's cancellation window, so you will not get a refund.`
+                : cancellationHours
+                  ? `You are cancelling more than ${cancellationHours} hours before the start, so the club's refund policy applies. Any refund goes back to your card.`
+                  : "The club's cancellation policy applies. The club decides any refund and returns it to your card."}
           </Text>
           <View style={styles.dialogActions}>
             <PrimaryButton
@@ -533,7 +590,8 @@ function BookingDetailView({
         {removeTarget ? (
           <View style={styles.dialogBody}>
             <Text style={styles.dialogText}>
-              Remove this player from the booking? You can invite them again later.
+              Remove {rosterName(removeTarget)} ({describePlayer(removeTarget)}) from the booking? You can invite
+              them again later.
             </Text>
             <View style={styles.dialogActions}>
               <PrimaryButton
@@ -614,7 +672,9 @@ const styles = StyleSheet.create({
   backLink: {
     flexDirection: 'row',
     alignItems: 'center',
+    alignSelf: 'flex-start',
     gap: 2,
+    minHeight: 44,
     marginLeft: -4,
   },
   backLinkText: {
@@ -719,6 +779,10 @@ const styles = StyleSheet.create({
     fontFamily: fonts.bodySemibold,
     fontSize: 14,
   },
+  linkTarget: {
+    minHeight: 44,
+    justifyContent: 'center',
+  },
   roster: {
     gap: spacing.sm,
     padding: spacing.md,
@@ -733,11 +797,25 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     paddingVertical: spacing.xs,
   },
-  playerName: {
+  playerIdentity: {
     flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  playerText: {
+    flex: 1,
+    gap: 2,
+  },
+  playerName: {
     color: colors.text,
     fontFamily: fonts.bodyMedium,
     fontSize: 15,
+  },
+  playerDetail: {
+    color: colors.textMuted,
+    fontFamily: fonts.body,
+    fontSize: 13,
   },
   playerYou: {
     color: colors.textMuted,
@@ -745,8 +823,8 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   menuButton: {
-    width: 32,
-    height: 32,
+    width: 44,
+    height: 44,
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: radius.pill,
@@ -760,6 +838,8 @@ const styles = StyleSheet.create({
   },
   textAction: {
     alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
     paddingVertical: spacing.sm,
   },
   textActionLabel: {

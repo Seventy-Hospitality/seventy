@@ -5,6 +5,7 @@ import { clutchError, TEST_CLUB_ID } from '../../../lib/clutch/testing';
 import { makeAuthIdentity, makeAuthSession, makeDeletionPreview } from '../../../lib/clutch/fixtures';
 import { DeleteAccountScreen } from '../DeleteAccountScreen';
 import { stepUpMethods } from '../step-up';
+import { colors } from '../../../theme/tokens';
 import { renderWithProviders } from './render-account';
 
 jest.mock('../../../lib/clutch', () => {
@@ -15,8 +16,10 @@ jest.mock('../../../lib/clutch', () => {
 const mockClutch = (jest.requireMock('../../../lib/clutch') as { clutch: MockClutch }).clutch;
 
 const mockReplace = jest.fn();
+const mockBack = jest.fn();
+let mockCanGoBack = true;
 jest.mock('expo-router', () => ({
-  useRouter: () => ({ push: jest.fn(), replace: mockReplace, back: jest.fn(), canGoBack: () => true }),
+  useRouter: () => ({ push: jest.fn(), replace: mockReplace, back: mockBack, canGoBack: () => mockCanGoBack }),
 }));
 
 const mockSignOut = jest.fn(async () => undefined);
@@ -41,6 +44,7 @@ function stepUp(satisfied: boolean, over: Partial<typeof STALE> = {}) {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockCanGoBack = true;
   mockAuth.identities.mockResolvedValue([makeAuthIdentity()]);
   mockAuth.token.mockResolvedValue(session('user-1'));
   mockAuth.sendCode.mockResolvedValue({ ok: true, message: 'sent' });
@@ -72,6 +76,7 @@ describe('DeleteAccountScreen', () => {
       mockClutch.me.deleteAccount.mock.invocationCallOrder[0],
     );
     expect(mockReplace).toHaveBeenCalledWith('/auth/sign-in');
+    expect(await screen.findByText('Your account has been deleted.')).toBeTruthy();
   });
 
   it('steps up with an emailed code that never creates an account', async () => {
@@ -86,6 +91,42 @@ describe('DeleteAccountScreen', () => {
 
     await waitFor(() => expect(mockClutch.me.deleteAccount).toHaveBeenCalled());
     expect(mockAuth.verifyCode).toHaveBeenCalledWith('alex@example.com', '123456');
+  });
+
+  it('takes a pasted code with spaces, keeping only its six digits', async () => {
+    renderWithProviders(<DeleteAccountScreen />);
+    fireEvent.press(await screen.findByLabelText('I understand this permanently deletes my account'));
+    fireEvent.press(screen.getByLabelText('Email me a code'));
+    fireEvent.changeText(await screen.findByLabelText('Code'), ' 123 456 ');
+    expect(screen.getByLabelText('Code').props.value).toBe('123456');
+    fireEvent.press(screen.getByLabelText('Delete with code'));
+
+    await waitFor(() => expect(mockAuth.verifyCode).toHaveBeenCalledWith('alex@example.com', '123456'));
+  });
+
+  it('shows a failure beside the control that was used', async () => {
+    mockAuth.token.mockRejectedValue(clutchError('invalid_credentials', 401));
+    renderWithProviders(<DeleteAccountScreen />);
+    await confirmWithPassword();
+
+    expect(await screen.findByText('Incorrect password.')).toBeTruthy();
+    // Inside the password box: the field is marked, not a banner over every method.
+    expect(screen.getByLabelText('Password').props.style).toEqual(
+      expect.arrayContaining([{ borderColor: colors.danger }]),
+    );
+  });
+
+  it('Keep my account goes back, or to preferences with no history', async () => {
+    const view = renderWithProviders(<DeleteAccountScreen />);
+    fireEvent.press(await screen.findByLabelText('Keep my account'));
+    expect(mockBack).toHaveBeenCalled();
+    expect(mockReplace).not.toHaveBeenCalled();
+
+    view.unmount();
+    mockCanGoBack = false;
+    renderWithProviders(<DeleteAccountScreen />);
+    fireEvent.press(await screen.findByLabelText('Keep my account'));
+    expect(mockReplace).toHaveBeenCalledWith('/account/preferences');
   });
 
   it('shows blockers up front, before asking anyone to sign in again', async () => {

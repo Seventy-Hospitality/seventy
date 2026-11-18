@@ -37,6 +37,14 @@ export function profileDisplayName(profile: Pick<Profile, 'full_name' | 'usernam
 }
 
 /** Clutch's username rule (updateProfile): 3 to 20 of a-z, 0-9, underscore. */
+/**
+ * A typed or pasted 6-digit code, kept to its digits: pasted codes often come
+ * as "123 456" or with a trailing space, which a plain maxLength would cut.
+ */
+export function codeDigits(text: string): string {
+  return text.replace(/\D/g, '').slice(0, 6);
+}
+
 export const USERNAME_PATTERN = /^[a-z0-9_]{3,20}$/;
 
 export function normalizeUsername(value: string): string {

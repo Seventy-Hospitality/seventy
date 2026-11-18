@@ -68,6 +68,9 @@ export function AppScreen({
             style={styles.scroll}
             contentContainerStyle={styles.scrollContent}
             showsVerticalScrollIndicator={false}
+            automaticallyAdjustKeyboardInsets
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="interactive"
             refreshControl={
               onRefresh ? (
                 <RefreshControl

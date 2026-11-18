@@ -21,7 +21,7 @@ import {
   Skeleton,
   useToast,
 } from '../../components';
-import { PlayingBookingsSection, useRespondToBooking } from '../bookings';
+import { PlayingBookingsSection, usePlayingBookings, useRespondToBooking } from '../bookings';
 import { GroupInvitationCard, useGroupInvitationResponder } from '../groups';
 import { dateKeyToDate, sportsFrom } from '../reserve';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
@@ -60,6 +60,8 @@ export function HomeScreen() {
   const home = useQuery(homeQuery);
   const bookingInvites = useQuery(bookingInvitationsQuery);
   const groupInvites = useQuery(groupInvitationsQuery);
+  // The same read PlayingBookingsSection renders, so pull-to-refresh covers it.
+  const playing = usePlayingBookings();
   // Only the member card's tier line; never a reason to block or decide anything.
   const membership = useQuery(membershipQuery);
   const club = useClub();
@@ -77,7 +79,8 @@ export function HomeScreen() {
     void home.refetch();
     void bookingInvites.refetch();
     void groupInvites.refetch();
-  }, [home, bookingInvites, groupInvites]);
+    void playing.refetch();
+  }, [home, bookingInvites, groupInvites, playing]);
 
   const openInvitation = useCallback(
     (invitation: BookingInvitation) => router.push(`/bookings/${invitation.booking_id}`),
@@ -154,7 +157,9 @@ export function HomeScreen() {
   return (
     <AppScreen
       onRefresh={refreshAll}
-      refreshing={home.isRefetching || bookingInvites.isRefetching || groupInvites.isRefetching}
+      refreshing={
+        home.isRefetching || bookingInvites.isRefetching || groupInvites.isRefetching || playing.isRefetching
+      }
     >
       <GreetingHeader
         eyebrow={greetingEyebrow(timeOfDay(new Date()), layout.isEmpty)}

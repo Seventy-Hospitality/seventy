@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Animated, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, fonts, radius, shadows, spacing } from '../theme/tokens';
-import { ToastContext, type ToastOptions, type ToastVariant } from './toast-context';
-
-interface ActiveToast extends Required<Omit<ToastOptions, 'duration'>> {
-  id: number;
-}
+import {
+  ToastContext,
+  ToastHostContext,
+  type ActiveToast,
+  type ToastOptions,
+  type ToastVariant,
+} from './toast-context';
 
 const ICONS: Record<ToastVariant, keyof typeof Ionicons.glyphMap> = {
   success: 'checkmark-circle',
@@ -23,8 +25,9 @@ const ACCENTS: Record<ToastVariant, string> = {
 
 /** Mounts once at the app root; exposes useToast() to the whole tree. */
 export function ToastProvider({ children }: { children: ReactNode }) {
-  const insets = useSafeAreaInsets();
   const [current, setCurrent] = useState<ActiveToast | null>(null);
+  /** Hosts mounted inside open modals (sheets); the root host waits while any are. */
+  const [overlays, setOverlays] = useState(0);
   const translateY = useRef(new Animated.Value(-120)).current;
   const opacity = useRef(new Animated.Value(0)).current;
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -59,29 +62,56 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     if (timer.current) clearTimeout(timer.current);
   }, []);
 
+  const registerOverlay = useCallback(() => {
+    setOverlays((n) => n + 1);
+    return () => setOverlays((n) => n - 1);
+  }, []);
+
   const value = useMemo(() => ({ toast }), [toast]);
+  const host = useMemo(
+    () => ({ current, translateY, opacity, registerOverlay }),
+    [current, translateY, opacity, registerOverlay],
+  );
 
   return (
     <ToastContext.Provider value={value}>
-      {children}
-      {current ? (
-        <Animated.View
-          pointerEvents="none"
-          accessibilityLiveRegion="polite"
-          style={[
-            styles.container,
-            { top: insets.top + spacing.sm, opacity, transform: [{ translateY }] },
-          ]}
-        >
-          <View style={styles.toast}>
-            <Ionicons name={ICONS[current.variant]} size={20} color={ACCENTS[current.variant]} />
-            <Text style={styles.message} numberOfLines={3}>
-              {current.message}
-            </Text>
-          </View>
-        </Animated.View>
-      ) : null}
+      <ToastHostContext.Provider value={host}>
+        {children}
+        {overlays === 0 ? <ToastView /> : null}
+      </ToastHostContext.Provider>
     </ToastContext.Provider>
+  );
+}
+
+/**
+ * Draws the current toast inside a RN <Modal>, which otherwise covers the
+ * root one. Sheet mounts it while open, so callers need nothing extra.
+ */
+export function ToastHost() {
+  const host = useContext(ToastHostContext);
+  const register = host?.registerOverlay;
+  useEffect(() => register?.(), [register]);
+  return host ? <ToastView /> : null;
+}
+
+function ToastView() {
+  const host = useContext(ToastHostContext);
+  const insets = useSafeAreaInsets();
+  if (!host?.current) return null;
+  const { current, opacity, translateY } = host;
+  return (
+    <Animated.View
+      pointerEvents="none"
+      accessibilityLiveRegion="polite"
+      style={[styles.container, { top: insets.top + spacing.sm, opacity, transform: [{ translateY }] }]}
+    >
+      <View style={styles.toast}>
+        <Ionicons name={ICONS[current.variant]} size={20} color={ACCENTS[current.variant]} />
+        <Text style={styles.message} numberOfLines={3}>
+          {current.message}
+        </Text>
+      </View>
+    </Animated.View>
   );
 }
 

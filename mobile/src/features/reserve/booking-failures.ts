@@ -442,7 +442,7 @@ export function describeBookingFailure(error: unknown, context: FailureContext =
       return {
         action: 'refresh',
         title: 'Booking not found',
-        message: 'This booking no longer exists (a hold that ran out is removed), or you are not part of it.',
+        message: 'This booking may have been cancelled, or a court hold ran out before it was paid. It is also hidden if you are not part of it.',
       };
     case 'booking_not_confirmed':
       return {

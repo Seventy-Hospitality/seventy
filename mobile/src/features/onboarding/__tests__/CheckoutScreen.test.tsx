@@ -55,6 +55,20 @@ beforeEach(() => {
 });
 
 describe('CheckoutScreen', () => {
+  it('keeps the Terms and Privacy links outside the checkbox, reachable on their own', async () => {
+    renderWithProviders(<CheckoutScreen />);
+    const checkbox = await screen.findByLabelText('I agree to the Terms of Service and Privacy Policy');
+    const terms = screen.getByRole('link', { name: 'Terms of Service' });
+    expect(screen.getByRole('link', { name: 'Privacy Policy' })).toBeTruthy();
+
+    // Not nested in the checkbox's touchable.
+    let node = terms.parent;
+    while (node) {
+      expect(node).not.toBe(checkbox);
+      node = node.parent;
+    }
+  });
+
   it('pays through the connected sheet, then lets Clutch confirm decide', async () => {
     mockClutch.membership.subscribe.mockResolvedValue(makeSubscribeResult());
     mockPresent.mockResolvedValue({ status: 'completed', intentId: 'pi_sub' });

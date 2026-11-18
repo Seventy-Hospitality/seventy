@@ -26,7 +26,8 @@ interface InviteToGroupSheetProps {
 /**
  * The invite-to-group modal (Figma invite modal 195:17988): Copy Link / QR
  * Code / Share over the group's invite link, plus the member picker and an
- * "Add" that sends the invitations. The link is the app's own deep link (see
+ * "Add" that sends the invitations. Everything between the header and the
+ * "Add" footer scrolls, so "Add" stays in reach with the keyboard up. The link is the app's own deep link (see
  * groupJoinUrl): Clutch has no web page for group links yet, so the QR only
  * works for someone who already has the app.
  *
@@ -43,6 +44,8 @@ export function InviteToGroupSheet({ group, open, onClose }: InviteToGroupSheetP
   const link = useGroupInviteLink(group.id);
   const [selection, setSelection] = useState<InviteeSelection>(EMPTY_SELECTION);
   const [qrOpen, setQrOpen] = useState(false);
+  // "Reset link" asks first: it revokes every link already shared.
+  const [confirmReset, setConfirmReset] = useState(false);
   // Rotating revokes every shared link: Clutch lets only the owner do it.
   const canRotate = group.my_role === 'owner';
   const canSearchMembers = clutch.capabilities.bookingParity;
@@ -52,6 +55,7 @@ export function InviteToGroupSheet({ group, open, onClose }: InviteToGroupSheetP
     if (open) {
       setSelection(EMPTY_SELECTION);
       setQrOpen(false);
+      setConfirmReset(false);
     }
   }, [open]);
 
@@ -87,10 +91,12 @@ export function InviteToGroupSheet({ group, open, onClose }: InviteToGroupSheetP
   const rotate = useMutation({
     mutationFn: () => link.rotate(),
     onSuccess: () => {
+      setConfirmReset(false);
       setQrOpen(true);
       toast({ variant: 'success', message: 'New invite link created. Older links no longer work.' });
     },
     onError: (error) => {
+      setConfirmReset(false);
       toast({ variant: 'error', message: inviteLinkErrorMessage(error, true) });
     },
   });
@@ -119,6 +125,8 @@ export function InviteToGroupSheet({ group, open, onClose }: InviteToGroupSheetP
   };
 
   const selectedCount = selection.length;
+  const addLabel =
+    selectedCount > 0 ? `Add ${selectedCount === 1 ? '1 player' : `${selectedCount} players`}` : 'Add players';
 
   const requestClose = () => {
     if (!invite.isPending) onClose();
@@ -126,7 +134,7 @@ export function InviteToGroupSheet({ group, open, onClose }: InviteToGroupSheetP
 
   return (
     <Sheet open={open} onClose={requestClose}>
-      {/* ── Header: Close / title / Add ── */}
+      {/* ── Header: Close / title ── */}
       <View style={styles.header}>
         <Pressable
           accessibilityRole="button"
@@ -134,101 +142,112 @@ export function InviteToGroupSheet({ group, open, onClose }: InviteToGroupSheetP
           onPress={requestClose}
           disabled={invite.isPending}
           hitSlop={8}
+          style={styles.headerButton}
         >
           <Text style={styles.headerSide}>Close</Text>
         </Pressable>
         <Text style={styles.headerTitle}>Invite to Group</Text>
-        {canSearchMembers ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={
-            selectedCount > 0
-              ? `Add ${selectedCount === 1 ? '1 player' : `${selectedCount} players`}`
-              : 'Add players'
-          }
-          accessibilityState={{ disabled: selectedCount === 0 || invite.isPending }}
-          onPress={() => invite.mutate(inviteeIds(selection))}
-          disabled={selectedCount === 0 || invite.isPending}
-          hitSlop={8}
-        >
-          <Text style={[styles.headerAdd, selectedCount === 0 ? styles.headerAddDisabled : null]}>
-            {invite.isPending ? 'Adding…' : 'Add'}
-          </Text>
-        </Pressable>
-        ) : (
-          <View style={styles.headerSpacer} />
-        )}
+        <View style={styles.headerSpacer} />
       </View>
 
       {open ? (
         <>
-          {/* ── Link actions ── */}
-          <View style={styles.linkActions}>
-            <LinkAction
-              icon="link-outline"
-              label="Copy Link"
-              disabled={link.isPending}
-              onPress={() => void withLink(copyUrl)}
-            />
-            <LinkAction
-              icon="qr-code-outline"
-              label="QR Code"
-              disabled={link.isPending}
-              expanded={qrOpen}
-              onPress={() => {
-                if (qrOpen) setQrOpen(false);
-                else void withLink(async () => setQrOpen(true));
-              }}
-            />
-            <LinkAction
-              icon="share-social-outline"
-              label="Share"
-              disabled={link.isPending}
-              onPress={() => void withLink(shareUrl)}
-            />
-          </View>
-
-          {qrOpen && link.url ? (
-            <View
-              style={styles.qrPanel}
-              accessibilityLabel={`Invite QR code for ${group.name}. The link is shown below the code.`}
-            >
-              <QRCode value={link.url} size={180} />
-              <Text style={styles.qrUrl} selectable numberOfLines={2}>
-                {link.url}
-              </Text>
-              <View style={styles.qrActions}>
-                <PrimaryButton label="Copy link" variant="secondary" onPress={() => void withLink(copyUrl)} />
-                {canRotate ? (
-                  <PrimaryButton
-                    label="Reset link"
-                    variant="ghost"
-                    loading={rotate.isPending}
-                    onPress={() => rotate.mutate()}
-                  />
-                ) : null}
-              </View>
-              {canRotate ? (
-                <Text style={styles.qrHint}>
-                  Resetting creates a fresh link and revokes every previously shared one.
-                </Text>
-              ) : null}
-            </View>
-          ) : null}
-
-          {/* ── Member picker ── */}
           <ScrollView
-            style={styles.pickerScroll}
-            contentContainerStyle={styles.pickerContent}
+            style={styles.body}
+            contentContainerStyle={styles.bodyContent}
             keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="interactive"
             showsVerticalScrollIndicator={false}
           >
+            {/* ── Link actions ── */}
+            <View style={styles.linkActions}>
+              <LinkAction
+                icon="link-outline"
+                label="Copy Link"
+                disabled={link.isPending}
+                onPress={() => void withLink(copyUrl)}
+              />
+              <LinkAction
+                icon="qr-code-outline"
+                label="QR Code"
+                disabled={link.isPending}
+                expanded={qrOpen}
+                onPress={() => {
+                  if (qrOpen) setQrOpen(false);
+                  else void withLink(async () => setQrOpen(true));
+                }}
+              />
+              <LinkAction
+                icon="share-social-outline"
+                label="Share"
+                disabled={link.isPending}
+                onPress={() => void withLink(shareUrl)}
+              />
+            </View>
+
+            {qrOpen && link.url ? (
+              <View
+                style={styles.qrPanel}
+                accessibilityLabel={`Invite QR code for ${group.name}. The link is shown below the code.`}
+              >
+                <QRCode value={link.url} size={180} />
+                <Text style={styles.qrUrl} selectable numberOfLines={2}>
+                  {link.url}
+                </Text>
+                {confirmReset ? (
+                  <View style={styles.qrActions} accessibilityRole="alert">
+                    <Text style={styles.resetQuestion}>
+                      Reset the invite link? Every link you have already shared stops working, and people who have
+                      not joined yet will need the new one.
+                    </Text>
+                    <PrimaryButton
+                      label="Reset link"
+                      variant="danger"
+                      loading={rotate.isPending}
+                      onPress={() => rotate.mutate()}
+                    />
+                    <PrimaryButton
+                      label="Keep the current link"
+                      variant="ghost"
+                      disabled={rotate.isPending}
+                      onPress={() => setConfirmReset(false)}
+                    />
+                  </View>
+                ) : (
+                  <>
+                    <View style={styles.qrActions}>
+                      <PrimaryButton label="Copy link" variant="secondary" onPress={() => void withLink(copyUrl)} />
+                      {canRotate ? (
+                        <PrimaryButton label="Reset link" variant="ghost" onPress={() => setConfirmReset(true)} />
+                      ) : null}
+                    </View>
+                    {canRotate ? (
+                      <Text style={styles.qrHint}>
+                        Resetting creates a fresh link and revokes every previously shared one.
+                      </Text>
+                    ) : null}
+                  </>
+                )}
+              </View>
+            ) : null}
+
+            {/* ── Member picker ── */}
             <MemberPicker
               selection={selection}
               onSelectionChange={setSelection}
               excludeUserIds={excludeUserIds}
             />
           </ScrollView>
+
+          {/* ── Add: pinned below the scroll ── */}
+          {canSearchMembers ? (
+            <PrimaryButton
+              label={addLabel}
+              loading={invite.isPending}
+              disabled={selectedCount === 0}
+              onPress={() => invite.mutate(inviteeIds(selection))}
+            />
+          ) : null}
         </>
       ) : null}
     </Sheet>
@@ -272,6 +291,10 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingBottom: spacing.sm,
   },
+  headerButton: {
+    minHeight: 44,
+    justifyContent: 'center',
+  },
   headerSide: {
     color: colors.accent,
     fontFamily: fonts.bodySemibold,
@@ -283,18 +306,8 @@ const styles = StyleSheet.create({
     fontFamily: fonts.displayBold,
     fontSize: 17,
   },
-  headerAdd: {
-    color: colors.accent,
-    fontFamily: fonts.bodyBold,
-    fontSize: 15,
-    minWidth: 48,
-    textAlign: 'right',
-  },
   headerSpacer: {
     minWidth: 48,
-  },
-  headerAddDisabled: {
-    color: colors.textSubtle,
   },
   linkActions: {
     flexDirection: 'row',
@@ -347,10 +360,21 @@ const styles = StyleSheet.create({
     fontSize: 12,
     textAlign: 'center',
   },
-  pickerScroll: {
-    maxHeight: 360,
+  // Shrinks to fit a height-bounded sheet (and the keyboard) instead of a
+  // fixed cap; the footer stays put.
+  body: {
+    flexGrow: 0,
+    flexShrink: 1,
   },
-  pickerContent: {
+  bodyContent: {
+    gap: spacing.md,
     paddingBottom: spacing.sm,
+  },
+  resetQuestion: {
+    color: colors.text,
+    fontFamily: fonts.body,
+    fontSize: 14,
+    lineHeight: 20,
+    textAlign: 'center',
   },
 });

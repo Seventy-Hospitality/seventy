@@ -89,7 +89,7 @@ const PAYMENT_ENDED: BookingFailure = {
   action: 'refresh',
   title: 'This payment can no longer go through',
   message:
-    'The booking changed (it ended, or you are no longer on it). If money moved, the club returns it to your card.',
+    'This booking ended, or you are no longer on it. If money moved, the club returns it to your card.',
 };
 
 const MOVE_ENDED: BookingFailure = {

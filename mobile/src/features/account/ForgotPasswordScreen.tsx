@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { Link } from 'expo-router';
+import { useRouter } from 'expo-router';
 import { Controller } from 'react-hook-form';
-import { Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 import { useSession } from '../../lib/session';
 import { authErrorMessage } from '../../lib/auth-errors';
 import { emailOnlySchema, useZodForm } from '../../lib/forms';
@@ -18,6 +18,7 @@ import { authStyles as styles } from './auth-styles';
  * until a new password is saved.
  */
 export function ForgotPasswordScreen() {
+  const router = useRouter();
   const { requestPasswordReset, verifyRecoveryCode } = useSession();
   const [sentTo, setSentTo] = useState<string | null>(null);
   const form = useZodForm(emailOnlySchema, { defaultValues: { email: '' } });
@@ -33,6 +34,12 @@ export function ForgotPasswordScreen() {
       form.setError('email', { message: authErrorMessage(err, 'We could not send the email. Try again.') });
     }
   });
+
+  // Reached from sign-in: go back to it rather than stacking a second one.
+  const toSignIn = () => {
+    if (router.canGoBack()) router.back();
+    else router.replace('/auth/sign-in');
+  };
 
   return (
     <AppScreen contentStyle={styles.content}>
@@ -58,10 +65,15 @@ export function ForgotPasswordScreen() {
               render={({ field: { onBlur, onChange, value }, fieldState }) => (
                 <FormField label="Email" error={fieldState.error?.message}>
                   <Input
+                    accessibilityLabel="Email"
                     autoCapitalize="none"
+                    autoCorrect={false}
                     autoComplete="email"
+                    textContentType="emailAddress"
                     keyboardType="email-address"
                     placeholder="you@club70.com"
+                    returnKeyType="go"
+                    onSubmitEditing={() => void onSubmit()}
                     hasError={Boolean(fieldState.error)}
                     onBlur={onBlur}
                     onChangeText={onChange}
@@ -79,9 +91,9 @@ export function ForgotPasswordScreen() {
         )}
       </SectionCard>
 
-      <Link href="/auth/sign-in" style={styles.link}>
-        Back to sign in
-      </Link>
+      <Pressable accessibilityRole="link" onPress={toSignIn} style={styles.linkButton}>
+        <Text style={styles.link}>Back to sign in</Text>
+      </Pressable>
     </AppScreen>
   );
 }

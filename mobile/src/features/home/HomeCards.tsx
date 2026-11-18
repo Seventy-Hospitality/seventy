@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { BookingInvitation } from '../../lib/clutch';
-import { FeatureUnavailable, ListRow, PrimaryButton } from '../../components';
+import { FeatureUnavailable, PrimaryButton } from '../../components';
 import { formatDateHeading, formatTimeRangeCompact, sportLabel, SportTile } from '../reserve';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
 
@@ -27,7 +27,13 @@ export function SectionError({ message, onRetry }: { message: string; onRetry: (
   return (
     <View style={styles.sectionError} accessibilityRole="alert">
       <Text style={styles.sectionErrorText}>{message}</Text>
-      <Pressable onPress={onRetry} accessibilityRole="button" accessibilityLabel={`${message} Try again`}>
+      <Pressable
+        onPress={onRetry}
+        accessibilityRole="button"
+        accessibilityLabel={`${message} Try again`}
+        hitSlop={8}
+        style={({ pressed }) => [styles.retryButton, pressed ? styles.pressed : null]}
+      >
         <Text style={styles.retry}>Try again</Text>
       </Pressable>
     </View>
@@ -135,25 +141,30 @@ export function FirstSessionBanner() {
   );
 }
 
-/** "Book a court" for one sport (a court_type the club has courts for). */
+/**
+ * "Book a court" for one sport (a court_type the club has courts for). The
+ * whole row is the button; the "Book" pill is only its visual cue.
+ */
 export function BookSportRow({ sport, onBook }: { sport: string; onBook: (sport: string) => void }) {
   const label = sportLabel(sport);
   return (
-    <ListRow
-      leading={<SportTile sport={sport} size={44} />}
-      title={label}
-      subtitle="Book a court"
-      trailing={
-        <Pressable
-          onPress={() => onBook(sport)}
-          accessibilityRole="button"
-          accessibilityLabel={`Book a ${label} court`}
-          style={({ pressed }) => [styles.bookPill, pressed ? styles.pressed : null]}
-        >
-          <Text style={styles.bookPillText}>Book</Text>
-        </Pressable>
-      }
-    />
+    <Pressable
+      onPress={() => onBook(sport)}
+      accessibilityRole="button"
+      accessibilityLabel={`Book a ${label} court`}
+      style={({ pressed }) => [styles.sportRow, pressed ? styles.pressed : null]}
+    >
+      <SportTile sport={sport} size={44} />
+      <View style={styles.sportText}>
+        <Text style={styles.sportTitle} numberOfLines={1}>
+          {label}
+        </Text>
+        <Text style={styles.sportSubtitle}>Book a court</Text>
+      </View>
+      <View style={styles.bookPill}>
+        <Text style={styles.bookPillText}>Book</Text>
+      </View>
+    </Pressable>
   );
 }
 
@@ -182,6 +193,12 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontFamily: fonts.body,
     fontSize: 13,
+  },
+  retryButton: {
+    minHeight: 44,
+    minWidth: 44,
+    justifyContent: 'center',
+    paddingHorizontal: spacing.sm,
   },
   retry: {
     color: colors.accent,
@@ -255,6 +272,31 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
   },
   bannerCopy: {
+    color: colors.textMuted,
+    fontFamily: fonts.body,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  sportRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    padding: spacing.md,
+    borderRadius: radius.lg,
+    backgroundColor: colors.bgElevated,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  sportText: {
+    flex: 1,
+    gap: 2,
+  },
+  sportTitle: {
+    color: colors.text,
+    fontFamily: fonts.bodySemibold,
+    fontSize: 15,
+  },
+  sportSubtitle: {
     color: colors.textMuted,
     fontFamily: fonts.body,
     fontSize: 13,

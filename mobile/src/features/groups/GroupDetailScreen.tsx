@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -35,6 +35,7 @@ import { groupActivityQuery, invalidateGroups, useGroupInviteLink } from './grou
 import { GroupActivityRow } from './GroupActivityRow';
 import { InviteToGroupSheet } from './InviteToGroupSheet';
 import { EditGroupSheet } from './EditGroupSheet';
+import { useSheetHandoff } from './useSheetHandoff';
 
 type ActivityFilter = 'upcoming' | 'past';
 
@@ -134,7 +135,10 @@ function GroupDetailView({ group }: { group: Group }) {
   const deleteKey = useMutationKey();
 
   const [filter, setFilter] = useState<ActivityFilter>('upcoming');
+  // The same read the screen gated on, for pull-to-refresh.
+  const detail = useQuery(groupQuery(group.id));
   const activity = useQuery(groupActivityQuery(group.id, filter));
+  const handoff = useSheetHandoff();
   const link = useGroupInviteLink(group.id);
 
   const [menuOpen, setMenuOpen] = useState(false);
@@ -205,7 +209,21 @@ function GroupDetailView({ group }: { group: Group }) {
 
   return (
     <View style={styles.root}>
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={detail.isRefetching || activity.isRefetching}
+            onRefresh={() => {
+              void detail.refetch();
+              void activity.refetch();
+            }}
+            tintColor={colors.accent}
+            colors={[colors.accent]}
+          />
+        }
+      >
         {/* ── Cover hero ── */}
         <View style={styles.hero}>
           {group.cover_image_url ? (
@@ -318,36 +336,27 @@ function GroupDetailView({ group }: { group: Group }) {
             <PrimaryButton
               label="Edit group"
               variant="secondary"
-              onPress={() => {
-                setMenuOpen(false);
-                setEditOpen(true);
-              }}
+              onPress={() => handoff(() => setMenuOpen(false), () => setEditOpen(true))}
             />
           ) : null}
           {canLeave ? (
             <PrimaryButton
               label="Leave group"
               variant="danger"
-              onPress={() => {
-                setMenuOpen(false);
-                setLeaveOpen(true);
-              }}
+              onPress={() => handoff(() => setMenuOpen(false), () => setLeaveOpen(true))}
             />
           ) : null}
           {canDelete ? (
             <PrimaryButton
               label="Delete group"
               variant="danger"
-              onPress={() => {
-                setMenuOpen(false);
-                setDeleteOpen(true);
-              }}
+              onPress={() => handoff(() => setMenuOpen(false), () => setDeleteOpen(true))}
             />
           ) : null}
           {!canLeave ? (
             <Text style={styles.menuHint}>
-              As the owner you cannot leave this group while others are in it; transfer ownership to another member first
-              (Members, then the member&apos;s menu).
+              As the owner you cannot leave this group while others are in it. First make another member the
+              owner: open Members and tap the menu next to their name.
             </Text>
           ) : null}
         </View>
@@ -493,7 +502,9 @@ const styles = StyleSheet.create({
   backLink: {
     flexDirection: 'row',
     alignItems: 'center',
+    alignSelf: 'flex-start',
     gap: 2,
+    minHeight: 44,
     marginLeft: -4,
   },
   backLinkText: {

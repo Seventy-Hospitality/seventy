@@ -33,11 +33,11 @@ import { authErrorMessage } from '../../lib/auth-errors';
 import { clutch, isClutchError, StepUpStateSchema, useMutationKey, type AccountDeletionBlockers } from '../../lib/clutch';
 import { OAuthCancelledError } from '../../lib/oauth';
 import { useSession } from '../../lib/session';
-import { Checkbox, FormField, Input, PasswordInput, PrimaryButton, Skeleton } from '../../components';
+import { Checkbox, FormField, Input, PasswordInput, PrimaryButton, Skeleton, useToast } from '../../components';
 import { colors, radius, spacing, typography } from '../../theme/tokens';
 import { AccountFrame } from './AccountFrame';
 import { identitiesQuery } from './account-data';
-import { blockerSentences, clutchErrorMessage, deletionBlockersFrom, hasDeletionBlockers } from './account-lib';
+import { blockerSentences, clutchErrorMessage, codeDigits, deletionBlockersFrom, hasDeletionBlockers } from './account-lib';
 import { requestPushResync, unregisterPushForSignOut } from './usePushRegistration';
 import {
   sendStepUpCode,
@@ -57,6 +57,21 @@ const CONSEQUENCES = [
   'Removes your profile and signs you out on every device.',
 ];
 
+/**
+ * Reached from Account and from Preferences: return to whichever it was, or
+ * Preferences when there is no history (a deep link).
+ */
+function useGoBack() {
+  const router = useRouter();
+  return () => {
+    if (router.canGoBack()) router.back();
+    else router.replace('/account/preferences');
+  };
+}
+
+/** Which confirm control a failure belongs to; it is shown beside that control. */
+type ErrorSource = 'direct' | 'password' | 'code' | 'google' | 'apple';
+
 /** Feature-private: re-read every time the screen asks, never cached long. */
 export const accountDeletionQuery = {
   queryKey: ['account', 'deletion'] as const,
@@ -69,7 +84,7 @@ export function DeleteAccountScreen() {
   const preview = useQuery(accountDeletionQuery);
 
   return (
-    <AccountFrame title="Delete account" backLabel="Back to preferences" backTo="/account/preferences">
+    <AccountFrame title="Delete account" backLabel="Back" backTo="/account/preferences">
       <View style={styles.box}>
         <Text style={styles.strong}>Deleting your account:</Text>
         {CONSEQUENCES.map((line) => (
@@ -122,7 +137,7 @@ function BlockedView({
   checking?: boolean;
   onCheckAgain: () => void;
 }) {
-  const router = useRouter();
+  const goBack = useGoBack();
   return (
     <View style={[styles.box, styles.blocked]} accessibilityRole="alert">
       <Text style={styles.title}>We cannot delete your account yet.</Text>
@@ -134,7 +149,7 @@ function BlockedView({
       ))}
       <Text style={styles.muted}>Once that is resolved you can try again. Contact the club if you need help.</Text>
       <PrimaryButton label="Check again" variant="secondary" loading={checking} onPress={onCheckAgain} />
-      <PrimaryButton label="Back to preferences" variant="ghost" onPress={() => router.replace('/account/preferences')} />
+      <PrimaryButton label="Back" variant="ghost" onPress={goBack} />
     </View>
   );
 }
@@ -159,6 +174,8 @@ function DeleteFlow({
   onStateChanged: () => void;
 }) {
   const router = useRouter();
+  const goBack = useGoBack();
+  const { toast } = useToast();
   const { userId, email, signOut } = useSession();
   const deleteKey = useMutationKey();
 
@@ -166,7 +183,7 @@ function DeleteFlow({
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
   const [codeSent, setCodeSent] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setErrorState] = useState<{ source: ErrorSource; message: string } | null>(null);
   const [blockers, setBlockers] = useState<AccountDeletionBlockers | null>(null);
   /** Set when a delete answered step_up_required with a second factor. */
   const [secondFactorSeen, setSecondFactorSeen] = useState(false);
@@ -181,13 +198,14 @@ function DeleteFlow({
     mutationFn: () => sendStepUpCode(email ?? ''),
     onSuccess: () => {
       setCodeSent(true);
-      setError(null);
+      setErrorState(null);
     },
-    onError: (err) => setError(authErrorMessage(err, 'We could not send the code. Please try again.')),
+    onError: (err) =>
+      setErrorState({ source: 'code', message: authErrorMessage(err, 'We could not send the code. Please try again.') }),
   });
 
   const run = useMutation({
-    mutationFn: async (stepUp: () => Promise<void>) => {
+    mutationFn: async ({ stepUp }: { source: ErrorSource; stepUp: () => Promise<void> }) => {
       if (!userId) throw new Error('Not signed in.');
       // This is a sign-out path: stop push to this install while the session
       // can still say so (once the account is deleted every token is dead).
@@ -196,14 +214,16 @@ function DeleteFlow({
       return deleteKey.run('delete-account', (k) => clutch.me.deleteAccount({ idempotencyKey: k }));
     },
     onSuccess: async () => {
-      // The account is gone (or its deletion is scheduled): end the local session.
+      // The account is gone ({ deleted: true }): end the local session.
       try {
         await signOut();
       } finally {
         router.replace('/auth/sign-in');
+        toast({ variant: 'success', message: 'Your account has been deleted.', duration: 5000 });
       }
     },
-    onError: async (err) => {
+    onError: async (err, { source }) => {
+      const setError = (message: string) => setErrorState({ source, message });
       // The account stays and so does the session: push resumes.
       requestPushResync();
       if (err instanceof StepUpWrongAccountError) {
@@ -260,7 +280,7 @@ function DeleteFlow({
         onCheckAgain={() => {
           // Drop what the refused delete said and show what Clutch says now.
           setBlockers(null);
-          setError(null);
+          setErrorState(null);
           onStateChanged();
         }}
       />
@@ -269,8 +289,11 @@ function DeleteFlow({
 
   const busy = run.isPending;
   const clearError = () => {
-    if (error) setError(null);
+    if (error) setErrorState(null);
   };
+  /** The failure to show beside `source`'s control, if it was the one used. */
+  const errorFor = (source: ErrorSource): string | undefined =>
+    error?.source === source && !(secondFactor && error.message === SECOND_FACTOR_COPY) ? error.message : undefined;
 
   return (
     <View style={styles.form}>
@@ -289,26 +312,27 @@ function DeleteFlow({
             : 'Confirm it is you. Your account is deleted as soon as you do.'}
       </Text>
 
-      {error && !(secondFactor && error === SECOND_FACTOR_COPY) ? (
-        <Text style={styles.error} accessibilityRole="alert">
-          {error}
-        </Text>
-      ) : null}
+      {/* A one-tap delete that now needs a fresh sign-in: its button is gone, so say why here. */}
+      {!stepUpSatisfied ? <InlineError message={errorFor('direct')} /> : null}
 
       {stepUpSatisfied ? (
-        <PrimaryButton
-          label="Delete my account"
-          variant="danger"
-          disabled={!understood}
-          loading={busy}
-          onPress={() => run.mutate(async () => undefined)}
-        />
+        <View style={styles.direct}>
+          <PrimaryButton
+            label="Delete my account"
+            variant="danger"
+            disabled={!understood}
+            loading={busy}
+            onPress={() => run.mutate({ source: 'direct', stepUp: async () => undefined })}
+          />
+          <InlineError message={errorFor('direct')} />
+        </View>
       ) : null}
 
       {!stepUpSatisfied && hasEmail && email ? (
         <View style={styles.box}>
-          <FormField label="Password">
+          <FormField label="Password" error={errorFor('password')}>
             <PasswordInput
+              hasError={Boolean(errorFor('password'))}
               value={password}
               onChangeText={(text) => {
                 setPassword(text);
@@ -325,7 +349,9 @@ function DeleteFlow({
             variant="danger"
             disabled={!understood || !password}
             loading={busy}
-            onPress={() => run.mutate(() => stepUpWithPassword(userId ?? '', email, password))}
+            onPress={() =>
+              run.mutate({ source: 'password', stepUp: () => stepUpWithPassword(userId ?? '', email, password) })
+            }
           />
         </View>
       ) : null}
@@ -342,15 +368,17 @@ function DeleteFlow({
             loading={sendCode.isPending}
             onPress={() => sendCode.mutate()}
           />
+          {!codeSent ? <InlineError message={errorFor('code')} /> : null}
           {codeSent ? (
             <>
-              <FormField label="Code">
+              <FormField label="Code" error={errorFor('code')}>
                 <Input
                   value={code}
                   onChangeText={(text) => {
-                    setCode(text);
+                    setCode(codeDigits(text));
                     clearError();
                   }}
+                  hasError={Boolean(errorFor('code'))}
                   autoComplete="one-time-code"
                   textContentType="oneTimeCode"
                   keyboardType="number-pad"
@@ -361,9 +389,9 @@ function DeleteFlow({
               <PrimaryButton
                 label="Delete with code"
                 variant="danger"
-                disabled={!understood || code.trim().length < 6}
+                disabled={!understood || code.length < 6}
                 loading={busy}
-                onPress={() => run.mutate(() => stepUpWithCode(userId ?? '', email, code))}
+                onPress={() => run.mutate({ source: 'code', stepUp: () => stepUpWithCode(userId ?? '', email, code) })}
               />
             </>
           ) : null}
@@ -373,14 +401,16 @@ function DeleteFlow({
       {(stepUpSatisfied ? [] : providers).map((provider) => {
         const label = provider === 'google' ? 'Google' : 'Apple';
         return (
-          <PrimaryButton
-            key={provider}
-            label={`Delete with ${label}`}
-            variant="danger"
-            disabled={!understood}
-            loading={busy}
-            onPress={() => run.mutate(() => stepUpWithProvider(userId ?? '', provider))}
-          />
+          <View key={provider} style={styles.direct}>
+            <PrimaryButton
+              label={`Delete with ${label}`}
+              variant="danger"
+              disabled={!understood}
+              loading={busy}
+              onPress={() => run.mutate({ source: provider, stepUp: () => stepUpWithProvider(userId ?? '', provider) })}
+            />
+            <InlineError message={errorFor(provider)} />
+          </View>
         );
       })}
 
@@ -388,9 +418,18 @@ function DeleteFlow({
         label="Keep my account"
         variant="ghost"
         disabled={busy}
-        onPress={() => router.replace('/account/preferences')}
+        onPress={goBack}
       />
     </View>
+  );
+}
+
+function InlineError({ message }: { message: string | undefined }) {
+  if (!message) return null;
+  return (
+    <Text style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="polite">
+      {message}
+    </Text>
   );
 }
 
@@ -413,5 +452,6 @@ const styles = StyleSheet.create({
   bullet: { marginTop: 7 },
   bulletText: { flex: 1, ...typography.body, color: colors.textMuted },
   form: { gap: spacing.lg },
+  direct: { gap: spacing.sm },
   checkLabel: { flex: 1, ...typography.body, color: colors.text },
 });

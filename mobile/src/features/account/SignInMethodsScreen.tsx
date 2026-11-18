@@ -35,7 +35,7 @@ export function SignInMethodsScreen() {
   const identities = useQuery(identitiesQuery);
 
   return (
-    <AccountFrame title="Sign-in methods" backLabel="Back to preferences" backTo="/account/preferences">
+    <AccountFrame title="Sign-in methods" backLabel="Back" backTo="/account/preferences">
       {identities.isPending ? (
         <View accessibilityLabel="Loading sign-in methods" style={styles.loading}>
           <Skeleton height={64} borderRadius={radius.lg} />
@@ -243,6 +243,8 @@ const styles = StyleSheet.create({
   hint: { ...typography.caption, color: colors.textSubtle },
   actionButton: {
     minWidth: 76,
+    minHeight: 44,
+    justifyContent: 'center',
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.md,
     borderRadius: radius.pill,

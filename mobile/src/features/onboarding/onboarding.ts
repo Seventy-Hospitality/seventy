@@ -194,7 +194,36 @@ export function viewOutcome(view: MembershipView): CheckoutOutcome {
   }
 }
 
-/** The word for why a membership lapsed (a standing or a billing status), for the lapsed screen. */
+/**
+ * Why a membership lapsed, as a sentence a member understands. `reason` is a
+ * standing or billing status code from lapsedReason(); one this does not know
+ * gets the plain "has lapsed" line rather than the raw code.
+ */
+export function lapsedReasonSentence(reason: string | null): string {
+  switch (reason) {
+    case 'past_due':
+      return 'Your last membership payment did not go through.';
+    case 'unpaid':
+      return 'Your membership payments are overdue.';
+    case 'canceled':
+    case 'cancelled':
+      return 'Your membership was cancelled.';
+    case 'suspended':
+    case 'suspended_by_admin':
+      return 'The club has put your membership on hold.';
+    case 'paused':
+      return 'Your membership is paused.';
+    case 'expired':
+    case 'incomplete_expired':
+      return 'Your membership has expired.';
+    case 'incomplete':
+      return 'Your first membership payment was not completed.';
+    default:
+      return 'Your membership at Club70 has lapsed.';
+  }
+}
+
+/** The status code for why a membership lapsed (a standing or a billing status), for the lapsed screen. */
 export function lapsedReason(view: MembershipView): string | null {
   const membership = view.data.membership;
   if (membership && membership.status !== 'active') return membership.status;

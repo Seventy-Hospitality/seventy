@@ -15,6 +15,7 @@ import {
   confirmOutcome,
   hasProfileName,
   lapsedReason,
+  lapsedReasonSentence,
   needsMembershipView,
   onboardingPathForStep,
   resolveOnboardingStep,
@@ -243,5 +244,17 @@ describe('checkout outcomes', () => {
     expect(viewOutcome(billing({ billing: { ...baseBilling, subscription_status: 'canceled', entitled: false } }))).toBe(
       'failed',
     );
+  });
+});
+
+describe('lapsedReasonSentence', () => {
+  it('says why in plain words and never shows a raw status code', () => {
+    expect(lapsedReasonSentence('past_due')).toBe('Your last membership payment did not go through.');
+    expect(lapsedReasonSentence('suspended_by_admin')).toBe('The club has put your membership on hold.');
+    expect(lapsedReasonSentence('canceled')).toBe('Your membership was cancelled.');
+    expect(lapsedReasonSentence('unpaid')).toBe('Your membership payments are overdue.');
+    for (const code of ['some_new_code', null]) {
+      expect(lapsedReasonSentence(code)).toBe('Your membership at Club70 has lapsed.');
+    }
   });
 });
