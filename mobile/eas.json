@@ -17,7 +17,9 @@
     "preview": {
       "distribution": "internal",
       "channel": "preview",
-      "ios": { "simulator": true },
+      "ios": {
+        "simulator": true
+      },
       "env": {
         "EXPO_PUBLIC_CLUTCH_API_URL": "https://club-management-web.vercel.app/api/v1",
         "EXPO_PUBLIC_CLUB_ID": "15e24f5f-ee39-4154-8ad6-06942d06cb8a",
@@ -35,6 +37,11 @@
     }
   },
   "submit": {
-    "production": {}
+    "production": {
+      "ios": {
+        "ascAppId": "6836106862",
+        "appleTeamId": "TGNXYDFGHX"
+      }
+    }
   }
 }
