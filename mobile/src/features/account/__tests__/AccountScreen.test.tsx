@@ -1,4 +1,5 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react-native';
+import { Alert, type AlertButton } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import type { MockClutch } from '../../../lib/clutch/testing';
 import { clutchError } from '../../../lib/clutch/testing';
@@ -13,8 +14,9 @@ jest.mock('../../../lib/clutch', () => {
 });
 const mockClutch = (jest.requireMock('../../../lib/clutch') as { clutch: MockClutch }).clutch;
 
+const mockPush = jest.fn();
 jest.mock('expo-router', () => ({
-  useRouter: () => ({ push: jest.fn(), replace: jest.fn(), back: jest.fn(), canGoBack: () => true }),
+  useRouter: () => ({ push: mockPush, replace: jest.fn(), back: jest.fn(), canGoBack: () => true }),
 }));
 
 jest.mock('expo-image-picker', () => ({}));
@@ -49,17 +51,41 @@ describe('AccountScreen', () => {
     expect(await screen.findByText('alex')).toBeTruthy();
   });
 
-  it('removes the push registration before signing out', async () => {
-    (Notifications.getPermissionsAsync as jest.Mock).mockResolvedValueOnce({ granted: true, canAskAgain: true });
+  it('asks before signing out, and Cancel keeps the member signed in', async () => {
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
     renderWithProviders(<AccountScreen />);
 
     fireEvent.press(await screen.findByLabelText('Sign out'));
+
+    expect(alert).toHaveBeenCalledWith('Sign out?', expect.any(String), expect.any(Array));
+    expect(mockSignOut).not.toHaveBeenCalled();
+    alert.mockRestore();
+  });
+
+  it('removes the push registration before signing out', async () => {
+    (Notifications.getPermissionsAsync as jest.Mock).mockResolvedValueOnce({ granted: true, canAskAgain: true });
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation((_title, _message, buttons?: AlertButton[]) => {
+      buttons?.find((b) => b.style === 'destructive')?.onPress?.();
+    });
+    renderWithProviders(<AccountScreen />);
+
+    fireEvent.press(await screen.findByLabelText('Sign out'));
+    alert.mockRestore();
 
     await waitFor(() => expect(mockSignOut).toHaveBeenCalled());
     expect(mockClutch.me.unregisterDevice).toHaveBeenCalled();
     expect(mockClutch.me.unregisterDevice.mock.invocationCallOrder[0]).toBeLessThan(
       mockSignOut.mock.invocationCallOrder[0],
     );
+  });
+
+  it('offers sign-in methods and account deletion on the Account tab itself', async () => {
+    renderWithProviders(<AccountScreen />);
+
+    fireEvent.press(await screen.findByLabelText('Sign-in methods'));
+    expect(mockPush).toHaveBeenCalledWith('/account/sign-in-methods');
+    fireEvent.press(screen.getByLabelText('Delete account'));
+    expect(mockPush).toHaveBeenCalledWith('/account/delete');
   });
 
   it('saves only the changed field and explains a taken username', async () => {

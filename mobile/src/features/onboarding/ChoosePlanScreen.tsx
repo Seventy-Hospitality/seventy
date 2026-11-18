@@ -136,6 +136,7 @@ export function ChoosePlanScreen() {
               accessibilityRole="button"
               disabled={signOutMutation.isPending}
               onPress={() => signOutMutation.mutate()}
+              style={styles.signOutButton}
             >
               <Text style={styles.signOut}>Sign out</Text>
             </Pressable>
@@ -148,6 +149,7 @@ export function ChoosePlanScreen() {
           accessibilityRole="button"
           disabled={signOutMutation.isPending}
           onPress={() => signOutMutation.mutate()}
+          style={styles.signOutButton}
         >
           <Text style={styles.signOut}>Sign out</Text>
         </Pressable>
@@ -248,4 +250,5 @@ const styles = StyleSheet.create({
   featureText: { ...typography.body, color: colors.text, flex: 1 },
   footer: { gap: spacing.md, marginTop: spacing.sm },
   signOut: { ...typography.body, color: colors.textSubtle, textAlign: 'center' },
+  signOutButton: { minHeight: 44, justifyContent: 'center' },
 });

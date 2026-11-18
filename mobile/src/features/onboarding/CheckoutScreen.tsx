@@ -306,31 +306,31 @@ function CheckoutView({ tier }: { tier: CheckoutTier }) {
             </View>
           </View>
 
-          <Checkbox
-            checked={agreed}
-            onChange={setAgreed}
-            accessibilityLabel="I agree to the Terms of Service and Privacy Policy"
-            label={
-              <Text style={styles.termsLabel}>
-                I agree to the{' '}
-                <Text
-                  style={styles.termsLink}
-                  accessibilityRole="link"
-                  onPress={() => void openLegalPage('terms')}
-                >
-                  Terms of Service
-                </Text>{' '}
-                and{' '}
-                <Text
-                  style={styles.termsLink}
-                  accessibilityRole="link"
-                  onPress={() => void openLegalPage('privacy')}
-                >
-                  Privacy Policy
-                </Text>
-              </Text>
-            }
-          />
+          {/* The links sit outside the checkbox so VoiceOver can reach each one. */}
+          <View style={styles.terms}>
+            <Checkbox
+              checked={agreed}
+              onChange={setAgreed}
+              accessibilityLabel="I agree to the Terms of Service and Privacy Policy"
+              label={<Text style={styles.termsLabel}>I agree to the Terms of Service and Privacy Policy</Text>}
+            />
+            <View style={styles.termsLinks}>
+              <Pressable
+                accessibilityRole="link"
+                onPress={() => void openLegalPage('terms')}
+                style={styles.termsLinkButton}
+              >
+                <Text style={styles.termsLink}>Terms of Service</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="link"
+                onPress={() => void openLegalPage('privacy')}
+                style={styles.termsLinkButton}
+              >
+                <Text style={styles.termsLink}>Privacy Policy</Text>
+              </Pressable>
+            </View>
+          </View>
 
           {error ? (
             <Text style={styles.payAlert} accessibilityRole="alert">
@@ -367,7 +367,11 @@ function CheckoutFrame({ children }: { children: ReactNode }) {
 function BackToPlans() {
   const router = useRouter();
   return (
-    <Pressable accessibilityRole="link" onPress={() => router.replace('/onboarding/plan')}>
+    <Pressable
+      accessibilityRole="link"
+      onPress={() => router.replace('/onboarding/plan')}
+      style={styles.footerLinkButton}
+    >
       <Text style={styles.footerLink}>Back to memberships</Text>
     </Pressable>
   );
@@ -430,7 +434,10 @@ const styles = StyleSheet.create({
   },
   paymentText: { ...typography.body, color: colors.textMuted, flex: 1 },
   termsLabel: { ...typography.body, color: colors.text, flex: 1 },
-  termsLink: { color: colors.accent, textDecorationLine: 'underline' },
+  terms: { gap: spacing.xs },
+  termsLinks: { flexDirection: 'row', flexWrap: 'wrap', columnGap: spacing.lg, paddingLeft: 24 + spacing.sm },
+  termsLinkButton: { minHeight: 44, justifyContent: 'center' },
+  termsLink: { ...typography.body, color: colors.accent, textDecorationLine: 'underline' },
   payAlert: { ...typography.body, color: colors.danger },
   processing: {
     gap: spacing.sm,
@@ -444,4 +451,5 @@ const styles = StyleSheet.create({
   processingBody: { ...typography.body, color: colors.textMuted },
   footer: { gap: spacing.md, marginTop: spacing.sm },
   footerLink: { ...typography.bodyStrong, color: colors.accent, textAlign: 'center' },
+  footerLinkButton: { minHeight: 44, justifyContent: 'center' },
 });

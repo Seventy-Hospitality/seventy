@@ -10,7 +10,7 @@
  *
  * Degradation: each adapter reports `isConfigured()` from the env client IDs
  * (Apple is also available natively on iOS). When not configured the sign-in
- * buttons render disabled and `authenticate()` is never called, so no SDK is
+ * button is not shown and `authenticate()` is never called, so no SDK is
  * initialized. The provider SDKs are imported lazily inside `authenticate()`.
  *
  * Clutch's auth settings must list these client ids as authorized for the

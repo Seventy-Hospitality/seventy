@@ -1,8 +1,9 @@
 /**
  * Account tab (Figma account main 168:15494): avatar with camera badge,
  * name + username edit, email, the membership summary, the member QR card,
- * and the settings menu (membership, billing, payment methods, preferences,
- * sign out).
+ * and the settings menu (membership, billing, payment methods, sign-in
+ * methods, preferences, sign out, delete account). Sign-in methods and delete
+ * are also under Preferences; they are here too so they are easy to find.
  *
  * The old "lifetime stats" tiles (courts booked, hours per sport) are gone:
  * Clutch has no source for them on main, and the app does not tally them
@@ -10,7 +11,7 @@
  * (the QR's signed check-in token identifies the member).
  */
 import { useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
@@ -72,6 +73,12 @@ function AccountView({ profile }: { profile: Profile }) {
     onError: () => toast({ variant: 'error', message: 'We could not sign you out. Please try again.' }),
   });
 
+  const confirmSignOut = () =>
+    Alert.alert('Sign out?', 'You will need to sign in again to use the app.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Sign out', style: 'destructive', onPress: () => signOutMutation.mutate() },
+    ]);
+
   return (
     <>
       <View style={styles.header}>
@@ -100,7 +107,8 @@ function AccountView({ profile }: { profile: Profile }) {
                 accessibilityRole="button"
                 accessibilityLabel="Edit profile"
                 onPress={() => setEditing(true)}
-                hitSlop={8}
+                // The 18pt icon reaches 44pt with the slop.
+                hitSlop={13}
               >
                 <Ionicons name="pencil" size={18} color={colors.textMuted} />
               </Pressable>
@@ -124,13 +132,23 @@ function AccountView({ profile }: { profile: Profile }) {
         <SettingsRow icon="notifications-outline" label="Notifications" onPress={() => router.push('/account/notifications')} />
         <SettingsRow icon="calendar-outline" label="Billing history" onPress={() => router.push('/account/billing')} />
         <SettingsRow icon="card-outline" label="Payment methods" onPress={() => router.push('/account/payment-method')} />
+        <SettingsRow icon="key-outline" label="Sign-in methods" onPress={() => router.push('/account/sign-in-methods')} />
         <SettingsRow icon="options-outline" label="App preferences" onPress={() => router.push('/account/preferences')} />
         <SettingsRow
           icon="log-out-outline"
           label="Sign out"
           accent
           loading={signOutMutation.isPending}
-          onPress={() => signOutMutation.mutate()}
+          onPress={confirmSignOut}
+        />
+      </SettingsGroup>
+
+      <SettingsGroup>
+        <SettingsRow
+          icon="trash-outline"
+          label="Delete account"
+          destructive
+          onPress={() => router.push('/account/delete')}
         />
       </SettingsGroup>
 

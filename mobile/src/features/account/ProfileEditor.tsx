@@ -4,8 +4,8 @@
  * fields that changed are sent; Clutch's answer (the profile) replaces the
  * cached one.
  */
-import { useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { useRef, useState } from 'react';
+import { StyleSheet, View, type TextInput } from 'react-native';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { clutch, hasCode, useMutationKey, type GetMeResponse, type Profile } from '../../lib/clutch';
 import { queryKeys } from '../../lib/queries';
@@ -27,6 +27,7 @@ export function ProfileEditor({ profile, onDone }: ProfileEditorProps) {
   const [username, setUsername] = useState(profile.username ?? '');
   const [nameError, setNameError] = useState<string | null>(null);
   const [usernameError, setUsernameError] = useState<string | null>(null);
+  const usernameRef = useRef<TextInput>(null);
 
   const save = useMutation({
     mutationFn: (patch: ProfilePatch) =>
@@ -86,12 +87,15 @@ export function ProfileEditor({ profile, onDone }: ProfileEditorProps) {
           maxLength={80}
           autoCapitalize="words"
           returnKeyType="next"
+          submitBehavior="submit"
+          onSubmitEditing={() => usernameRef.current?.focus()}
           hasError={Boolean(nameError)}
           accessibilityLabel="Name"
         />
       </FormField>
       <FormField label="Username" error={usernameError ?? undefined} hint="3 to 20 letters, numbers or underscores.">
         <Input
+          ref={usernameRef}
           value={username}
           onChangeText={(text) => {
             setUsername(text);

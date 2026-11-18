@@ -41,7 +41,6 @@ export function AccountFrame({
         accessibilityRole="button"
         accessibilityLabel={backLabel}
         onPress={goBack}
-        hitSlop={8}
         style={styles.backLink}
       >
         <Ionicons name="chevron-back" size={18} color={colors.textLink} />
@@ -64,6 +63,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 2,
     marginLeft: -4,
+    // A 44pt-tall target; the negative margins keep the link where it was.
+    minHeight: 44,
+    marginVertical: -spacing.sm,
+    alignSelf: 'flex-start',
+    paddingRight: spacing.sm,
   },
   backLinkText: {
     color: colors.textLink,

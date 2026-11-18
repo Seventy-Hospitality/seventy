@@ -6,12 +6,14 @@ import { OAuthCancelledError } from '../../lib/oauth';
 import { federatedErrorMessage } from '../../lib/auth-errors';
 import { useToast } from '../../components/toast-context';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
+import { authStyles } from './auth-styles';
 
 /**
- * "Continue with Google / Apple". Each button is disabled with a "not
- * configured" note when its client ID is absent (no SDK is touched), exactly
- * like the web client. On success the session is established and the auth
- * guard redirects into the app.
+ * "or" + "Continue with Google / Apple". A provider without a client ID for
+ * this platform is not offered at all (no SDK is touched), like Apple off
+ * iOS; with neither, nothing renders. One sign-in at a time: both buttons are
+ * disabled while either is running. On success the session is established
+ * and the auth guard redirects into the app.
  */
 export function OAuthButtons() {
   const { oauth, signInWithGoogle, signInWithApple } = useSession();
@@ -19,6 +21,7 @@ export function OAuthButtons() {
   const [pending, setPending] = useState<'google' | 'apple' | null>(null);
 
   const run = async (provider: 'google' | 'apple', fn: () => Promise<unknown>) => {
+    if (pending) return;
     setPending(provider);
     try {
       await fn();
@@ -34,34 +37,37 @@ export function OAuthButtons() {
     }
   };
 
-  const unavailable = [!oauth.googleConfigured && 'Google'].filter(Boolean) as string[];
+  if (!oauth.googleConfigured && !oauth.appleConfigured) return null;
 
   return (
-    <View style={styles.stack}>
-      <ProviderButton
-        icon="logo-google"
-        label="Continue with Google"
-        disabled={!oauth.googleConfigured}
-        loading={pending === 'google'}
-        onPress={() => run('google', signInWithGoogle)}
-      />
-      {/* Apple sign-in is native to iOS; elsewhere it is not offered at all. */}
-      {oauth.appleConfigured ? (
-        <ProviderButton
-          icon="logo-apple"
-          label="Continue with Apple"
-          disabled={false}
-          loading={pending === 'apple'}
-          onPress={() => run('apple', signInWithApple)}
-        />
-      ) : null}
-      {unavailable.length > 0 ? (
-        <Text style={styles.note}>
-          {unavailable.join(' and ')} sign-in {unavailable.length > 1 ? 'are' : 'is'} not configured
-          in this environment.
-        </Text>
-      ) : null}
-    </View>
+    <>
+      <View style={authStyles.dividerRow}>
+        <View style={authStyles.divider} />
+        <Text style={authStyles.dividerLabel}>or</Text>
+        <View style={authStyles.divider} />
+      </View>
+      <View style={styles.stack}>
+        {oauth.googleConfigured ? (
+          <ProviderButton
+            icon="logo-google"
+            label="Continue with Google"
+            disabled={pending !== null}
+            loading={pending === 'google'}
+            onPress={() => run('google', signInWithGoogle)}
+          />
+        ) : null}
+        {/* Apple sign-in is native to iOS; elsewhere it is not offered at all. */}
+        {oauth.appleConfigured ? (
+          <ProviderButton
+            icon="logo-apple"
+            label="Continue with Apple"
+            disabled={pending !== null}
+            loading={pending === 'apple'}
+            onPress={() => run('apple', signInWithApple)}
+          />
+        ) : null}
+      </View>
+    </>
   );
 }
 
@@ -81,13 +87,18 @@ function ProviderButton({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityState={{ disabled }}
-      disabled={disabled || loading}
+      accessibilityState={{ disabled, busy: loading }}
+      accessibilityLabel={label}
+      disabled={disabled}
       onPress={onPress}
-      style={({ pressed }) => [styles.button, disabled ? styles.buttonDisabled : null, pressed ? styles.pressed : null]}
+      style={({ pressed }) => [
+        styles.button,
+        disabled && !loading ? styles.buttonDisabled : null,
+        pressed ? styles.pressed : null,
+      ]}
     >
-      <Ionicons name={icon} size={18} color={disabled ? colors.textSubtle : colors.text} />
-      <Text style={[styles.label, disabled ? styles.labelDisabled : null]}>
+      <Ionicons name={icon} size={18} color={disabled && !loading ? colors.textSubtle : colors.text} />
+      <Text style={[styles.label, disabled && !loading ? styles.labelDisabled : null]}>
         {loading ? 'Please wait...' : label}
       </Text>
     </Pressable>
@@ -122,11 +133,5 @@ const styles = StyleSheet.create({
   },
   labelDisabled: {
     color: colors.textSubtle,
-  },
-  note: {
-    color: colors.textSubtle,
-    fontFamily: fonts.body,
-    fontSize: 12,
-    textAlign: 'center',
   },
 });
