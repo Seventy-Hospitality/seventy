@@ -1,0 +1,99 @@
+import { useState } from 'react';
+import { useRouter } from 'expo-router';
+import { Controller } from 'react-hook-form';
+import { Pressable, Text, View } from 'react-native';
+import { useSession } from '../../lib/session';
+import { authErrorMessage } from '../../lib/auth-errors';
+import { emailOnlySchema, useZodForm } from '../../lib/forms';
+import { AppScreen } from '../../components/AppScreen';
+import { PrimaryButton } from '../../components/PrimaryButton';
+import { SectionCard } from '../../components/SectionCard';
+import { FormField, Input } from '../../components/FormField';
+import { EmailCodeForm } from './EmailCodeForm';
+import { authStyles as styles } from './auth-styles';
+
+/**
+ * Password reset. Clutch emails a 6-digit code; the code signs the member in
+ * in recovery mode, and the root layout then holds them on /auth/set-password
+ * until a new password is saved.
+ */
+export function ForgotPasswordScreen() {
+  const router = useRouter();
+  const { requestPasswordReset, verifyRecoveryCode } = useSession();
+  const [sentTo, setSentTo] = useState<string | null>(null);
+  const form = useZodForm(emailOnlySchema, { defaultValues: { email: '' } });
+
+  // Clutch answers the same whether or not the address exists (no
+  // enumeration), so success says "if an account exists". A failure (no
+  // network, rate limit) is a real failure: say so and stay on the form.
+  const onSubmit = form.handleSubmit(async ({ email }) => {
+    try {
+      await requestPasswordReset(email);
+      setSentTo(email.trim());
+    } catch (err) {
+      form.setError('email', { message: authErrorMessage(err, 'We could not send the email. Try again.') });
+    }
+  });
+
+  // Reached from sign-in: go back to it rather than stacking a second one.
+  const toSignIn = () => {
+    if (router.canGoBack()) router.back();
+    else router.replace('/auth/sign-in');
+  };
+
+  return (
+    <AppScreen contentStyle={styles.content}>
+      <View style={styles.hero}>
+        <Text style={styles.kicker}>Club70</Text>
+        <Text style={styles.title}>Reset your password</Text>
+        <Text style={styles.subtitle}>We will email you a code to set a new password.</Text>
+      </View>
+
+      <SectionCard>
+        {sentTo ? (
+          <EmailCodeForm
+            email={sentTo}
+            intro="If an account exists, the code is on its way. Enter the code sent to"
+            onSubmitCode={(code) => verifyRecoveryCode(sentTo, code)}
+            onResend={() => requestPasswordReset(sentTo)}
+          />
+        ) : (
+          <View style={styles.form}>
+            <Controller
+              control={form.control}
+              name="email"
+              render={({ field: { onBlur, onChange, value }, fieldState }) => (
+                <FormField label="Email" error={fieldState.error?.message}>
+                  <Input
+                    accessibilityLabel="Email"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    autoComplete="email"
+                    textContentType="emailAddress"
+                    keyboardType="email-address"
+                    placeholder="you@club70.com"
+                    returnKeyType="go"
+                    onSubmitEditing={() => void onSubmit()}
+                    hasError={Boolean(fieldState.error)}
+                    onBlur={onBlur}
+                    onChangeText={onChange}
+                    value={value}
+                  />
+                </FormField>
+              )}
+            />
+            <PrimaryButton
+              label="Send Reset Code"
+              loading={form.formState.isSubmitting}
+              onPress={() => void onSubmit()}
+            />
+          </View>
+        )}
+      </SectionCard>
+
+      <Pressable accessibilityRole="link" onPress={toSignIn} style={styles.linkButton}>
+        <Text style={styles.link}>Back to sign in</Text>
+      </Pressable>
+    </AppScreen>
+  );
+}

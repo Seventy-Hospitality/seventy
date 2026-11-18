@@ -1,0 +1,457 @@
+/**
+ * Delete account (P5, origin/feat/account-deletion-and-checkin).
+ *
+ * GET /me/account/deletion first: what stands in the way (clubs the member
+ * owns, children they alone guard) is shown up front, before anyone is asked
+ * to sign in again. With no blockers, an "I understand" gate, then:
+ * - step_up.satisfied (signed in recently enough): delete straight away;
+ * - otherwise a fresh sign-in by the member's own method (password, an
+ *   emailed code, or Google / Apple) immediately followed by DELETE /me/account.
+ *
+ * Clutch's answers to the delete:
+ * - 403 step_up_required: the sign-in was not recent enough; ask again.
+ * - 409 account_deletion_blocked: details are the blockers; show them.
+ * - 409 refunds_pending: money is still on its way back; try later.
+ * - 500 account_deletion_failed: nothing was deleted; try again.
+ * - { deleted: true }: every token is dead; end the local session.
+ * The password and code never leave this screen except to Clutch's /auth routes.
+ *
+ * A second-factor account (step_up.second_factor_required) cannot pass the
+ * step-up in the app (no second-factor check here yet), so no method is
+ * offered: the copy sends the member to the website instead.
+ *
+ * Push: this install's registration is removed right before the step-up and
+ * delete, while the session can still authenticate (after the delete every
+ * token is dead). If the delete does not happen, registration is resumed.
+ */
+import { useState } from 'react';
+import { StyleSheet, Text, View } from 'react-native';
+import { useRouter } from 'expo-router';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { Ionicons } from '@expo/vector-icons';
+import { authErrorMessage } from '../../lib/auth-errors';
+import { clutch, isClutchError, StepUpStateSchema, useMutationKey, type AccountDeletionBlockers } from '../../lib/clutch';
+import { OAuthCancelledError } from '../../lib/oauth';
+import { useSession } from '../../lib/session';
+import { Checkbox, FormField, Input, PasswordInput, PrimaryButton, Skeleton, useToast } from '../../components';
+import { colors, radius, spacing, typography } from '../../theme/tokens';
+import { AccountFrame } from './AccountFrame';
+import { identitiesQuery } from './account-data';
+import { blockerSentences, clutchErrorMessage, codeDigits, deletionBlockersFrom, hasDeletionBlockers } from './account-lib';
+import { requestPushResync, unregisterPushForSignOut } from './usePushRegistration';
+import {
+  sendStepUpCode,
+  StepUpRejectedError,
+  StepUpWrongAccountError,
+  stepUpMethods,
+  stepUpWithCode,
+  stepUpWithPassword,
+  stepUpWithProvider,
+  type StepUpMethod,
+} from './step-up';
+
+const CONSEQUENCES = [
+  'Ends your Club70 membership and any tier subscription.',
+  'Cancels your upcoming court bookings under the club cancellation policy.',
+  'Removes you from your groups.',
+  'Removes your profile and signs you out on every device.',
+];
+
+/**
+ * Reached from Account and from Preferences: return to whichever it was, or
+ * Preferences when there is no history (a deep link).
+ */
+function useGoBack() {
+  const router = useRouter();
+  return () => {
+    if (router.canGoBack()) router.back();
+    else router.replace('/account/preferences');
+  };
+}
+
+/** Which confirm control a failure belongs to; it is shown beside that control. */
+type ErrorSource = 'direct' | 'password' | 'code' | 'google' | 'apple';
+
+/** Feature-private: re-read every time the screen asks, never cached long. */
+export const accountDeletionQuery = {
+  queryKey: ['account', 'deletion'] as const,
+  queryFn: () => clutch.me.accountDeletion(),
+  staleTime: 0,
+};
+
+export function DeleteAccountScreen() {
+  const identities = useQuery(identitiesQuery);
+  const preview = useQuery(accountDeletionQuery);
+
+  return (
+    <AccountFrame title="Delete account" backLabel="Back" backTo="/account/preferences">
+      <View style={styles.box}>
+        <Text style={styles.strong}>Deleting your account:</Text>
+        {CONSEQUENCES.map((line) => (
+          <View key={line} style={styles.bulletRow}>
+            <Ionicons name="ellipse" size={5} color={colors.textMuted} style={styles.bullet} />
+            <Text style={styles.bulletText}>{line}</Text>
+          </View>
+        ))}
+        <Text style={styles.strong}>This cannot be undone.</Text>
+      </View>
+
+      {identities.isPending || preview.isPending ? (
+        <Skeleton height={160} borderRadius={radius.lg} />
+      ) : identities.isError || preview.isError ? (
+        <View style={styles.box} accessibilityRole="alert">
+          <Text style={styles.text}>We could not check whether your account can be deleted.</Text>
+          <PrimaryButton
+            label="Try again"
+            variant="secondary"
+            onPress={() => {
+              if (identities.isError) void identities.refetch();
+              if (preview.isError) void preview.refetch();
+            }}
+          />
+        </View>
+      ) : hasDeletionBlockers(preview.data.blockers) ? (
+        <BlockedView
+          blockers={preview.data.blockers}
+          checking={preview.isFetching}
+          onCheckAgain={() => void preview.refetch()}
+        />
+      ) : (
+        <DeleteFlow
+          methods={stepUpMethods(identities.data)}
+          stepUpSatisfied={preview.data.step_up.satisfied}
+          secondFactorRequired={preview.data.step_up.second_factor_required}
+          onStateChanged={() => void preview.refetch()}
+        />
+      )}
+    </AccountFrame>
+  );
+}
+
+function BlockedView({
+  blockers,
+  checking = false,
+  onCheckAgain,
+}: {
+  blockers: AccountDeletionBlockers;
+  checking?: boolean;
+  onCheckAgain: () => void;
+}) {
+  const goBack = useGoBack();
+  return (
+    <View style={[styles.box, styles.blocked]} accessibilityRole="alert">
+      <Text style={styles.title}>We cannot delete your account yet.</Text>
+      {blockerSentences(blockers).map((line) => (
+        <View key={line} style={styles.bulletRow}>
+          <Ionicons name="ellipse" size={5} color={colors.textMuted} style={styles.bullet} />
+          <Text style={styles.bulletText}>{line}</Text>
+        </View>
+      ))}
+      <Text style={styles.muted}>Once that is resolved you can try again. Contact the club if you need help.</Text>
+      <PrimaryButton label="Check again" variant="secondary" loading={checking} onPress={onCheckAgain} />
+      <PrimaryButton label="Back" variant="ghost" onPress={goBack} />
+    </View>
+  );
+}
+
+const SECOND_FACTOR_COPY =
+  'Your account uses a second sign-in factor, which this app cannot check yet. Delete your account from the Club70 website instead.';
+
+function needsSecondFactor(details: Record<string, unknown> | undefined): boolean {
+  const state = StepUpStateSchema.safeParse(details);
+  return state.success && state.data.second_factor_required;
+}
+
+function DeleteFlow({
+  methods,
+  stepUpSatisfied,
+  secondFactorRequired,
+  onStateChanged,
+}: {
+  methods: StepUpMethod[];
+  stepUpSatisfied: boolean;
+  secondFactorRequired: boolean;
+  onStateChanged: () => void;
+}) {
+  const router = useRouter();
+  const goBack = useGoBack();
+  const { toast } = useToast();
+  const { userId, email, signOut } = useSession();
+  const deleteKey = useMutationKey();
+
+  const [understood, setUnderstood] = useState(false);
+  const [password, setPassword] = useState('');
+  const [code, setCode] = useState('');
+  const [codeSent, setCodeSent] = useState(false);
+  const [error, setErrorState] = useState<{ source: ErrorSource; message: string } | null>(null);
+  const [blockers, setBlockers] = useState<AccountDeletionBlockers | null>(null);
+  /** Set when a delete answered step_up_required with a second factor. */
+  const [secondFactorSeen, setSecondFactorSeen] = useState(false);
+
+  // No in-app step-up can pass a second factor: offer none rather than ones that will fail.
+  const secondFactor = !stepUpSatisfied && (secondFactorRequired || secondFactorSeen);
+  const offered = secondFactor ? [] : methods;
+  const hasEmail = offered.some((m) => m.kind === 'password');
+  const providers = offered.flatMap((m) => (m.kind === 'federated' ? [m.provider] : []));
+
+  const sendCode = useMutation({
+    mutationFn: () => sendStepUpCode(email ?? ''),
+    onSuccess: () => {
+      setCodeSent(true);
+      setErrorState(null);
+    },
+    onError: (err) =>
+      setErrorState({ source: 'code', message: authErrorMessage(err, 'We could not send the code. Please try again.') }),
+  });
+
+  const run = useMutation({
+    mutationFn: async ({ stepUp }: { source: ErrorSource; stepUp: () => Promise<void> }) => {
+      if (!userId) throw new Error('Not signed in.');
+      // This is a sign-out path: stop push to this install while the session
+      // can still say so (once the account is deleted every token is dead).
+      await unregisterPushForSignOut();
+      await stepUp();
+      return deleteKey.run('delete-account', (k) => clutch.me.deleteAccount({ idempotencyKey: k }));
+    },
+    onSuccess: async () => {
+      // The account is gone ({ deleted: true }): end the local session.
+      try {
+        await signOut();
+      } finally {
+        router.replace('/auth/sign-in');
+        toast({ variant: 'success', message: 'Your account has been deleted.', duration: 5000 });
+      }
+    },
+    onError: async (err, { source }) => {
+      const setError = (message: string) => setErrorState({ source, message });
+      // The account stays and so does the session: push resumes.
+      requestPushResync();
+      if (err instanceof StepUpWrongAccountError) {
+        // That sign-in was another account's: it was never adopted, the
+        // member is still signed in as themselves, and nothing was deleted.
+        setError('That sign-in belongs to a different account. Use the one you are signed in with.');
+        return;
+      }
+      if (err instanceof OAuthCancelledError) return;
+      if (err instanceof StepUpRejectedError) {
+        setError(err.message);
+        return;
+      }
+      if (isClutchError(err)) {
+        switch (err.code) {
+          case 'step_up_required':
+            if (needsSecondFactor(err.details)) {
+              setSecondFactorSeen(true);
+              setError(SECOND_FACTOR_COPY);
+            } else {
+              setError('For your security, confirm it is you again, then delete straight away.');
+            }
+            onStateChanged();
+            return;
+          case 'account_deletion_blocked': {
+            const found = deletionBlockersFrom(err.details);
+            if (found && hasDeletionBlockers(found)) setBlockers(found);
+            else setError('Something on your account has to be settled before it can be deleted.');
+            onStateChanged();
+            return;
+          }
+          case 'refunds_pending':
+            setError('A refund is still on its way to you. Try again once it has arrived.');
+            return;
+          case 'account_deletion_failed':
+            setError('Nothing was deleted. Please try again.');
+            return;
+          default:
+            break;
+        }
+      }
+      setError(
+        isClutchError(err)
+          ? clutchErrorMessage(err, 'We could not delete your account. Please try again.')
+          : authErrorMessage(err, 'We could not confirm it is you. Please try again.'),
+      );
+    },
+  });
+
+  if (blockers !== null) {
+    return (
+      <BlockedView
+        blockers={blockers}
+        onCheckAgain={() => {
+          // Drop what the refused delete said and show what Clutch says now.
+          setBlockers(null);
+          setErrorState(null);
+          onStateChanged();
+        }}
+      />
+    );
+  }
+
+  const busy = run.isPending;
+  const clearError = () => {
+    if (error) setErrorState(null);
+  };
+  /** The failure to show beside `source`'s control, if it was the one used. */
+  const errorFor = (source: ErrorSource): string | undefined =>
+    error?.source === source && !(secondFactor && error.message === SECOND_FACTOR_COPY) ? error.message : undefined;
+
+  return (
+    <View style={styles.form}>
+      <Checkbox
+        checked={understood}
+        onChange={setUnderstood}
+        accessibilityLabel="I understand this permanently deletes my account"
+        label={<Text style={styles.checkLabel}>I understand this permanently deletes my account.</Text>}
+      />
+
+      <Text style={styles.muted}>
+        {stepUpSatisfied
+          ? 'You signed in recently, so your account is deleted as soon as you confirm.'
+          : secondFactor
+            ? SECOND_FACTOR_COPY
+            : 'Confirm it is you. Your account is deleted as soon as you do.'}
+      </Text>
+
+      {/* A one-tap delete that now needs a fresh sign-in: its button is gone, so say why here. */}
+      {!stepUpSatisfied ? <InlineError message={errorFor('direct')} /> : null}
+
+      {stepUpSatisfied ? (
+        <View style={styles.direct}>
+          <PrimaryButton
+            label="Delete my account"
+            variant="danger"
+            disabled={!understood}
+            loading={busy}
+            onPress={() => run.mutate({ source: 'direct', stepUp: async () => undefined })}
+          />
+          <InlineError message={errorFor('direct')} />
+        </View>
+      ) : null}
+
+      {!stepUpSatisfied && hasEmail && email ? (
+        <View style={styles.box}>
+          <FormField label="Password" error={errorFor('password')}>
+            <PasswordInput
+              hasError={Boolean(errorFor('password'))}
+              value={password}
+              onChangeText={(text) => {
+                setPassword(text);
+                clearError();
+              }}
+              autoComplete="current-password"
+              textContentType="password"
+              placeholder="Your password"
+              accessibilityLabel="Password"
+            />
+          </FormField>
+          <PrimaryButton
+            label="Delete with password"
+            variant="danger"
+            disabled={!understood || !password}
+            loading={busy}
+            onPress={() =>
+              run.mutate({ source: 'password', stepUp: () => stepUpWithPassword(userId ?? '', email, password) })
+            }
+          />
+        </View>
+      ) : null}
+
+      {!stepUpSatisfied && hasEmail && email ? (
+        <View style={styles.box}>
+          <Text style={styles.muted}>
+            {codeSent ? `We emailed a 6-digit code to ${email}.` : 'No password? We can email you a code instead.'}
+          </Text>
+          <PrimaryButton
+            label={codeSent ? 'Send a new code' : 'Email me a code'}
+            variant="secondary"
+            disabled={!understood}
+            loading={sendCode.isPending}
+            onPress={() => sendCode.mutate()}
+          />
+          {!codeSent ? <InlineError message={errorFor('code')} /> : null}
+          {codeSent ? (
+            <>
+              <FormField label="Code" error={errorFor('code')}>
+                <Input
+                  value={code}
+                  onChangeText={(text) => {
+                    setCode(codeDigits(text));
+                    clearError();
+                  }}
+                  hasError={Boolean(errorFor('code'))}
+                  autoComplete="one-time-code"
+                  textContentType="oneTimeCode"
+                  keyboardType="number-pad"
+                  placeholder="123456"
+                  accessibilityLabel="Code"
+                />
+              </FormField>
+              <PrimaryButton
+                label="Delete with code"
+                variant="danger"
+                disabled={!understood || code.length < 6}
+                loading={busy}
+                onPress={() => run.mutate({ source: 'code', stepUp: () => stepUpWithCode(userId ?? '', email, code) })}
+              />
+            </>
+          ) : null}
+        </View>
+      ) : null}
+
+      {(stepUpSatisfied ? [] : providers).map((provider) => {
+        const label = provider === 'google' ? 'Google' : 'Apple';
+        return (
+          <View key={provider} style={styles.direct}>
+            <PrimaryButton
+              label={`Delete with ${label}`}
+              variant="danger"
+              disabled={!understood}
+              loading={busy}
+              onPress={() => run.mutate({ source: provider, stepUp: () => stepUpWithProvider(userId ?? '', provider) })}
+            />
+            <InlineError message={errorFor(provider)} />
+          </View>
+        );
+      })}
+
+      <PrimaryButton
+        label="Keep my account"
+        variant="ghost"
+        disabled={busy}
+        onPress={goBack}
+      />
+    </View>
+  );
+}
+
+function InlineError({ message }: { message: string | undefined }) {
+  if (!message) return null;
+  return (
+    <Text style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="polite">
+      {message}
+    </Text>
+  );
+}
+
+const styles = StyleSheet.create({
+  box: {
+    gap: spacing.md,
+    padding: spacing.md,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bgElevated,
+  },
+  blocked: { borderColor: colors.danger },
+  title: { ...typography.h3, color: colors.text },
+  strong: { ...typography.bodyStrong, color: colors.text },
+  text: { ...typography.body, color: colors.text },
+  muted: { ...typography.body, color: colors.textMuted },
+  error: { ...typography.body, color: colors.danger },
+  bulletRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
+  bullet: { marginTop: 7 },
+  bulletText: { flex: 1, ...typography.body, color: colors.textMuted },
+  form: { gap: spacing.lg },
+  direct: { gap: spacing.sm },
+  checkLabel: { flex: 1, ...typography.body, color: colors.text },
+});
