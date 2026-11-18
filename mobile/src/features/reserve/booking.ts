@@ -165,12 +165,17 @@ export function buildDateStrip(todayKey: string, advanceDays: number): string[] 
   return Array.from({ length: days }, (_, i) => addDaysToDateKey(todayKey, i));
 }
 
-/** Date-strip tile parts: { weekday: "MON", day: "6" }. */
-export function formatStripDay(key: string): { weekday: string; day: string } {
+/**
+ * Date-strip tile parts: { weekday: "MON", day: "6", month: "JUL",
+ * label: "Monday, July 6" } (label is the screen-reader name).
+ */
+export function formatStripDay(key: string): { weekday: string; day: string; month: string; label: string } {
   const date = dateKeyToDate(key);
   return {
     weekday: date.toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase(),
     day: String(date.getDate()),
+    month: date.toLocaleDateString('en-US', { month: 'short' }).toUpperCase(),
+    label: date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }),
   };
 }
 

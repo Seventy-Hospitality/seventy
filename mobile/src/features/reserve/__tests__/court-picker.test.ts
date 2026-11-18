@@ -5,6 +5,7 @@ import {
   pickCourt,
   slotPrice,
   sportsFrom,
+  takenTimesFor,
   timesFor,
   withinHours,
 } from '../court-picker';
@@ -289,5 +290,21 @@ describe('withinHours', () => {
     expect(withinHours('10:00', '11:00', hours, 4)).toBe(false);
     expect(withinHours('10:00', '11:00', null, 4)).toBe(true);
     expect(withinHours('10:00', '11:00', [], 4)).toBe(true);
+  });
+});
+
+describe('takenTimesFor', () => {
+  it('lists starts every court is booked for, never past or maintenance-only ones', () => {
+    const grid = [
+      row(C1, ['available', 'booked', 'booked', 'past', 'maintenance']),
+      row(C2, ['booked', 'booked', 'available', 'past', 'maintenance']),
+    ];
+    expect(takenTimesFor(grid, 'badminton')).toEqual([{ start: '18:30', end: '19:00' }]);
+  });
+
+  it("counts the booking being moved as free, not taken", () => {
+    const grid = [row(C1, ['booked', 'booked'])];
+    const own = { court_id: C1, start_time: '18:00:00', end_time: '18:30:00' };
+    expect(takenTimesFor(grid, 'badminton', { own })).toEqual([{ start: '18:30', end: '19:00' }]);
   });
 });

@@ -106,11 +106,13 @@ export function BookingWizardScreen({ sport }: { sport: string }) {
   }, [holdSession, leave]);
 
   const backToTimes = useCallback(
-    (message: string | null) => {
+    (message: string | null, options?: { keepTimes?: boolean }) => {
       holdSession.release();
       void queryClient.invalidateQueries({ queryKey: queryKeys.availability(date) });
       setNotice(message);
-      setSlots([]);
+      // Kept times are re-checked against the fresh grid (SelectTimeStep
+      // drops any that were taken meanwhile).
+      if (!options?.keepTimes) setSlots([]);
       setPick(null);
       setStep(1);
     },

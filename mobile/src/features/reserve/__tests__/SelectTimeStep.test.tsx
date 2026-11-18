@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { useState } from 'react';
-import { fireEvent, render, screen } from '@testing-library/react-native';
+import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { asCourtId, CAPABILITIES, clutch, type AvailabilitySlot, type SlotStatus } from '../../../lib/clutch';
 import type { MockClutch } from '../../../lib/clutch/testing';
@@ -126,6 +126,43 @@ describe('SelectTimeStep', () => {
     renderStep(jest.fn(), rules);
     expect(await screen.findByLabelText(/^6:00PM - 6:30PM/)).toBeTruthy();
     expect(screen.queryByLabelText(/^6:30PM - 7:00PM/)).toBeNull();
+  });
+
+  it('shows fully booked times as taken, and says how to pick a range', async () => {
+    mockClutch.club.availability.mockResolvedValue([
+      makeCourtAvailability(C1, {}, slots(C1, ['available', 'booked', 'available'])),
+    ]);
+    renderStep();
+    expect(await screen.findByLabelText('6:30PM - 7:00PM, booked')).toBeTruthy();
+    expect(screen.getByText('Tap a start time, then the next times to book longer.')).toBeTruthy();
+    expect(screen.getByText('Pick a time to continue')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Continue' }).props.accessibilityState).toMatchObject({ disabled: true });
+  });
+
+  it('names the month on the date tiles', async () => {
+    mockClutch.club.availability.mockResolvedValue([]);
+    renderStep();
+    expect(await screen.findAllByText(/^(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)$/)).not.toHaveLength(0);
+  });
+
+  it('says when a refresh took a selected time away', async () => {
+    mockClutch.club.availability.mockResolvedValue([
+      makeCourtAvailability(C1, {}, slots(C1, ['available', 'available'])),
+    ]);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<Harness onContinue={jest.fn()} rules={bookingRulesOf(makeClub())} />, {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    });
+    fireEvent.press(await screen.findByLabelText(/^6:00PM - 6:30PM/));
+    fireEvent.press(screen.getByLabelText(/^6:30PM - 7:00PM/));
+
+    mockClutch.club.availability.mockResolvedValue([
+      makeCourtAvailability(C1, {}, slots(C1, ['available', 'booked'])),
+    ]);
+    await act(() => client.refetchQueries());
+    expect(await screen.findByText('6:30PM was just booked, so your selection was shortened.')).toBeTruthy();
   });
 
   it('shows the empty state when every court of the sport is taken', async () => {

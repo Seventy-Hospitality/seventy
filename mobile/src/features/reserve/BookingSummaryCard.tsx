@@ -47,7 +47,7 @@ export function BookingSummaryCard({ sport, courtName, rows, trailing, children 
           {rows.map((row, index) => (
             <View key={row.label} style={[styles.row, index === 0 ? styles.rowFirst : null]}>
               <Text style={styles.label}>{row.label}</Text>
-              <Text style={styles.value} numberOfLines={1}>
+              <Text style={styles.value} numberOfLines={2}>
                 {row.value}
               </Text>
             </View>
