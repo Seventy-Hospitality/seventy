@@ -88,85 +88,25 @@ export function InvitePlayersStep({
     ? describeBookingFailure(send.error, { bookingParity: clutch.capabilities.bookingParity })
     : null;
 
-  return (
-    <StepShell
-      title="Invite players"
-      subtitle={subtitle}
-      footer={
-        <PrimaryButton
-          label="Send invites"
-          loading={send.isPending}
-          variant={hasChips ? 'primary' : 'ghost'}
-          onPress={
-            hasChips
-              ? () =>
-                  send.mutate(selection, {
-                    onSuccess: onSent,
-                  })
-              : undefined
-          }
-        />
-      }
-    >
-      {canSearch ? (
-        <View style={styles.searchBox}>
-          <Ionicons name="search" size={18} color={colors.textMuted} />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search club members by name"
-            placeholderTextColor={colors.textSubtle}
-            accessibilityLabel="Search club members by name"
-            value={query}
-            onChangeText={setQuery}
-            autoCapitalize="none"
-            autoCorrect={false}
-            returnKeyType="search"
-          />
-        </View>
-      ) : (
-        <FeatureUnavailable
-          capability="bookingParity"
-          title="Member search is not available in the app yet"
-          description="Searching club members is coming soon. You can invite one of your groups below."
-          compact
-        />
-      )}
-
-      {hasChips ? (
-        <View style={styles.chipRow} accessibilityLabel="Selected invites">
-          {selection.groups.map((group) => (
-            <Chip
+  const groupsSection =
+    groups.isSuccess && groups.data.length > 0 ? (
+      <>
+        <Text style={styles.sectionLabel}>Your groups</Text>
+        <View style={styles.list}>
+          {groups.data.map((group) => (
+            <GroupRow
               key={group.id}
-              label={groupChipLabel(group)}
-              onRemove={() => setSelection(removeGroup(selection, group.id))}
-            />
-          ))}
-          {selection.players.map((player) => (
-            <Chip
-              key={player.user_id}
-              label={playerName(player)}
-              onRemove={() => setSelection(removePlayer(selection, player.user_id))}
+              group={group}
+              added={isGroupSelected(selection, group.id)}
+              onAdd={() => setSelection(addGroup(selection, group))}
             />
           ))}
         </View>
-      ) : null}
+      </>
+    ) : null;
 
-      {groups.isSuccess && groups.data.length > 0 ? (
-        <>
-          <Text style={styles.sectionLabel}>Your groups</Text>
-          <View style={styles.list}>
-            {groups.data.map((group) => (
-              <GroupRow
-                key={group.id}
-                group={group}
-                added={isGroupSelected(selection, group.id)}
-                onAdd={() => setSelection(addGroup(selection, group))}
-              />
-            ))}
-          </View>
-        </>
-      ) : null}
-
+  const playersSection = (
+    <>
       {canSearch ? <Text style={styles.sectionLabel}>Players</Text> : null}
 
       {!canSearch ? (
@@ -206,6 +146,79 @@ export function InvitePlayersStep({
           ))}
         </View>
       )}
+    </>
+  );
+
+  return (
+    <StepShell
+      title="Invite players"
+      subtitle={subtitle}
+      footer={
+        <PrimaryButton
+          label="Send invites"
+          loading={send.isPending}
+          disabled={!hasChips}
+          variant={hasChips ? 'primary' : 'ghost'}
+          onPress={
+            hasChips
+              ? () =>
+                  send.mutate(selection, {
+                    onSuccess: onSent,
+                  })
+              : undefined
+          }
+        />
+      }
+    >
+      {canSearch ? (
+        <View style={styles.searchBox}>
+          <Ionicons name="search" size={18} color={colors.textMuted} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search club members by name"
+            placeholderTextColor={colors.textSubtle}
+            accessibilityLabel="Search club members by name"
+            value={query}
+            onChangeText={setQuery}
+            autoCapitalize="none"
+            autoCorrect={false}
+            returnKeyType="search"
+            clearButtonMode="while-editing"
+          />
+        </View>
+      ) : (
+        <FeatureUnavailable
+          capability="bookingParity"
+          title="Member search is not available in the app yet"
+          description="Searching club members is coming soon. You can invite one of your groups below."
+          compact
+        />
+      )}
+
+      {hasChips ? (
+        <View style={styles.chipRow} accessibilityLabel="Selected invites">
+          {selection.groups.map((group) => (
+            <Chip
+              key={group.id}
+              label={groupChipLabel(group)}
+              onRemove={() => setSelection(removeGroup(selection, group.id))}
+            />
+          ))}
+          {selection.players.map((player) => (
+            <Chip
+              key={player.user_id}
+              label={playerName(player)}
+              onRemove={() => setSelection(removePlayer(selection, player.user_id))}
+            />
+          ))}
+        </View>
+      ) : null}
+
+      {/* While searching, results come first: with the keyboard up the groups
+          would push them below the fold. */}
+      {searching ? playersSection : null}
+      {groupsSection}
+      {searching ? null : playersSection}
 
       {failure ? (
         <Text accessibilityRole="alert" style={styles.formError}>
@@ -235,6 +248,8 @@ function GroupRow({ group, added, onAdd }: { group: GroupSummary; added: boolean
           accessibilityRole="button"
           accessibilityLabel={`Add all members of ${group.name}`}
           onPress={onAdd}
+          // The pill is small; the touch area reaches 44pt.
+          hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
           style={({ pressed }) => [styles.addAll, pressed ? styles.addAllPressed : null]}
         >
           <Text style={styles.addAllLabel}>Add all</Text>

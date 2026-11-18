@@ -6,7 +6,7 @@
  * is live (bookingParity) is the screen's call, not this one's.
  */
 import type { BookingDetail, BookingDue, UserId } from '../../lib/clutch';
-import { hasStarted } from '../reserve/booking';
+import { clubNow, formatMoney, hasStarted, timeToMinutes } from '../reserve/booking';
 
 /** One row of a booking's players: no names in the contract, only the user id. */
 export type BookingPlayer = BookingDetail['players'][number];
@@ -85,11 +85,46 @@ export function viewerOf(
 
 /**
  * A player's name on the roster. GET /bookings/{id} sends no names for
- * players (only user ids), so every row reads "Player"; the viewer's own row
- * adds "(you)" on screen.
+ * players (only user ids), so every row reads "Player"; the screen numbers
+ * them by their place on the roster and the viewer's own row reads "You".
  */
 export function playerDisplayName(_player: BookingPlayer): string {
   return 'Player';
+}
+
+/**
+ * What tells one nameless player from another besides their status: whether
+ * an invitation is still unanswered and, when Clutch states one, their share
+ * and whether it is paid. ["Has not answered yet"] / ["Share $12.50", "paid"].
+ */
+export function playerFacts(player: BookingPlayer, currency: string): string[] {
+  const facts: string[] = [];
+  if (player.status === 'invited') facts.push('Has not answered yet');
+  if (player.share_cents !== null && player.share_cents > 0) {
+    facts.push(`Share ${formatMoney(player.share_cents, currency)}`);
+    if (player.payment_status === 'paid') facts.push('paid');
+    else if (player.payment_status === 'refunded') facts.push('refunded');
+  }
+  return facts;
+}
+
+/**
+ * Minutes from now (the club's clock) to the booking's start; negative once
+ * it has started.
+ */
+export function minutesUntilStart(
+  booking: { date: string; start_time: string },
+  timezone: string,
+  now: Date = new Date(),
+): number {
+  const clock = clubNow(timezone, now);
+  const days = (dayNumber(booking.date) - dayNumber(clock.date)) * 24 * 60;
+  return days + timeToMinutes(booking.start_time) - clock.minutes;
+}
+
+function dayNumber(key: string): number {
+  const [year, month, day] = key.split('-').map(Number);
+  return Date.UTC(year, month - 1, day) / 86_400_000;
 }
 
 /** Players still on the booking (declined rows are history, not the roster). */

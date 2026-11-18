@@ -63,7 +63,7 @@ export function WizardFrame({
         </Pressable>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Close booking"
+          accessibilityLabel="Close"
           accessibilityState={{ disabled: chromeDisabled }}
           disabled={chromeDisabled}
           onPress={onClose}
@@ -116,8 +116,8 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.xs,
   },
   chromeButton: {
-    width: 40,
-    height: 40,
+    width: 44,
+    height: 44,
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: radius.pill,

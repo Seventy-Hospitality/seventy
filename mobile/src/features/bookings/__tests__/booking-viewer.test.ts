@@ -1,4 +1,11 @@
-import { playerDisplayName, rosterOf, viewerOf, type BookingPlayer } from '../booking-viewer';
+import {
+  minutesUntilStart,
+  playerDisplayName,
+  playerFacts,
+  rosterOf,
+  viewerOf,
+  type BookingPlayer,
+} from '../booking-viewer';
 import { asUserId, type BookingDetail, type BookingDue } from '../../../lib/clutch';
 import {
   ME_ID,
@@ -121,5 +128,24 @@ describe('roster names', () => {
       players: [player({ status: 'accepted' }), player({ user_id: OTHER, status: 'declined' })],
     });
     expect(rosterOf(detail).map((p) => p.user_id)).toEqual([ME]);
+  });
+});
+
+describe('playerFacts', () => {
+  it('tells an unanswered invitation apart, and adds a stated share and whether it is paid', () => {
+    expect(playerFacts(player({ status: 'invited' }), 'usd')).toEqual(['Has not answered yet']);
+    expect(playerFacts(player({ status: 'accepted' }), 'usd')).toEqual([]);
+    expect(
+      playerFacts(player({ status: 'accepted', share_cents: 1250, payment_status: 'paid' }), 'usd'),
+    ).toEqual(['Share $12.50', 'paid']);
+  });
+});
+
+describe('minutesUntilStart', () => {
+  it("counts on the club's clock across days", () => {
+    // Noon in New York on the 16th; 18:00 on the 20th is 4 days and 6 hours on.
+    expect(minutesUntilStart({ date: '2026-10-20', start_time: '18:00:00' }, TZ, NOW)).toBe((4 * 24 + 6) * 60);
+    expect(minutesUntilStart({ date: '2026-10-16', start_time: '13:30:00' }, TZ, NOW)).toBe(90);
+    expect(minutesUntilStart({ date: '2026-10-16', start_time: '11:00:00' }, TZ, NOW)).toBe(-60);
   });
 });

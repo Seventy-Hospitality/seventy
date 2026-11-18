@@ -106,8 +106,10 @@ describe('GroupDetailScreen leave / delete', () => {
     renderDetail(detail);
     fireEvent.press(await screen.findByLabelText('Group actions'));
     fireEvent.press(screen.getByRole('button', { name: 'Leave group' }));
+    // The confirm opens only once the menu sheet has gone (one Modal at a time on iOS).
+    expect(screen.queryByText(/^Leave Baddies\?/)).toBeNull();
     expect(
-      screen.getByText('Leave Baddies? You will need a new invitation or invite link to rejoin.'),
+      await screen.findByText('Leave Baddies? You will need a new invitation or invite link to rejoin.'),
     ).toBeTruthy();
     fireEvent.press(screen.getByRole('button', { name: 'Leave group' }));
     await waitFor(() =>
@@ -123,7 +125,7 @@ describe('GroupDetailScreen leave / delete', () => {
     renderDetail(group(MEMBER_PERMS));
     fireEvent.press(await screen.findByLabelText('Group actions'));
     fireEvent.press(screen.getByRole('button', { name: 'Leave group' }));
-    fireEvent.press(screen.getByRole('button', { name: 'Leave group' }));
+    fireEvent.press(await screen.findByRole('button', { name: 'Leave group' }));
     expect(
       await screen.findByText('Transfer ownership to another member before leaving.'),
     ).toBeTruthy();
@@ -134,7 +136,7 @@ describe('GroupDetailScreen leave / delete', () => {
     renderDetail(group(OWNER_PERMS));
     fireEvent.press(await screen.findByLabelText('Group actions'));
     fireEvent.press(screen.getByRole('button', { name: 'Delete group' }));
-    fireEvent.press(screen.getByRole('button', { name: 'Delete group' }));
+    fireEvent.press(await screen.findByRole('button', { name: 'Delete group' }));
     expect(await screen.findByText('Only the group owner can delete this group.')).toBeTruthy();
   });
 
@@ -144,7 +146,7 @@ describe('GroupDetailScreen leave / delete', () => {
     renderDetail(detail);
     fireEvent.press(await screen.findByLabelText('Group actions'));
     fireEvent.press(screen.getByRole('button', { name: 'Delete group' }));
-    expect(screen.getByText(/Delete Baddies for 6 members\?/)).toBeTruthy();
+    expect(await screen.findByText(/Delete Baddies for 6 members\?/)).toBeTruthy();
     fireEvent.press(screen.getByRole('button', { name: 'Delete group' }));
     await waitFor(() =>
       expect(mockClutch.groups.delete).toHaveBeenCalledWith(detail.id, {

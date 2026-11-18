@@ -1,5 +1,5 @@
-import { useCallback, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useRef, useState } from 'react';
+import { Pressable, StyleSheet, Text, View, type TextInput } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Image } from 'expo-image';
@@ -19,6 +19,7 @@ import {
   GROUP_NAME_MAX,
   coverUploadErrorMessage,
   createGroupErrorMessage,
+  groupNameCounter,
   createGroupInput,
   inviteeIds,
   isValidGroupName,
@@ -44,6 +45,7 @@ export function CreateGroupScreen() {
 
   const [step, setStep] = useState<1 | 2>(1);
   const [name, setName] = useState('');
+  const descriptionRef = useRef<TextInput>(null);
   const [description, setDescription] = useState('');
   const [selection, setSelection] = useState<InviteeSelection>(EMPTY_SELECTION);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -132,7 +134,7 @@ export function CreateGroupScreen() {
         >
           <CoverPhotoField cover={cover} />
 
-          <FormField label="Group name">
+          <FormField label="Group name" hint={groupNameCounter(name)}>
             <Input
               placeholder="Enter name"
               value={name}
@@ -141,11 +143,13 @@ export function CreateGroupScreen() {
               autoCapitalize="words"
               autoCorrect={false}
               returnKeyType="next"
+              onSubmitEditing={() => descriptionRef.current?.focus()}
             />
           </FormField>
 
           <FormField label="Description" hint="Optional">
             <Input
+              ref={descriptionRef}
               placeholder="Description"
               value={description}
               onChangeText={setDescription}

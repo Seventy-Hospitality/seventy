@@ -75,6 +75,19 @@ describe('NotificationsScreen', () => {
     );
   });
 
+  it('shows the whole body with the time on its own line, and a tap marks it read', async () => {
+    const long =
+      'Your booking on Court 1 for Tuesday at 6pm is confirmed. Arrive ten minutes early to check in at the desk.';
+    mockClutch.me.notifications.mockResolvedValue({ items: [notice({ body: long })], count: 1 });
+    renderWithProviders(<NotificationsScreen />);
+    expect(await screen.findByText(long)).toBeTruthy();
+    expect(screen.getByText(/^Oct 16, /)).toBeTruthy();
+    fireEvent.press(screen.getByTestId('notice-n1'));
+    await waitFor(() =>
+      expect(mockClutch.me.markNotificationsRead).toHaveBeenCalledWith({ id: 'n1' }, expect.anything()),
+    );
+  });
+
   it('marks everything read on request', async () => {
     mockClutch.me.notifications.mockResolvedValue({ items: [notice()], count: 1 });
     renderWithProviders(<NotificationsScreen />);

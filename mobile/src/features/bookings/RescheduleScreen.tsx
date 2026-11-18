@@ -259,6 +259,7 @@ function RescheduleWizard({
           notice={notice}
           onDismissNotice={() => setNotice(null)}
           continueDisabled={unchanged}
+          continueDisabledReason="This is the current time. Pick a new time."
           showTotal={false}
           onContinue={(next) => {
             setPick(next);
@@ -273,6 +274,7 @@ function RescheduleWizard({
           onLockChange={setLocked}
           onMoved={finish}
           onBackToTimes={backToTimes}
+          onLeave={onDone}
         />
       )}
     </WizardFrame>
@@ -286,6 +288,7 @@ function ConfirmMove({
   onLockChange,
   onMoved,
   onBackToTimes,
+  onLeave,
 }: {
   booking: BookingDetail;
   sport: string;
@@ -293,6 +296,11 @@ function ConfirmMove({
   onLockChange: (locked: boolean) => void;
   onMoved: (booking: Pick<BookingFacts, 'date' | 'start_time' | 'end_time'>) => void;
   onBackToTimes: (message: string | null) => void;
+  /**
+   * Leave while a payment clears. Back and Close are locked then; this is
+   * the way out, and the booking screen keeps checking the payment.
+   */
+  onLeave: () => void;
 }) {
   const parity = clutch.capabilities.bookingParity;
   const key = useMutationKey();
@@ -371,6 +379,7 @@ function ConfirmMove({
           }
         >
           <PrimaryButton label="Check again" variant="secondary" onPress={() => void payment.checkAgain()} />
+          <PrimaryButton label="Leave and check later" variant="ghost" onPress={onLeave} />
         </Notice>
       </StepShell>
     );
@@ -380,6 +389,8 @@ function ConfirmMove({
   const payTotal =
     chargeTotal(payment.charge) ?? (quoted ? formatMoney(quoted.total_cents, quoted.currency) : null);
 
+  // With P4, wait for the quote: it says whether the move must be paid.
+  const awaitingQuote = parity && quote.isPending;
   const footer = needsPayment ? (
     <PrimaryButton
       label={payTotal ? `Pay ${payTotal} and move` : 'Pay the difference and move'}
@@ -387,12 +398,19 @@ function ConfirmMove({
       onPress={() => void payment.pay()}
     />
   ) : (
-    <PrimaryButton
-      label="Save change"
-      loading={reschedule.isPending}
-      // With P4, wait for the quote: it says whether the move must be paid.
-      onPress={parity && quote.isPending ? undefined : () => reschedule.mutate()}
-    />
+    <View style={styles.footer}>
+      {awaitingQuote ? (
+        <Text style={styles.footerHint} accessibilityLiveRegion="polite">
+          Getting the price...
+        </Text>
+      ) : null}
+      <PrimaryButton
+        label="Save change"
+        loading={reschedule.isPending}
+        disabled={awaitingQuote}
+        onPress={() => reschedule.mutate()}
+      />
+    </View>
   );
 
   return (
@@ -493,6 +511,15 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: spacing.md,
     paddingHorizontal: spacing.lg,
+  },
+  footer: {
+    gap: spacing.sm,
+  },
+  footerHint: {
+    color: colors.textMuted,
+    fontFamily: fonts.body,
+    fontSize: 13,
+    textAlign: 'center',
   },
   hint: {
     color: colors.textMuted,

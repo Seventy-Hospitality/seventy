@@ -105,6 +105,14 @@ export function isLinkableActivity(item: Pick<GroupActivityItem, 'i_am_participa
   return item.i_am_participant;
 }
 
+/** How close to the limit a name gets before its counter shows. */
+const NAME_COUNTER_FROM = GROUP_NAME_MAX - 20;
+
+/** "64/80" once a group name nears its limit; undefined before that. */
+export function groupNameCounter(name: string): string | undefined {
+  return name.length >= NAME_COUNTER_FROM ? `${name.length}/${GROUP_NAME_MAX}` : undefined;
+}
+
 /** The create / edit gate: a non-empty name within Clutch's limit. */
 export function isValidGroupName(name: string): boolean {
   const trimmed = name.trim();

@@ -1,14 +1,17 @@
 import type { ReactNode } from 'react';
-import { render, screen } from '@testing-library/react-native';
+import { fireEvent, render, screen } from '@testing-library/react-native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { CAPABILITIES, clutch, type MembershipView } from '../../../lib/clutch';
+import { asCourtId, CAPABILITIES, clutch, type MembershipView } from '../../../lib/clutch';
 import type { MockClutch } from '../../../lib/clutch/testing';
 import {
   makeBillingMembership,
   makeBookingRules,
+  makeChargedBooking,
   makeClub,
+  makeCourtAvailability,
   makeCourtTypeRules,
+  makeSlot,
   makeStandingMembership,
 } from '../../../lib/clutch/fixtures';
 import { ToastProvider } from '../../../components';
@@ -103,5 +106,26 @@ describe('BookingWizardScreen entitlement gate', () => {
     );
     renderWizard(makeStandingMembership());
     expect(await screen.findByText('Membership tier needed')).toBeTruthy();
+  });
+});
+
+describe('BookingWizardScreen after a hold ran out', () => {
+  it('"Choose a new time" keeps the chosen times', async () => {
+    renderWizard(makeStandingMembership());
+    const court = asCourtId('c1');
+    mockClutch.club.availability.mockResolvedValue([
+      makeCourtAvailability(court, { court_name: 'Court 1' }, [
+        makeSlot({ court_id: court, start_time: '18:00', end_time: '18:30', status: 'available' }),
+        makeSlot({ court_id: court, start_time: '18:30', end_time: '19:00', status: 'available' }),
+      ]),
+    ]);
+    mockClutch.bookings.create.mockResolvedValue(makeChargedBooking({ hold_expires_at: '2000-01-01T00:00:00.000Z' }));
+
+    fireEvent.press(await screen.findByLabelText(/^6:00PM - 6:30PM/));
+    fireEvent.press(screen.getByText('Continue'));
+    fireEvent.press(await screen.findByText('Choose a new time'));
+
+    const pill = await screen.findByLabelText(/^6:00PM - 6:30PM/);
+    expect(pill.props.accessibilityState).toMatchObject({ checked: true });
   });
 });

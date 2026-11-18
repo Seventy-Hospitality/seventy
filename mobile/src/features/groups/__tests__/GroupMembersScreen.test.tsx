@@ -51,7 +51,7 @@ describe('GroupMembersScreen', () => {
     const detail = renderMembers();
     fireEvent.press(await screen.findByLabelText('Actions for Sam Lee'));
     fireEvent.press(screen.getByRole('button', { name: 'Transfer ownership' }));
-    fireEvent.press(screen.getByRole('button', { name: 'Make Sam Lee the owner' }));
+    fireEvent.press(await screen.findByRole('button', { name: 'Make Sam Lee the owner' }));
     await waitFor(() =>
       expect(mockClutch.groups.transferOwnership).toHaveBeenCalledWith(detail.id, OTHER_ID, {
         idempotencyKey: expect.any(String),
@@ -65,7 +65,7 @@ describe('GroupMembersScreen', () => {
     renderMembers();
     fireEvent.press(await screen.findByLabelText('Actions for Sam Lee'));
     fireEvent.press(screen.getByRole('button', { name: 'Transfer ownership' }));
-    fireEvent.press(screen.getByRole('button', { name: 'Make Sam Lee the owner' }));
+    fireEvent.press(await screen.findByRole('button', { name: 'Make Sam Lee the owner' }));
     expect(await screen.findByText('That person is no longer in the group.')).toBeTruthy();
   });
 
@@ -74,7 +74,7 @@ describe('GroupMembersScreen', () => {
     const detail = renderMembers();
     fireEvent.press(await screen.findByLabelText('Actions for Sam Lee'));
     fireEvent.press(screen.getByRole('button', { name: 'Remove from group' }));
-    fireEvent.press(screen.getByRole('button', { name: 'Remove from group' }));
+    fireEvent.press(await screen.findByRole('button', { name: 'Remove from group' }));
     await waitFor(() =>
       expect(mockClutch.groups.removeMember).toHaveBeenCalledWith(detail.id, OTHER_ID, {
         idempotencyKey: expect.any(String),

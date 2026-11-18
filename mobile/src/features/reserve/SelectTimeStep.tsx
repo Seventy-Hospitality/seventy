@@ -10,6 +10,7 @@ import {
   dateKeyToDate,
   formatDuration,
   formatMoney,
+  formatSlotTime,
   formatStripDay,
   pruneSelection,
   selectionRange,
@@ -22,13 +23,14 @@ import {
   durationProblem,
   gridSlotMinutes,
   pickCourt,
+  takenTimesFor,
   timesFor,
   withinHours,
   type OwnRange,
 } from './court-picker';
 import type { SportRules } from './club-rules';
 import { quoteQuery } from './quote';
-import { SlotPill } from './SlotPill';
+import { SlotPill, TakenSlotRow } from './SlotPill';
 import { StepShell } from './StepShell';
 
 /** Days shown before "More dates" expands the rail to the full horizon. */
@@ -61,6 +63,8 @@ export interface SelectTimeStepProps {
   continueLabel?: string;
   /** Extra gate on Continue (reschedule: the range must actually change). */
   continueDisabled?: boolean;
+  /** Why the extra gate holds Continue back ("Pick a new time"). */
+  continueDisabledReason?: string;
   /**
    * Show a new booking's total for the range. Off for a move: a move is
    * priced by its own reschedule quote, never the new-booking quote.
@@ -94,6 +98,7 @@ export function SelectTimeStep({
   title,
   continueLabel = 'Continue',
   continueDisabled = false,
+  continueDisabledReason,
   showTotal = true,
 }: SelectTimeStepProps) {
   const strip = useMemo(
@@ -118,13 +123,36 @@ export function SelectTimeStep({
   const offered = useMemo(() => options.map((option) => option.start), [options]);
   const slotMinutes = rules.slot_duration_minutes || (grid.data ? gridSlotMinutes(grid.data) : null) || 60;
 
+  // Free and fully booked starts in one list: a booked start shows as taken,
+  // so a gap in the day reads as "booked", not as a missing time.
+  const rows = useMemo(() => {
+    if (!grid.data) return [];
+    const taken = takenTimesFor(grid.data, sport, { own: ownToday })
+      .filter((time) => withinHours(time.start, time.end, rules.hours, dayOfWeek))
+      .map((time) => ({ kind: 'taken' as const, ...time }));
+    return [...options.map((option) => ({ kind: 'free' as const, start: option.start, option })), ...taken].sort(
+      (a, b) => a.start.localeCompare(b.start),
+    );
+  }, [grid.data, sport, ownToday, rules.hours, dayOfWeek, options]);
+
+  // Says what a refresh took out of the selection.
+  const [pruned, setPruned] = useState<string | null>(null);
+
   // A refetch can take a selected start away (someone else booked it): prune
-  // so the selection never holds a time that is not offered.
+  // so the selection never holds a time that is not offered, and say so.
   useEffect(() => {
     if (!grid.isSuccess) return;
     const offeredSet = new Set(offered);
-    if (slots.every((slot) => offeredSet.has(slot))) return;
-    onSlotsChange(pruneSelection(slots, offered, slotMinutes));
+    const gone = slots.filter((slot) => !offeredSet.has(slot));
+    if (gone.length === 0) return;
+    const kept = pruneSelection(slots, offered, slotMinutes);
+    const first = [...gone].sort((a, b) => a.localeCompare(b))[0];
+    setPruned(
+      kept.length > 0
+        ? `${formatSlotTime(first)} was just booked, so your selection was shortened.`
+        : `${formatSlotTime(first)} was just booked. Pick another time.`,
+    );
+    onSlotsChange(kept);
   }, [grid.isSuccess, offered, slots, onSlotsChange, slotMinutes]);
 
   const range = selectionRange(slots, slotMinutes);
@@ -158,6 +186,15 @@ export function SelectTimeStep({
           : null;
 
   const canContinue = ready && !continueDisabled;
+  // Why Continue is dimmed, in one line (an error hint above says it already).
+  const blockedReason =
+    canContinue || hint
+      ? null
+      : !range
+        ? 'Pick a time to continue'
+        : continueDisabled
+          ? (continueDisabledReason ?? null)
+          : null;
 
   return (
     <StepShell
@@ -182,8 +219,14 @@ export function SelectTimeStep({
               ) : null}
             </View>
           ) : null}
+          {blockedReason ? (
+            <Text style={styles.blockedReason} accessibilityLiveRegion="polite">
+              {blockedReason}
+            </Text>
+          ) : null}
           <PrimaryButton
             label={continueLabel}
+            disabled={!canContinue}
             onPress={canContinue && court && range ? () => onContinue({ court, date, range }) : undefined}
             variant={canContinue ? 'primary' : 'ghost'}
           />
@@ -193,7 +236,7 @@ export function SelectTimeStep({
       {notice ? (
         <View style={styles.noticeBox} accessibilityRole="alert">
           <Text style={styles.noticeText}>{notice}</Text>
-          <Pressable accessibilityRole="button" onPress={onDismissNotice} hitSlop={6}>
+          <Pressable accessibilityRole="button" onPress={onDismissNotice} style={styles.textButton}>
             <Text style={styles.noticeDismiss}>Dismiss</Text>
           </Pressable>
         </View>
@@ -202,7 +245,7 @@ export function SelectTimeStep({
       <View style={styles.sectionHead}>
         <Text style={styles.sectionLabel}>Select date</Text>
         {!expanded && strip.length > INITIAL_STRIP_DAYS ? (
-          <Pressable accessibilityRole="button" onPress={() => setExpanded(true)} hitSlop={6}>
+          <Pressable accessibilityRole="button" onPress={() => setExpanded(true)} style={styles.textButton}>
             <Text style={styles.sectionLink}>More dates</Text>
           </Pressable>
         ) : null}
@@ -213,6 +256,7 @@ export function SelectTimeStep({
         value={date}
         onChange={(next) => {
           onDismissNotice();
+          setPruned(null);
           onDateChange(next);
         }}
       />
@@ -221,10 +265,18 @@ export function SelectTimeStep({
         <Text style={styles.sectionLabel}>Select times</Text>
       </View>
 
+      {pruned ? (
+        <Text style={styles.prunedNotice} accessibilityRole="alert">
+          {pruned}
+        </Text>
+      ) : null}
+
       {hint ? (
         <Text style={styles.hint} accessibilityRole="alert">
           {hint}
         </Text>
+      ) : options.length > 0 && slots.length < 2 ? (
+        <Text style={styles.howTo}>Tap a start time, then the next times to book longer.</Text>
       ) : null}
 
       {grid.isPending ? (
@@ -245,17 +297,22 @@ export function SelectTimeStep({
         />
       ) : (
         <View style={styles.slotList} accessibilityRole="list">
-          {options.map((option) => (
-            <SlotPill
-              key={option.start}
-              option={option}
-              selected={slots.includes(option.start)}
-              onToggle={() => {
-                onDismissNotice();
-                onSlotsChange(toggleSlot(slots, option.start, slotMinutes));
-              }}
-            />
-          ))}
+          {rows.map((row) =>
+            row.kind === 'taken' ? (
+              <TakenSlotRow key={row.start} start={row.start} end={row.end} />
+            ) : (
+              <SlotPill
+                key={row.start}
+                option={row.option}
+                selected={slots.includes(row.start)}
+                onToggle={() => {
+                  onDismissNotice();
+                  setPruned(null);
+                  onSlotsChange(toggleSlot(slots, row.start, slotMinutes));
+                }}
+              />
+            ),
+          )}
         </View>
       )}
     </StepShell>
@@ -287,7 +344,7 @@ function DateStrip({
             key={key}
             accessibilityRole="radio"
             accessibilityState={{ selected, checked: selected }}
-            accessibilityLabel={`${parts.weekday} ${parts.day}`}
+            accessibilityLabel={parts.label}
             onPress={() => onChange(key)}
             style={({ pressed }) => [
               styles.dateTile,
@@ -299,6 +356,7 @@ function DateStrip({
               {parts.weekday}
             </Text>
             <Text style={[styles.dateDay, selected ? styles.dateTextSelected : null]}>{parts.day}</Text>
+            <Text style={[styles.dateMonth, selected ? styles.dateTextSelected : null]}>{parts.month}</Text>
           </Pressable>
         );
       })}
@@ -349,6 +407,28 @@ const styles = StyleSheet.create({
     fontFamily: fonts.body,
     fontSize: 13,
   },
+  howTo: {
+    color: colors.textMuted,
+    fontFamily: fonts.body,
+    fontSize: 13,
+  },
+  prunedNotice: {
+    color: colors.text,
+    fontFamily: fonts.body,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  blockedReason: {
+    color: colors.textMuted,
+    fontFamily: fonts.body,
+    fontSize: 13,
+    textAlign: 'center',
+  },
+  textButton: {
+    minHeight: 44,
+    justifyContent: 'center',
+    alignSelf: 'flex-start',
+  },
   dateStrip: {
     gap: spacing.sm,
     paddingVertical: spacing.xs,
@@ -381,6 +461,12 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontFamily: fonts.displayBold,
     fontSize: 18,
+  },
+  dateMonth: {
+    color: colors.textMuted,
+    fontFamily: fonts.bodySemibold,
+    fontSize: 10,
+    letterSpacing: 0.6,
   },
   dateTextSelected: {
     color: colors.textOnAccent,

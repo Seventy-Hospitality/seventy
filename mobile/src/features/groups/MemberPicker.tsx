@@ -78,6 +78,7 @@ function MemberSearch({
           autoCapitalize="none"
           autoCorrect={false}
           returnKeyType="search"
+          clearButtonMode="while-editing"
         />
       </View>
 

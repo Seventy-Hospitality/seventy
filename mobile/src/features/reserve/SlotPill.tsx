@@ -12,8 +12,8 @@ interface SlotPillProps {
 
 /**
  * One offered start time as an accessible toggle, with the grid's per-slot
- * price for browsing ("from" when free courts are priced differently). Only
- * offered times render, so there is no disabled state.
+ * price for browsing ("from" when free courts are priced differently).
+ * Times every court is booked for render as TakenSlotRow instead.
  */
 export function SlotPill({ option, selected, onToggle }: SlotPillProps) {
   const range = formatSlotRange(option.start, option.end);
@@ -45,6 +45,24 @@ export function SlotPill({ option, selected, onToggle }: SlotPillProps) {
   );
 }
 
+/** A start time every court is booked for: shown, dimmed, never selectable. */
+export function TakenSlotRow({ start, end }: { start: string; end: string }) {
+  const range = formatSlotRange(start, end);
+  return (
+    <View
+      style={[styles.pill, styles.pillTaken]}
+      accessible
+      accessibilityLabel={`${range}, booked`}
+      accessibilityState={{ disabled: true }}
+    >
+      <View style={styles.text}>
+        <Text style={[styles.label, styles.labelTaken]}>{range}</Text>
+        <Text style={styles.meta}>Booked</Text>
+      </View>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   pill: {
     flexDirection: 'row',
@@ -61,6 +79,16 @@ const styles = StyleSheet.create({
   pillSelected: {
     borderColor: colors.accent,
     backgroundColor: colors.surfaceOverlay,
+  },
+  pillTaken: {
+    minHeight: 44,
+    backgroundColor: 'transparent',
+    borderStyle: 'dashed',
+    opacity: 0.6,
+  },
+  labelTaken: {
+    color: colors.textMuted,
+    textDecorationLine: 'line-through',
   },
   pillPressed: {
     opacity: 0.9,
