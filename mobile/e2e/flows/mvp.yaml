@@ -75,7 +75,7 @@ env:
 # Tomorrow's first time with a court free: open whatever hour the run starts,
 # and however many runs came before.
 - tapOn:
-    text: "(?i)(sun|mon|tue|wed|thu|fri|sat) \\d+"
+    text: "(?i)(sun|mon|tues|wednes|thurs|fri|satur)day, \\w+ \\d+"
     index: 1
 - tapOn:
     text: ".*, \\d+ courts? free"
