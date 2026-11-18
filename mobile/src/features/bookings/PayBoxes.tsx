@@ -84,7 +84,7 @@ export function DueRow({ booking, due }: { booking: BookingDetail; due: BookingD
           {formatMoney(owes ? due.due_cents : due.paid_cents, booking.currency)}
         </Text>
       </View>
-      {!owes && due.paid_cents > 0 ? <Text style={styles.hint}>Paid. Thank you.</Text> : null}
+      {!owes && due.paid_cents > 0 ? <Text style={styles.hint}>Paid, plus any tax. Thank you.</Text> : null}
       {owes ? <Text style={styles.hint}>Before tax; any tax is shown when you pay.</Text> : null}
     </View>
   );

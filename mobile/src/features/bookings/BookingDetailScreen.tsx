@@ -380,7 +380,7 @@ function BookingDetailView({
 
       <View style={styles.playersHead}>
         <Text style={styles.sectionLabel}>
-          Players <Text style={styles.sectionCount}>{roster.length}</Text>
+          Players <Text style={styles.sectionCount}>{roster.length + 1}</Text>
         </Text>
         {viewer.canInvite ? (
           <Pressable
@@ -397,7 +397,7 @@ function BookingDetailView({
 
       {roster.length === 0 ? (
         <Text style={styles.meta}>
-          {viewer.canInvite ? 'No players yet. Invite members or a group.' : 'No other players yet.'}
+          {viewer.canInvite ? 'Just you so far. Invite members or a group.' : 'No other players yet.'}
         </Text>
       ) : (
         <View style={styles.roster} accessibilityLabel="Players">
