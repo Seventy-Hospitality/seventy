@@ -45,6 +45,14 @@ describe('CreateGroupScreen', () => {
     expect(screen.getByText('Invite players')).toBeTruthy();
   });
 
+  it('counts characters once the name nears the limit', () => {
+    renderWithProviders(<CreateGroupScreen />);
+    fireEvent.changeText(screen.getByPlaceholderText('Enter name'), 'Baddies');
+    expect(screen.queryByText(/\/80$/)).toBeNull();
+    fireEvent.changeText(screen.getByPlaceholderText('Enter name'), 'x'.repeat(70));
+    expect(screen.getByText('70/80')).toBeTruthy();
+  });
+
   describe('without member search (P4 off, today)', () => {
     beforeEach(() => {
       mockClutch.capabilities = { ...REAL_CAPABILITIES, bookingParity: false };

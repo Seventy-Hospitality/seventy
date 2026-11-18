@@ -10,6 +10,7 @@ import {
   createGroupInput,
   deleteGroupErrorMessage,
   EMPTY_SELECTION,
+  groupNameCounter,
   inviteErrorMessage,
   inviteLinkErrorMessage,
   inviteeIds,
@@ -193,5 +194,14 @@ describe('error copy branches on codes', () => {
   it('field_too_long says text is too long without naming a field Clutch did not name', () => {
     expect(createGroupErrorMessage(clutchError('field_too_long', 400))).toMatch(/text is too long/);
     expect(updateGroupErrorMessage(clutchError('field_too_long', 400))).toMatch(/text is too long/);
+  });
+});
+
+describe('groupNameCounter', () => {
+  it('shows only once a name nears the 80-character limit', () => {
+    expect(groupNameCounter('Baddies')).toBeUndefined();
+    expect(groupNameCounter('x'.repeat(59))).toBeUndefined();
+    expect(groupNameCounter('x'.repeat(60))).toBe('60/80');
+    expect(groupNameCounter('x'.repeat(80))).toBe('80/80');
   });
 });

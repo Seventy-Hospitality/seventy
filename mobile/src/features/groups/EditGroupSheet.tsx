@@ -11,6 +11,7 @@ import {
   GROUP_DESCRIPTION_MAX,
   GROUP_NAME_MAX,
   coverUploadErrorMessage,
+  groupNameCounter,
   updateGroupErrorMessage,
   isValidGroupName,
 } from './groups-lib';
@@ -160,7 +161,11 @@ export function EditGroupSheet({ group, open, onClose }: EditGroupSheetProps) {
           ) : null}
         </View>
 
-        <FormField label="Group name" error={trimmedName.length === 0 ? 'Enter a group name' : undefined}>
+        <FormField
+          label="Group name"
+          error={trimmedName.length === 0 ? 'Enter a group name' : undefined}
+          hint={groupNameCounter(name)}
+        >
           <Input
             value={name}
             onChangeText={setName}
@@ -195,8 +200,11 @@ export function EditGroupSheet({ group, open, onClose }: EditGroupSheetProps) {
 }
 
 const styles = StyleSheet.create({
+  // Shrinks to fit a height-bounded sheet (and the keyboard) instead of a
+  // fixed cap.
   scroll: {
-    maxHeight: 520,
+    flexGrow: 0,
+    flexShrink: 1,
   },
   content: {
     gap: spacing.md,

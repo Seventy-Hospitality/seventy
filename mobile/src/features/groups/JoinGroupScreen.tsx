@@ -188,7 +188,9 @@ const styles = StyleSheet.create({
   backLink: {
     flexDirection: 'row',
     alignItems: 'center',
+    alignSelf: 'flex-start',
     gap: 2,
+    minHeight: 44,
     marginLeft: -4,
   },
   backLinkText: {
