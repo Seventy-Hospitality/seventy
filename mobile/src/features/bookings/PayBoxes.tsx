@@ -2,7 +2,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
 import { clutch, type BookingDetail, type BookingDue } from '../../lib/clutch';
 import { queryKeys } from '../../lib/queries';
-import { FeatureUnavailable, PrimaryButton, useToast } from '../../components';
+import { PrimaryButton, useToast } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
 import { formatMoney } from '../reserve/booking';
 import { chargeTotal } from '../reserve/charge';
@@ -16,8 +16,8 @@ import { useBookingPayment, useSharePayment } from '../reserve/useBookingPayment
  * - BookerPayBox: the booker's hold or balance (POST /bookings/{id}/payment-intent,
  *   then /confirm).
  * - SharePayBox: a player's share (P4 shares/payment-intent, then
- *   shares/confirm), shown only with bookingParity on; otherwise an honest
- *   "not available in the app yet".
+ *   shares/confirm), shown only with bookingParity on; otherwise just the
+ *   amount owed.
  *
  * Dues are Clutch's figures before tax. Once Clutch issues the intent, its
  * own lines (subtotal and tax, and a total when Clutch states one) replace
@@ -48,12 +48,14 @@ export function SharePayBox({ booking, due }: { booking: BookingDetail; due: Boo
     return (
       <View style={styles.box}>
         <DueRow booking={booking} due={due} />
+        {/* Hidden until bookingParity ships on Clutch.
         <FeatureUnavailable
           capability="bookingParity"
           title="Paying your share in the app is not available yet"
           description="Pay the member who booked, or at the club. Paying here is coming soon."
           compact
         />
+        */}
       </View>
     );
   }

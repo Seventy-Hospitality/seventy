@@ -102,7 +102,8 @@ describe('PaymentMethodScreen', () => {
     expect(await screen.findByText('Visa •••• 4242 · exp 09/27')).toBeTruthy();
     expect(screen.queryByLabelText('Add card')).toBeNull();
     expect(screen.queryByLabelText('Remove Visa •••• 4242 · exp 09/27')).toBeNull();
-    expect(screen.getByText(/not available in the app yet/)).toBeTruthy();
+    expect(screen.queryByText(/not available in the app yet|coming soon/i)).toBeNull();
+    expect(screen.queryByTestId('unavailable-nativePayments')).toBeNull();
   });
 
   it('shows an error with retry when the cards cannot be read', async () => {

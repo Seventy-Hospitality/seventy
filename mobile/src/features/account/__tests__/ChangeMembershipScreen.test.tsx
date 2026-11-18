@@ -141,14 +141,15 @@ describe('ChangeMembershipScreen', () => {
     expect(screen.queryByLabelText('Cancel membership')).toBeNull();
   });
 
-  it('shows the plan and says changes are not in the app yet without native payments', async () => {
+  it('shows the plan and offers no changes, and no placeholder, without native payments', async () => {
     (mockClutch.capabilities as Capabilities).nativePayments = false;
     mockClutch.membership.get.mockResolvedValue(makeStandingMembership());
 
     renderWithProviders(<ChangeMembershipScreen />);
 
     expect(await screen.findByText('Member')).toBeTruthy();
-    expect(screen.getByText(/not available in the app yet/)).toBeTruthy();
+    expect(screen.queryByText(/not available in the app yet|coming soon/i)).toBeNull();
+    expect(screen.queryByTestId('unavailable-nativePayments')).toBeNull();
     expect(screen.queryByLabelText('Cancel membership')).toBeNull();
     expect(mockClutch.membership.eligibleChanges).not.toHaveBeenCalled();
   });

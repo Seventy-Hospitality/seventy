@@ -5,7 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { clutch, type BookingId, type GroupSummary, type ClubPlayer } from '../../lib/clutch';
 import { groupsQuery } from '../../lib/queries';
 import { useSession } from '../../lib/session';
-import { Avatar, Chip, EmptyStateView, FeatureUnavailable, PrimaryButton, Skeleton } from '../../components';
+import { Avatar, Chip, EmptyStateView, PrimaryButton, Skeleton } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
 import { describeBookingFailure } from './booking-failures';
 import {
@@ -186,6 +186,8 @@ export function InvitePlayersStep({
             clearButtonMode="while-editing"
           />
         </View>
+      ) : null}
+      {/* Hidden until bookingParity ships on Clutch.
       ) : (
         <FeatureUnavailable
           capability="bookingParity"
@@ -194,6 +196,7 @@ export function InvitePlayersStep({
           compact
         />
       )}
+      */}
 
       {hasChips ? (
         <View style={styles.chipRow} accessibilityLabel="Selected invites">

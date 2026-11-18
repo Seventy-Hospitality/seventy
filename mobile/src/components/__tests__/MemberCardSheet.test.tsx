@@ -106,11 +106,13 @@ describe('checkinErrorMessage', () => {
 });
 
 describe('MemberCardSheet without check-in tokens', () => {
-  it('says so instead of calling Clutch', async () => {
+  it('tells the member to give their name at the desk instead of calling Clutch', async () => {
     (mockClutch.capabilities as Capabilities).checkinToken = false;
     const client = makeClient();
     render(<MemberCardSheet open onClose={() => undefined} memberName="Alex Morgan" />, { wrapper: wrapper(client) });
-    expect(await screen.findByText(/not available in the app yet/)).toBeTruthy();
+    expect(await screen.findByText('Give your name at the desk to check in.')).toBeTruthy();
+    expect(screen.queryByText(/not available in the app yet|coming soon/i)).toBeNull();
+    expect(screen.queryByTestId('unavailable-checkinToken')).toBeNull();
     expect(mockClutch.me.checkinToken).not.toHaveBeenCalled();
   });
 });

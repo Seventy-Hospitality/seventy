@@ -13,7 +13,6 @@ import {
   Badge,
   bookingStatusVariant,
   EmptyStateView,
-  FeatureUnavailable,
   playerStatusVariant,
   PrimaryButton,
   Sheet,
@@ -61,8 +60,8 @@ import { useRespondToBooking } from './useRespondToBooking';
  *   (P4) or pays their share (P4).
  *
  * Every P4 action is offered only with clutch.capabilities.bookingParity on;
- * otherwise its place says it is not available in the app yet. Players carry
- * no names in the contract: each row reads "Player 1", "Player 2"... with
+ * otherwise it is hidden. Players carry no names in the contract: each row
+ * reads "Player 1", "Player 2"... with
  * their answer and share beside it (the booker's name shows from the pending
  * invitation, when there is one).
  */
@@ -440,6 +439,7 @@ function BookingDetailView({
         </View>
       )}
 
+      {/* Hidden until bookingParity ships on Clutch.
       {viewer.canRemovePlayers && !parity && roster.length > 0 ? (
         <FeatureUnavailable
           capability="bookingParity"
@@ -448,9 +448,10 @@ function BookingDetailView({
           compact
         />
       ) : null}
+      */}
 
-      {viewer.canRespond ? (
-        parity ? (
+      {viewer.canRespond && parity ? (
+        (
           <View style={styles.actions} accessibilityLabel="Respond to this invitation">
             <PrimaryButton
               label="Accept"
@@ -468,6 +469,8 @@ function BookingDetailView({
               onPress={() => respondWith(false)}
             />
           </View>
+        )
+        /* Hidden until bookingParity ships on Clutch.
         ) : (
           <FeatureUnavailable
             capability="bookingParity"
@@ -475,9 +478,10 @@ function BookingDetailView({
             description="Accept or decline this invitation on the club website for now."
           />
         )
+        */
       ) : null}
 
-      {viewer.canReschedule || viewer.canCancel || viewer.canLeave ? (
+      {viewer.canReschedule || viewer.canCancel || (viewer.canLeave && parity) ? (
         <View style={styles.actions}>
           {viewer.canReschedule ? (
             <PrimaryButton label="Change time" onPress={() => router.push(`/bookings/${booking.id}/edit`)} />
@@ -492,8 +496,8 @@ function BookingDetailView({
               <Text style={styles.textActionLabel}>Cancel booking</Text>
             </Pressable>
           ) : null}
-          {viewer.canLeave ? (
-            parity ? (
+          {viewer.canLeave && parity ? (
+            (
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Leave booking"
@@ -502,6 +506,8 @@ function BookingDetailView({
               >
                 <Text style={styles.textActionLabel}>Leave booking</Text>
               </Pressable>
+            )
+            /* Hidden until bookingParity ships on Clutch.
             ) : (
               <FeatureUnavailable
                 capability="bookingParity"
@@ -510,6 +516,7 @@ function BookingDetailView({
                 compact
               />
             )
+            */
           ) : null}
         </View>
       ) : null}

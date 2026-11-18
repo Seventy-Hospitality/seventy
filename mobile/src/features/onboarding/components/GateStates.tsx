@@ -7,7 +7,6 @@ import { useState, type ReactNode } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { FeatureUnavailable } from '../../../components/FeatureUnavailable';
 import { FormField, Input } from '../../../components/FormField';
 import { PrimaryButton } from '../../../components/PrimaryButton';
 import { colors, spacing, typography } from '../../../theme/tokens';
@@ -157,6 +156,7 @@ export function LapsedMembershipScreen({
         </Text>
         <View style={styles.action}>
           {renew ? <PrimaryButton label="Renew membership" onPress={renew} /> : null}
+          {/* Hidden until nativePayments ships on Clutch.
           {!renew && !paymentsAvailable ? (
             <FeatureUnavailable
               capability="nativePayments"
@@ -164,6 +164,7 @@ export function LapsedMembershipScreen({
               description="Paying for a membership is not available in the app yet. Renew at the club front desk, then check again."
             />
           ) : null}
+          */}
           <PrimaryButton
             label="Check again"
             variant={renew ? 'secondary' : 'primary'}

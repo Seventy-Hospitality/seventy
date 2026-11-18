@@ -48,8 +48,7 @@ function monthDayLabel(dateKey: string): string {
  * a "Book a court" prompt per sport.
  *
  * Answering a booking invitation is P4 (bookingParity). Until it is live the
- * invitation card says answering in the app is coming soon instead of
- * offering Accept / Decline buttons that could only fail.
+ * invitation card shows no Accept / Decline buttons (they could only fail).
  *
  * GET /me/home answers the profile, upcoming bookings and announcements; the
  * invitations are their own shared reads (their keys are what the respond

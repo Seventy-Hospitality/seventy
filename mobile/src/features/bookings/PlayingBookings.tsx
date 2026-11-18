@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
-import { BookingCard, FeatureUnavailable, PrimaryButton, Sheet, useToast } from '../../components';
+import { BookingCard, PrimaryButton, Sheet, useToast } from '../../components';
 import { clutch } from '../../lib/clutch';
 import { colors, fonts, spacing } from '../../theme/tokens';
 import { formatDateLong, formatTimeRangeCompact } from '../reserve/booking';
@@ -54,6 +54,8 @@ export function PlayingBookingRow({ entry }: { entry: PlayingBooking }) {
         >
           <Text style={styles.leaveLabel}>Leave</Text>
         </Pressable>
+      ) : null}
+      {/* Hidden until bookingParity ships on Clutch.
       ) : (
         <FeatureUnavailable
           capability="bookingParity"
@@ -62,6 +64,7 @@ export function PlayingBookingRow({ entry }: { entry: PlayingBooking }) {
           compact
         />
       )}
+      */}
       <Sheet
         open={leaveOpen}
         onClose={() => {

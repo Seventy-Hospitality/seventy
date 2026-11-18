@@ -1,8 +1,8 @@
 /**
  * Payment methods: the cards Clutch holds for this member at the club
  * (GET /me/payment-methods, on main today). Changing them is Clutch P2
- * (capabilities.nativePayments); without it the list is shown and the
- * actions say they are not in the app yet:
+ * (capabilities.nativePayments); without it only the list is shown. The
+ * actions:
  *
  * - make one the default (PATCH), remove one (DELETE; Clutch refuses the card
  *   a live subscription bills with card_in_use_by_subscription);
@@ -29,7 +29,7 @@ import {
 } from '../../lib/clutch';
 import { paymentMethodsQuery, queryKeys } from '../../lib/queries';
 import { usePresentConnectedSheet } from '../../lib/stripe';
-import { Badge, EmptyStateView, FeatureUnavailable, PrimaryButton, Skeleton, useToast } from '../../components';
+import { Badge, EmptyStateView, PrimaryButton, Skeleton, useToast } from '../../components';
 import { colors, fonts, radius, spacing, typography } from '../../theme/tokens';
 import { AccountFrame } from './AccountFrame';
 import { billingErrorMessage, paymentMethodLabel } from './account-lib';
@@ -70,8 +70,8 @@ export function PaymentMethodScreen() {
               ))}
             </View>
           )}
-          {canManage ? (
-            <AddCard />
+          {canManage ? <AddCard /> : null}
+          {/* Hidden until nativePayments ships on Clutch.
           ) : (
             <FeatureUnavailable
               capability="nativePayments"
@@ -79,6 +79,7 @@ export function PaymentMethodScreen() {
               description="Adding, removing or changing your default card is not available in the app yet. The club front desk can help meanwhile."
             />
           )}
+          */}
         </>
       )}
     </AccountFrame>

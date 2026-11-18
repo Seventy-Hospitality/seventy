@@ -4,7 +4,6 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { clutch, isClutchError } from '../lib/clutch';
 import { queryKeys } from '../lib/queries';
 import { colors, fonts, radius, spacing } from '../theme/tokens';
-import { FeatureUnavailable } from './FeatureUnavailable';
 import { PrimaryButton } from './PrimaryButton';
 import { QRCode } from './QRCode';
 import { Sheet } from './Sheet';
@@ -82,6 +81,7 @@ export function MemberCardSheet({ open, onClose, memberName, detail }: MemberCar
         </View>
 
         {open && clutch.capabilities.checkinToken ? <MemberCardQr memberName={memberName} /> : null}
+        {/* Hidden until checkinToken ships on Clutch.
         {open && !clutch.capabilities.checkinToken ? (
           <FeatureUnavailable
             capability="checkinToken"
@@ -89,6 +89,10 @@ export function MemberCardSheet({ open, onClose, memberName, detail }: MemberCar
             description="Check-in codes are not available in the app yet. Give your name at the desk."
             compact
           />
+        ) : null}
+        */}
+        {open && !clutch.capabilities.checkinToken ? (
+          <Text style={styles.detail}>Give your name at the desk to check in.</Text>
         ) : null}
 
         <Text style={styles.name}>{memberName.toUpperCase()}</Text>

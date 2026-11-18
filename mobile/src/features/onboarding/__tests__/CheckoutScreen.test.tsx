@@ -167,12 +167,13 @@ describe('CheckoutScreen', () => {
     expect(mockPresent).not.toHaveBeenCalled();
   });
 
-  it('says paying is not in the app yet, and calls nothing, without native payments', async () => {
+  it('says to become a member at the front desk, and calls nothing, without native payments', async () => {
     (mockClutch.capabilities as Capabilities).nativePayments = false;
 
     renderWithProviders(<CheckoutScreen />);
 
-    expect(await screen.findByText(/not available in the app yet/)).toBeTruthy();
+    expect(await screen.findByText('Become a member at the Club70 front desk.')).toBeTruthy();
+    expect(screen.queryByText(/not available in the app yet|coming soon/i)).toBeNull();
     expect(screen.queryByLabelText('Confirm membership')).toBeNull();
     expect(mockClutch.membership.get).not.toHaveBeenCalled();
     expect(mockClutch.membership.subscribe).not.toHaveBeenCalled();

@@ -36,9 +36,10 @@ describe('InviteToGroupSheet without member search (P4 off, today)', () => {
     mockClutch.capabilities = { ...REAL_CAPABILITIES, bookingParity: false };
   });
 
-  it('offers no Add, says search is coming, and never searches', () => {
+  it('offers no Add, no search placeholder, and never searches', () => {
     renderWithProviders(<InviteToGroupSheet group={group} open onClose={jest.fn()} />);
-    expect(screen.getByTestId('unavailable-bookingParity')).toBeTruthy();
+    expect(screen.queryByTestId('unavailable-bookingParity')).toBeNull();
+    expect(screen.queryByText('Member search is not available in the app yet')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Add players' })).toBeNull();
     expect(mockClutch.club.searchPlayers).not.toHaveBeenCalled();
   });

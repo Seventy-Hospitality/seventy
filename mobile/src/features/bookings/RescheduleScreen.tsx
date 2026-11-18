@@ -456,10 +456,9 @@ function ConfirmMove({
           <Text style={styles.hint}>Pricing the move...</Text>
         ) : null
       ) : (
-        <Text style={styles.hint}>
-          The club prices the new time when you save. A move to a time that costs more is not available in the
-          app yet.
-        </Text>
+        // Second sentence hidden until bookingParity ships on Clutch:
+        // "A move to a time that costs more is not available in the app yet."
+        <Text style={styles.hint}>The club prices the new time when you save.</Text>
       )}
 
       {payment.charge ? <ChargeSummary charge={payment.charge} title="Payment" /> : null}

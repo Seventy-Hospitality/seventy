@@ -58,10 +58,10 @@ describe('CreateGroupScreen', () => {
       mockClutch.capabilities = { ...REAL_CAPABILITIES, bookingParity: false };
     });
 
-    it('says search is coming, never searches, and creates without an invitee list', async () => {
+    it('shows no search or placeholder, never searches, and creates without an invitee list', async () => {
       renderWithProviders(<CreateGroupScreen />);
       goToInviteStep();
-      expect(screen.getByTestId('unavailable-bookingParity')).toBeTruthy();
+      expect(screen.queryByTestId('unavailable-bookingParity')).toBeNull();
       expect(screen.getByText(/share its invite link from the group page/)).toBeTruthy();
       fireEvent.press(screen.getByRole('button', { name: 'Create group' }));
       await waitFor(() =>
