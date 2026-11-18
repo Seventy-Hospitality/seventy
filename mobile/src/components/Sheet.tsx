@@ -1,8 +1,10 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import {
   Animated,
+  KeyboardAvoidingView,
   Modal,
   PanResponder,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -21,6 +23,7 @@ interface SheetProps {
 /**
  * Modal bottom sheet: slides up over a scrim. Dismisses on backdrop tap, the
  * hardware back button (Android), and a downward swipe past the threshold.
+ * It rises above the keyboard (iOS; Android resizes the window).
  */
 export function Sheet({ open, onClose, title, children }: SheetProps) {
   const insets = useSafeAreaInsets();
@@ -59,7 +62,7 @@ export function Sheet({ open, onClose, title, children }: SheetProps) {
 
   return (
     <Modal visible={open} transparent animationType="slide" onRequestClose={dismiss} statusBarTranslucent>
-      <View style={styles.root}>
+      <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <Animated.View style={[styles.backdrop, { opacity: backdrop }]}>
           <Pressable style={StyleSheet.absoluteFill} onPress={dismiss} accessibilityLabel="Close" />
         </Animated.View>
@@ -72,7 +75,7 @@ export function Sheet({ open, onClose, title, children }: SheetProps) {
           </View>
           {children}
         </Animated.View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

@@ -4,7 +4,7 @@
  * can be stuck on offers sign-out (a wrong account must never be a trap).
  */
 import { useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Platform, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { FeatureUnavailable } from '../../../components/FeatureUnavailable';
 import { FormField, Input } from '../../../components/FormField';
@@ -71,7 +71,7 @@ export function NameForm({
   };
   const shown = localError ?? error;
   return (
-    <View style={styles.center}>
+    <KeyboardAvoidingView style={styles.center} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <Text style={styles.title}>What is your name?</Text>
       <Text style={styles.muted}>This is the name the club and other members see.</Text>
       <View style={styles.action}>
@@ -97,7 +97,7 @@ export function NameForm({
         <PrimaryButton label="Continue" loading={saving} onPress={submit} />
         <SignOutButton onSignOut={onSignOut} />
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 

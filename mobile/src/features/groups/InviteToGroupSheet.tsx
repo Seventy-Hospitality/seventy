@@ -221,6 +221,7 @@ export function InviteToGroupSheet({ group, open, onClose }: InviteToGroupSheetP
             style={styles.pickerScroll}
             contentContainerStyle={styles.pickerContent}
             keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="interactive"
             showsVerticalScrollIndicator={false}
           >
             <MemberPicker

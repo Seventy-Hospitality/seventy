@@ -117,6 +117,7 @@ export function EditGroupSheet({ group, open, onClose }: EditGroupSheetProps) {
         style={styles.scroll}
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="interactive"
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.coverField}>
