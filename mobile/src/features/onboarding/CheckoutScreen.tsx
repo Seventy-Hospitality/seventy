@@ -1,7 +1,7 @@
 /**
  * Onboarding checkout (Figma onboarding/checkout 26:841 / 32:569). Clutch P2
- * (capabilities.nativePayments); without it the screen says paying is not in
- * the app yet and never calls a P2 route.
+ * (capabilities.nativePayments); without it the screen says to become a
+ * member at the front desk and never calls a P2 route.
  *
  *  1. POST /me/membership/subscribe {tier, terms_version} starts a
  *     subscription attempt (or reuses the pending one for this tier) and
@@ -38,7 +38,6 @@ import { membershipQuery, queryKeys, tiersQuery } from '../../lib/queries';
 import { usePresentConnectedSheet } from '../../lib/stripe';
 import { AppScreen } from '../../components/AppScreen';
 import { Checkbox } from '../../components/Checkbox';
-import { FeatureUnavailable } from '../../components/FeatureUnavailable';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { Skeleton } from '../../components/Skeleton';
 import { colors, fonts, radius, spacing, typography } from '../../theme/tokens';
@@ -92,11 +91,14 @@ export function CheckoutScreen() {
   if (!clutch.capabilities.nativePayments) {
     return (
       <CheckoutFrame>
+        {/* Hidden until nativePayments ships on Clutch.
         <FeatureUnavailable
           capability="nativePayments"
           title="Paying in the app"
           description="Paying for a membership is not available in the app yet. Become a member at the Club70 front desk meanwhile."
         />
+        */}
+        <Text style={styles.errorText}>Become a member at the Club70 front desk.</Text>
         <BackToPlans />
       </CheckoutFrame>
     );

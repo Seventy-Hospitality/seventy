@@ -1,8 +1,8 @@
 /**
  * Manage membership: the current tier, a switch to another tier, keeping the
  * tier when a downgrade is booked, cancel and resume. All of it is Clutch P2
- * (capabilities.nativePayments); without it the screen shows the plan and
- * says changes are not in the app yet. Clutch decides everything and the
+ * (capabilities.nativePayments); without it the screen shows only the plan.
+ * Clutch decides everything and the
  * screen re-reads GET /me/membership after every action; nothing is inferred.
  *
  * - Tiers on offer: GET /me/membership/change (each marked upgrade or
@@ -37,7 +37,6 @@ import {
   Badge,
   Checkbox,
   EmptyStateView,
-  FeatureUnavailable,
   PrimaryButton,
   Sheet,
   Skeleton,
@@ -105,11 +104,13 @@ export function ChangeMembershipScreen() {
             return (
               <>
                 <CurrentPlan plan={plan} />
+                {/* Hidden until nativePayments ships on Clutch.
                 <FeatureUnavailable
                   capability="nativePayments"
                   title="Changing your membership"
                   description="Switching, cancelling or resuming your membership is not available in the app yet. The club front desk can help meanwhile."
                 />
+                */}
               </>
             );
           }

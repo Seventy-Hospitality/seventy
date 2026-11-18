@@ -259,10 +259,12 @@ describe('BookingDetailScreen: the booker', () => {
     );
   });
 
-  it('without P4 says removing players is not available yet', async () => {
+  it('without P4 offers no way to remove players, and no placeholder', async () => {
     setParity(false);
     renderDetail(makeBookingDetail({ date: FUTURE, user_id: ME, players: [makeBookingPlayer({ user_id: OTHER })] }));
-    expect(await screen.findByText('Removing players is not available in the app yet')).toBeTruthy();
+    expect(await screen.findByText('Court 1')).toBeTruthy();
+    expect(screen.queryByText('Removing players is not available in the app yet')).toBeNull();
+    expect(screen.queryByTestId('unavailable-bookingParity')).toBeNull();
     expect(screen.queryByLabelText(/^Remove Player 1/)).toBeNull();
   });
 });
@@ -290,18 +292,25 @@ describe('BookingDetailScreen: a player', () => {
     );
   });
 
-  it('without P4 says answering, leaving and paying a share are not available yet', async () => {
+  it('without P4 offers no way to answer an invitation, and no placeholder', async () => {
     setParity(false);
     renderDetail(playing('invited'));
-    expect(await screen.findByText('Answering invitations is not available in the app yet')).toBeTruthy();
+    expect(await screen.findByText('Court 1')).toBeTruthy();
+    expect(screen.queryByText('Answering invitations is not available in the app yet')).toBeNull();
+    expect(screen.queryByTestId('unavailable-bookingParity')).toBeNull();
     expect(screen.queryByLabelText('Accept invitation')).toBeNull();
+    expect(screen.queryByLabelText('Decline invitation')).toBeNull();
   });
 
   it('without P4 cannot pay a share or leave', async () => {
     setParity(false);
     renderDetail(playing('accepted', 1500));
-    expect(await screen.findByText('Paying your share in the app is not available yet')).toBeTruthy();
-    expect(screen.getByText('Leaving a booking is not available in the app yet')).toBeTruthy();
+    expect(await screen.findByText('You owe')).toBeTruthy();
+    expect(screen.queryByText('Paying your share in the app is not available yet')).toBeNull();
+    expect(screen.queryByText('Leaving a booking is not available in the app yet')).toBeNull();
+    expect(screen.queryByTestId('unavailable-bookingParity')).toBeNull();
+    expect(screen.queryByText('Pay now')).toBeNull();
+    expect(screen.queryByLabelText('Leave booking')).toBeNull();
     expect(mockClutch.bookings.sharePaymentIntent).not.toHaveBeenCalled();
   });
 

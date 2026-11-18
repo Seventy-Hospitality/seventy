@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { BookingInvitation } from '../../lib/clutch';
-import { FeatureUnavailable, PrimaryButton } from '../../components';
+import { PrimaryButton } from '../../components';
 import { formatDateHeading, formatTimeRangeCompact, sportLabel, SportTile } from '../reserve';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
 
@@ -115,6 +115,8 @@ export function BookingInvitationCard({
           />
         </View>
       </View>
+      ) : null}
+      {/* Hidden until bookingParity ships on Clutch.
       ) : (
         <FeatureUnavailable
           capability="bookingParity"
@@ -123,6 +125,7 @@ export function BookingInvitationCard({
           description="For now, let the person who invited you know directly. Tap the invitation to see the booking."
         />
       )}
+      */}
     </View>
   );
 }

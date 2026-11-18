@@ -130,11 +130,12 @@ describe('HomeScreen', () => {
       mockClutch.me.bookingInvitations.mockResolvedValue([invitation]);
     });
 
-    it('shows the invitation and says answering is coming, with no buttons that would fail', async () => {
+    it('shows the invitation with no answer buttons and no placeholder', async () => {
       renderHome();
 
       expect(await screen.findByText('SARAH LEE')).toBeTruthy();
-      expect(screen.getByText('Answering invitations in the app is coming soon')).toBeTruthy();
+      expect(screen.queryByText('Answering invitations in the app is coming soon')).toBeNull();
+      expect(screen.queryByTestId('unavailable-bookingParity')).toBeNull();
       expect(screen.queryByLabelText('Accept the invitation from Sarah Lee')).toBeNull();
       expect(screen.queryByLabelText('Decline the invitation from Sarah Lee')).toBeNull();
       // An invitation is something on the schedule: not the first-session prompt.

@@ -40,4 +40,14 @@ describe('InvitePlayersStep', () => {
     await waitFor(() => expect(sectionOrder()).toEqual(['Players', 'Your groups']));
     expect(mockClutch.club.searchPlayers).toHaveBeenCalledWith('sam');
   });
+
+  it('without P4 shows the groups but no search and no placeholder', async () => {
+    mockClutch.capabilities = { ...CAPABILITIES, bookingParity: false };
+    renderWithProviders(<InvitePlayersStep bookingId={BOOKING} subtitle="Mon, Jul 6" onSent={jest.fn()} />);
+    expect(await screen.findByText('Night Owls')).toBeTruthy();
+    expect(screen.queryByLabelText('Search club members by name')).toBeNull();
+    expect(screen.queryByText('Member search is not available in the app yet')).toBeNull();
+    expect(screen.queryByTestId('unavailable-bookingParity')).toBeNull();
+    expect(mockClutch.club.searchPlayers).not.toHaveBeenCalled();
+  });
 });

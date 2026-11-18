@@ -5,9 +5,9 @@
  * Prices are the tiers' own price_cents, formatted.
  *
  * Paying needs Clutch P2 (capabilities.nativePayments). Without it the tiers
- * are still shown, and in place of Continue the member is told paying is not
- * in the app yet and how to become a member meanwhile (at the club), with a
- * re-check for when the club has added them.
+ * are still shown, and in place of Continue the member is told to become a
+ * member at the club front desk, with a re-check for when the club has added
+ * them.
  */
 import { useState } from 'react';
 import { useRouter } from 'expo-router';
@@ -17,7 +17,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { clutch, type BillingInterval, type MembershipTier, type TierId } from '../../lib/clutch';
 import { queryKeys, tiersQuery } from '../../lib/queries';
 import { AppScreen } from '../../components/AppScreen';
-import { FeatureUnavailable } from '../../components/FeatureUnavailable';
 import { PrimaryButton } from '../../components/PrimaryButton';
 import { SegmentedControl } from '../../components/SegmentedControl';
 import { Skeleton } from '../../components/Skeleton';
@@ -119,11 +118,16 @@ export function ChoosePlanScreen() {
               />
             ) : (
               <>
+                {/* Hidden until nativePayments ships on Clutch.
                 <FeatureUnavailable
                   capability="nativePayments"
                   title="Joining in the app"
                   description="Paying for a membership is not available in the app yet. Become a member at the Club70 front desk; once the club has added your membership, check again."
                 />
+                */}
+                <Text style={styles.description}>
+                  Become a member at the Club70 front desk. Once the club has added your membership, check again.
+                </Text>
                 <PrimaryButton
                   label="Check again"
                   variant="secondary"

@@ -38,13 +38,14 @@ describe('ChoosePlanScreen', () => {
     expect(mockPush).toHaveBeenCalledWith({ pathname: '/onboarding/checkout', params: { tier: TIER.id } });
   });
 
-  it('shows the tiers but says paying is not in the app yet, and how to join meanwhile', async () => {
+  it('shows the tiers and says to join at the front desk, without native payments', async () => {
     (mockClutch.capabilities as Capabilities).nativePayments = false;
     renderWithProviders(<ChoosePlanScreen />);
 
     expect(await screen.findByText('Member')).toBeTruthy();
     expect(screen.queryByLabelText('Continue')).toBeNull();
     expect(screen.getByText(/front desk/)).toBeTruthy();
+    expect(screen.queryByText(/not available in the app yet|coming soon/i)).toBeNull();
     fireEvent.press(screen.getByLabelText('Check again'));
     await waitFor(() => expect(mockPush).not.toHaveBeenCalled());
   });

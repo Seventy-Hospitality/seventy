@@ -109,4 +109,11 @@ describe('PreferencesScreen', () => {
     expect(openURL).toHaveBeenCalledWith('mailto:contact@seventyhospitality.com');
     openURL.mockRestore();
   });
+
+  it('shows no "Rate the app" placeholder', async () => {
+    renderWithProviders(<PreferencesScreen />);
+    expect(await screen.findByText('Contact us')).toBeTruthy();
+    expect(screen.queryByText('Rate the app')).toBeNull();
+    expect(screen.queryByText('Coming soon')).toBeNull();
+  });
 });

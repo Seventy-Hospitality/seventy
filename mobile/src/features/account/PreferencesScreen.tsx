@@ -125,7 +125,9 @@ export function PreferencesScreen() {
 
       <SettingsGroup label="Help & support">
         <SettingsRow label="Contact us" onPress={() => void openContactEmail()} />
+        {/* Hidden until the app is in the stores and rating is wired up.
         <SettingsRow label="Rate the app" comingSoon />
+        */}
       </SettingsGroup>
 
       <SettingsGroup label="About">

@@ -29,11 +29,11 @@ beforeEach(() => {
 });
 
 describe('MemberPicker', () => {
-  it('is honest that member search is not live without P4, and never calls it', () => {
+  it('renders nothing without P4, and never calls member search', () => {
     mockClutch.capabilities = { ...REAL_CAPABILITIES, bookingParity: false };
     renderWithProviders(<MemberPicker selection={EMPTY_SELECTION} onSelectionChange={jest.fn()} />);
-    expect(screen.getByTestId('unavailable-bookingParity')).toBeTruthy();
-    expect(screen.getByText('Member search is not available in the app yet')).toBeTruthy();
+    expect(screen.queryByTestId('unavailable-bookingParity')).toBeNull();
+    expect(screen.queryByText('Member search is not available in the app yet')).toBeNull();
     expect(screen.queryByLabelText('Search members by name')).toBeNull();
     expect(mockClutch.club.searchPlayers).not.toHaveBeenCalled();
   });

@@ -3,7 +3,7 @@ import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { clutch, type ClubPlayer, type UserId } from '../../lib/clutch';
-import { Avatar, Chip, EmptyStateView, FeatureUnavailable, PrimaryButton, Skeleton } from '../../components';
+import { Avatar, Chip, EmptyStateView, PrimaryButton, Skeleton } from '../../components';
 import { colors, fonts, radius, spacing } from '../../theme/tokens';
 import { playerSearchQuery } from './groups-data';
 import {
@@ -30,18 +30,20 @@ interface MemberPickerProps {
  * a check-toggle per row. Results come from Clutch's member-facing player
  * search (P4 feat/member-booking-parity), which returns only fellow members of
  * this club and only what a member may see of them; the admin roster is never
- * used. Until P4 is live the picker says so instead of searching, and the
+ * used. Until P4 is live the picker renders nothing, and the
  * invite link (which needs no P4) stays the way to bring people in.
  */
 export function MemberPicker(props: MemberPickerProps) {
   if (!clutch.capabilities.bookingParity) {
-    return (
-      <FeatureUnavailable
-        capability="bookingParity"
-        title="Member search is not available in the app yet"
-        description="Searching for club members to invite is coming soon. For now, share the group's invite link from the group page."
-      />
-    );
+    // Hidden until bookingParity ships on Clutch.
+    // return (
+    //   <FeatureUnavailable
+    //     capability="bookingParity"
+    //     title="Member search is not available in the app yet"
+    //     description="Searching for club members to invite is coming soon. For now, share the group's invite link from the group page."
+    //   />
+    // );
+    return null;
   }
   return <MemberSearch {...props} />;
 }

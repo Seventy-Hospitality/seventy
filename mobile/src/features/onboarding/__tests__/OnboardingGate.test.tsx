@@ -164,7 +164,8 @@ describe('OnboardingEntry', () => {
 
     expect(await screen.findByText('Your club membership is not active')).toBeTruthy();
     expect(screen.queryByText('redirect:/(tabs)')).toBeNull();
-    expect(screen.getByText(/not available in the app yet/)).toBeTruthy();
+    expect(screen.getByText(/front desk/)).toBeTruthy();
+    expect(screen.queryByText(/not available in the app yet|coming soon/i)).toBeNull();
     expect(screen.queryByLabelText('Renew membership')).toBeNull();
     fireEvent.press(screen.getByLabelText('Sign out'));
     await waitFor(() => expect(mockSignOut).toHaveBeenCalled());
