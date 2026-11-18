@@ -141,10 +141,11 @@ function MemberCardQr({ memberName }: { memberName: string }) {
     );
   }
 
-  // White modules on the dark card, per the Figma. Clutch's scanner reads it.
+  // Dark modules on a white tile with a quiet zone: desk scanners misread
+  // light-on-dark codes, so the code keeps QRCode's dark-on-white default.
   return (
     <View style={styles.qrFrame} accessibilityRole="image" accessibilityLabel={`Check-in QR code for ${memberName}`}>
-      <QRCode value={token.data.token} size={180} color={colors.text} backgroundColor="transparent" />
+      <QRCode value={token.data.token} size={180} />
     </View>
   );
 }

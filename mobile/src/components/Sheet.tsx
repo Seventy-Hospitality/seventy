@@ -6,26 +6,36 @@ import {
   PanResponder,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, fonts, radius, shadows, spacing } from '../theme/tokens';
+import { ToastHost } from './Toast';
 
 interface SheetProps {
   open: boolean;
   onClose: () => void;
   title?: string;
   children: ReactNode;
+  /**
+   * Wrap the content in a ScrollView. Leave off when the content has its own
+   * ScrollView/FlatList: give that `flexShrink: 1` and it scrolls within the
+   * sheet's bounds.
+   */
+  scroll?: boolean;
 }
 
 /**
  * Modal bottom sheet: slides up over a scrim. Dismisses on backdrop tap, the
  * hardware back button (Android), and a downward swipe past the threshold.
- * It rises above the keyboard (iOS; Android resizes the window).
+ * It rises above the keyboard (iOS; Android resizes the window) and never
+ * grows past the safe area: the content shrinks (or scrolls) so the handle
+ * and title stay on screen. Toasts raised while it is open draw above it.
  */
-export function Sheet({ open, onClose, title, children }: SheetProps) {
+export function Sheet({ open, onClose, title, children, scroll = false }: SheetProps) {
   const insets = useSafeAreaInsets();
   const translateY = useRef(new Animated.Value(0)).current;
   const backdrop = useRef(new Animated.Value(0)).current;
@@ -62,7 +72,10 @@ export function Sheet({ open, onClose, title, children }: SheetProps) {
 
   return (
     <Modal visible={open} transparent animationType="slide" onRequestClose={dismiss} statusBarTranslucent>
-      <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <KeyboardAvoidingView
+        style={[styles.root, { paddingTop: insets.top + spacing.lg }]}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
         <Animated.View style={[styles.backdrop, { opacity: backdrop }]}>
           <Pressable style={StyleSheet.absoluteFill} onPress={dismiss} accessibilityLabel="Close" />
         </Animated.View>
@@ -73,9 +86,21 @@ export function Sheet({ open, onClose, title, children }: SheetProps) {
             <View style={styles.handle} />
             {title ? <Text style={styles.title}>{title}</Text> : null}
           </View>
-          {children}
+          {scroll ? (
+            <ScrollView
+              style={styles.scroll}
+              contentContainerStyle={styles.scrollContent}
+              keyboardShouldPersistTaps="handled"
+              bounces={false}
+            >
+              {children}
+            </ScrollView>
+          ) : (
+            <View style={styles.body}>{children}</View>
+          )}
         </Animated.View>
       </KeyboardAvoidingView>
+      {open ? <ToastHost /> : null}
     </Modal>
   );
 }
@@ -98,7 +123,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingTop: spacing.sm,
     gap: spacing.md,
+    // Shrinks into the space above the keyboard and below the safe area.
+    flexShrink: 1,
     ...shadows.sheet,
+  },
+  body: {
+    flexShrink: 1,
+    gap: spacing.md,
+  },
+  scroll: {
+    flexShrink: 1,
+  },
+  scrollContent: {
+    gap: spacing.md,
   },
   grabZone: {
     alignItems: 'center',

@@ -77,7 +77,6 @@ export const PasswordInput = forwardRef<TextInput, PasswordInputProps>(function 
         accessibilityRole="button"
         accessibilityLabel={visible ? 'Hide password' : 'Show password'}
         onPress={() => setVisible((v) => !v)}
-        hitSlop={8}
         style={styles.passwordToggle}
       >
         <Ionicons name={visible ? 'eye-off-outline' : 'eye-outline'} size={20} color={colors.textMuted} />
@@ -118,10 +117,13 @@ const styles = StyleSheet.create({
   passwordInput: {
     paddingRight: 48,
   },
+  // A full-height, 48pt-wide target at the input's right edge.
   passwordToggle: {
     position: 'absolute',
-    right: spacing.md,
+    right: 0,
+    width: 48,
     height: '100%',
+    alignItems: 'center',
     justifyContent: 'center',
   },
   error: {

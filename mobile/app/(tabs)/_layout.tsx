@@ -1,11 +1,16 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Redirect, Tabs } from 'expo-router';
 import { ActivityIndicator, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSession } from '../../src/lib/session';
 import { colors, fonts } from '../../src/theme/tokens';
 
 export default function TabsLayout() {
   const { status } = useSession();
+  const insets = useSafeAreaInsets();
+  // Icons and labels get 50pt; the home indicator area (or a small margin on
+  // phones without one) sits below them.
+  const tabBarBottom = Math.max(insets.bottom, 8);
 
   if (status === 'loading') {
     return (
@@ -35,9 +40,9 @@ export default function TabsLayout() {
           tabBarStyle: {
             backgroundColor: colors.bg,
             borderTopColor: colors.border,
-            height: 84,
+            height: 58 + tabBarBottom,
             paddingTop: 8,
-            paddingBottom: 18,
+            paddingBottom: tabBarBottom,
           },
           tabBarLabelStyle: { fontFamily: fonts.bodySemibold, fontSize: 11 },
           tabBarActiveTintColor: colors.accent,

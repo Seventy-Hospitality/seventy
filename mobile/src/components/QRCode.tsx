@@ -18,15 +18,22 @@ interface QRCodeProps {
  */
 export function QRCode({ value, size = 200, color = '#0d130f', backgroundColor = '#ffffff' }: QRCodeProps) {
   return (
-    <View style={[styles.frame, { backgroundColor }]}>
+    <View style={[styles.frame, { backgroundColor, padding: quietZone(size) }]}>
       <BaseQRCode value={value} size={size} color={color} backgroundColor={backgroundColor} />
     </View>
   );
 }
 
+/**
+ * Light margin around the modules. Scanners want about four modules of it;
+ * an eighth of the code's width covers that for the payloads used here.
+ */
+function quietZone(size: number): number {
+  return Math.max(spacing.md, Math.round(size / 8));
+}
+
 const styles = StyleSheet.create({
   frame: {
-    padding: spacing.md,
     borderRadius: radius.lg,
     alignSelf: 'center',
   },
